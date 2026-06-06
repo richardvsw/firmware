@@ -1,0 +1,50 @@
+name: Build DIY ESP32-S3 RFM95W
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'variants/esp32s3/diy/diy_esp32s3_rfm95/**'
+      - 'boards/diy-esp32s3-rfm95.json'
+      - '.github/workflows/build-diy-esp32s3-rfm95.yaml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('**/platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Build diy-esp32s3-rfm95
+        run: pio run -e diy-esp32s3-rfm95
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: diy-esp32s3-rfm95-firmware
+          path: |
+            .pio/build/diy-esp32s3-rfm95/firmware-diy-esp32s3-rfm95-*.bin
+            .pio/build/diy-esp32s3-rfm95/firmware-diy-esp32s3-rfm95-*.elf
+            .pio/build/diy-esp32s3-rfm95/littlefs-diy-esp32s3-rfm95-*.bin
+          retention-days: 30
