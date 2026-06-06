@@ -1,0 +1,48 @@
+name: Build Heltec V2
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'variants/esp32/heltec_v2/**'
+      - '.github/workflows/build-heltec-v2.yaml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('**/platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Build heltec-v2_0
+        run: pio run -e heltec-v2_0
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: heltec-v2_0-firmware
+          path: |
+            .pio/build/heltec-v2_0/firmware.bin
+            .pio/build/heltec-v2_0/firmware.elf
+          retention-days: 30
