@@ -67,13 +67,57 @@ uint32_t externalTurnedOn[3] = {};
 
 static const char *rtttlConfigFile = "/prefs/ringtone.proto";
 
+#ifdef ARCH_ESP32
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
+
+static SemaphoreHandle_t rtttlMutex = NULL;
+static TaskHandle_t rtttlTaskHandle = NULL;
+
+static void rtttl_lock() {
+    if (rtttlMutex != NULL) {
+        xSemaphoreTake(rtttlMutex, portMAX_DELAY);
+    }
+}
+
+static void rtttl_unlock() {
+    if (rtttlMutex != NULL) {
+        xSemaphoreGive(rtttlMutex);
+    }
+}
+
+static void rtttlTask(void *pvParameters)
+{
+    while (true) {
+        rtttl_lock();
+        bool playing = rtttl::isPlaying();
+        if (playing) {
+            rtttl::play();
+        }
+        rtttl_unlock();
+
+        if (playing) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+}
+#else
+static void rtttl_lock() {}
+static void rtttl_unlock() {}
+#endif
+
 int32_t ExternalNotificationModule::runOnce()
 {
     if (!moduleConfig.external_notification.enabled) {
         return INT32_MAX; // we don't need this thread here...
     } else {
         uint32_t delay = EXT_NOTIFICATION_MODULE_OUTPUT_MS;
+        rtttl_lock();
         bool isRtttlPlaying = rtttl::isPlaying();
+        rtttl_unlock();
 #ifdef HAS_I2S
         // audioThread->isPlaying() also handles actually playing the RTTTL, needs to be called in loop
         isRtttlPlaying = isRtttlPlaying || audioThread->isPlaying();
@@ -145,11 +189,19 @@ int32_t ExternalNotificationModule::runOnce()
 #endif
         // now let the PWM buzzer play
         if (moduleConfig.external_notification.use_pwm && config.device.buzzer_gpio && canBuzz()) {
-            if (rtttl::isPlaying()) {
+            rtttl_lock();
+            bool playing = rtttl::isPlaying();
+            rtttl_unlock();
+#ifndef ARCH_ESP32
+            if (playing) {
                 rtttl::play();
-            } else if (isNagging && (nagCycleCutoff >= millis())) {
+            }
+#endif
+            if (!playing && isNagging && (nagCycleCutoff >= millis())) {
                 // start the song again if we have time left
+                rtttl_lock();
                 rtttl::begin(config.device.buzzer_gpio, rtttlConfig.ringtone);
+                rtttl_unlock();
             }
             // we need fast updates to play the RTTTL
             delay = EXT_NOTIFICATION_FAST_THREAD_MS;
@@ -248,7 +300,9 @@ void ExternalNotificationModule::stopNow()
 {
     LOG_INFO("Turning off external notification: ");
     LOG_INFO("Stop RTTTL playback");
+    rtttl_lock();
     rtttl::stop();
+    rtttl_unlock();
 #ifdef HAS_I2S
     LOG_INFO("Stop audioThread playback");
     audioThread->stop();
@@ -281,6 +335,14 @@ ExternalNotificationModule::ExternalNotificationModule()
     : SinglePortModule("ExternalNotificationModule", meshtastic_PortNum_TEXT_MESSAGE_APP),
       concurrency::OSThread("ExternalNotification")
 {
+#ifdef ARCH_ESP32
+    if (rtttlMutex == NULL) {
+        rtttlMutex = xSemaphoreCreateMutex();
+    }
+    if (rtttlTaskHandle == NULL) {
+        xTaskCreate(rtttlTask, "rtttl_task", 2048, NULL, 5, &rtttlTaskHandle);
+    }
+#endif
     /*
         Uncomment the preferences below if you want to use the module
         without having to configure it from the PythonAPI or WebUI.
@@ -448,7 +510,9 @@ ProcessMessage ExternalNotificationModule::handleReceived(const meshtastic_MeshP
                         audioThread->beginRttl(rtttlConfig.ringtone, strlen_P(rtttlConfig.ringtone));
 #endif
                     } else if (moduleConfig.external_notification.use_pwm) {
+                        rtttl_lock();
                         rtttl::begin(config.device.buzzer_gpio, rtttlConfig.ringtone);
+                        rtttl_unlock();
                     } else {
                         setExternalState(2, true);
                     }

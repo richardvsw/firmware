@@ -1,0 +1,50 @@
+name: Build MeshNode S3
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'variants/esp32s3/diy/meshnode_s3/**'
+      - 'boards/meshnode-s3.json'
+      - '.github/workflows/build-meshnode-s3.yaml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('**/platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Build meshnode-s3
+        run: pio run -e meshnode-s3
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: meshnode-s3-firmware
+          path: |
+            .pio/build/meshnode-s3/firmware-meshnode-s3-*.bin
+            .pio/build/meshnode-s3/firmware-meshnode-s3-*.elf
+            .pio/build/meshnode-s3/littlefs-meshnode-s3-*.bin
+          retention-days: 30

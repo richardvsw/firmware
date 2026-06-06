@@ -32,24 +32,28 @@ void variant_shutdown() {}
 #if !defined(CONFIG_IDF_TARGET_ESP32S2) && !MESHTASTIC_EXCLUDE_BLUETOOTH
 void setBluetoothEnable(bool enable)
 {
+    if (enable) {
 #if defined(USE_WS5500) || defined(USE_CH390D)
-    if ((config.bluetooth.enabled == true) && (config.network.wifi_enabled == false))
+        if ((config.bluetooth.enabled == true) && (config.network.wifi_enabled == false))
 #elif HAS_WIFI
-    if (!isWifiAvailable() && config.bluetooth.enabled == true)
+        if (!isWifiAvailable() && config.bluetooth.enabled == true)
 #else
-    if (config.bluetooth.enabled == true)
+        if (config.bluetooth.enabled == true)
 #endif
-    {
-        if (!nimbleBluetooth) {
-            nimbleBluetooth = new NimbleBluetooth();
+        {
+            if (!nimbleBluetooth) {
+                nimbleBluetooth = new NimbleBluetooth();
+            }
+            if (!nimbleBluetooth->isActive()) {
+                powerMon->setState(meshtastic_PowerMon_State_BT_On);
+                nimbleBluetooth->setup();
+            }
         }
-        if (enable && !nimbleBluetooth->isActive()) {
-            powerMon->setState(meshtastic_PowerMon_State_BT_On);
-            nimbleBluetooth->setup();
+    } else {
+        if (nimbleBluetooth && nimbleBluetooth->isActive()) {
+            nimbleBluetooth->deinit();
+            powerMon->clearState(meshtastic_PowerMon_State_BT_On);
         }
-        // For ESP32, no way to recover from bluetooth shutdown without reboot
-        // BLE advertising automatically stops when MCU enters light-sleep(?)
-        // For deep-sleep, shutdown hardware with nimbleBluetooth->deinit(). Requires reboot to reverse
     }
 }
 #else

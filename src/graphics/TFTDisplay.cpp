@@ -68,7 +68,11 @@ class LGFX : public lgfx::LGFX_Device
             cfg.panel_height = TFT_HEIGHT; // actual displayable height
             cfg.offset_x = TFT_OFFSET_X;   // Panel offset amount in X direction
             cfg.offset_y = TFT_OFFSET_Y;   // Panel offset amount in Y direction
+#ifdef TFT_OFFSET_ROTATION
+            cfg.offset_rotation = TFT_OFFSET_ROTATION;
+#else
             cfg.offset_rotation = 0;       // Rotation direction value offset 0~7 (4~7 is upside down)
+#endif
             cfg.dummy_read_pixel = 8;      // Number of bits for dummy read before pixel readout
             cfg.dummy_read_bits = 1;       // Number of bits for dummy read before non-pixel data read
             cfg.readable = true;           // Set to true if data can be read
@@ -771,7 +775,11 @@ class LGFX : public lgfx::LGFX_Device
             cfg.panel_height = TFT_HEIGHT; // actual displayable height
             cfg.offset_x = TFT_OFFSET_X;   // Panel offset amount in X direction
             cfg.offset_y = TFT_OFFSET_Y;   // Panel offset amount in Y direction
+#ifdef TFT_OFFSET_ROTATION
+            cfg.offset_rotation = TFT_OFFSET_ROTATION;
+#else
             cfg.offset_rotation = 0;       // Rotation direction value offset 0~7 (4~7 is upside down)
+#endif
             cfg.dummy_read_pixel = 8;      // Number of bits for dummy read before pixel readout
             cfg.dummy_read_bits = 1;       // Number of bits for dummy read before non-pixel data read
             cfg.readable = true;           // Set to true if data can be read
@@ -1615,7 +1623,11 @@ bool TFTDisplay::connect()
 #elif ARCH_PORTDUINO || defined(SENSECAP_INDICATOR) || defined(T_LORA_PAGER)
     tft->setRotation(0); // use config.yaml to set rotation
 #else
+#if defined(MESHNODE_S3_TFT)
+    tft->setRotation(1);
+#else
     tft->setRotation(3); // Orient horizontal and wide underneath the silkscreen name label
+#endif
 #endif
     tft->fillScreen(getThemeDefaultOffColor());
 

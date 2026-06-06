@@ -149,6 +149,10 @@ bool initEthernet()
 
 static void onNetworkConnected()
 {
+#if defined(ARCH_ESP32) && !MESHTASTIC_EXCLUDE_BLUETOOTH
+    // Disable Bluetooth when WiFi connects to free memory and prevent crash loops
+    setBluetoothEnable(false);
+#endif
     if (!APStartupComplete) {
         // Start web server
         LOG_INFO("Start network services");
@@ -200,12 +204,20 @@ static void onNetworkConnected()
         }
 
 #if defined(ARCH_ESP32) && !MESHTASTIC_EXCLUDE_WEBSERVER
+#if defined(MESHNODE_S3_TFT)
+        if (true) {
+#else
         if (config.display.displaymode != meshtastic_Config_DisplayConfig_DisplayMode_COLOR) {
+#endif
             initWebServer();
         }
 #endif
 #if !MESHTASTIC_EXCLUDE_SOCKETAPI
+#if defined(MESHNODE_S3_TFT)
+        if (true) {
+#else
         if (config.display.displaymode != meshtastic_Config_DisplayConfig_DisplayMode_COLOR) {
+#endif
             initApiServer();
         }
 #endif
