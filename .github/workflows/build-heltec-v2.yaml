@@ -43,6 +43,7 @@ jobs:
         with:
           name: heltec-v2_0-firmware
           path: |
-            .pio/build/heltec-v2_0/firmware.bin
-            .pio/build/heltec-v2_0/firmware.elf
+            .pio/build/heltec-v2_0/firmware-heltec-v2_0-*.bin
+            .pio/build/heltec-v2_0/firmware-heltec-v2_0-*.elf
+            .pio/build/heltec-v2_0/littlefs-heltec-v2_0-*.bin
           retention-days: 30
