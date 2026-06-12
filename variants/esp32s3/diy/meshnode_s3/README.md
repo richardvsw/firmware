@@ -201,3 +201,15 @@ the root `platformio.ini` as a fallback.
 **WS2812 not lighting**
 - Power from 5V not 3.3V
 - 300–500Ω resistor on data line near first LED
+
+
+## Standalone Screen Test
+
+A minimal, standalone TFT screen test project is located in `tft_test/`. It bypasses the entire Meshtastic firmware and initializes only the ILI9341 display under the exact same **N16R8 (Octal PSRAM / `qio_opi`)** constraints.
+
+To compile and upload from PowerShell:
+```powershell
+cd variants\esp32s3\diy\meshnode_s3\tft_test
+$env:PYTHONIOENCODING="utf-8"; $env:PYTHONUTF8=1; pio run --target upload --upload-port COM19
+```
+It cycles screen colors (Red, Green, Blue) and prints debug messages to the Serial Monitor at `115200` baud.
