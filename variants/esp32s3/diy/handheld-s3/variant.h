@@ -1,12 +1,11 @@
 // Handheld-S3 Meshtastic Variant
-// Hardware: ESP32-S3 N16R8 + RFM95W + ILI9341 2.4" + CardKB (RP2040 emulator) + GK9501S GPS + BMP280
+// Hardware: ESP32-S3 N16R8 + RFM95W + ILI9341 2.4" + XPT2046 touch + GK9501S GPS
 // Based on meshnode_s3, stripped of encoder/RTC/buzzer/WS2812
 
 #pragma once
 
 // ─── Chip & Flash ────────────────────────────────────────────────────────────
-#define ARDUINO_ARCH_ESP32
-#define CONFIG_IDF_TARGET_ESP32S3
+// (Architecture macros defined by PlatformIO)
 
 // ─── USB ─────────────────────────────────────────────────────────────────────
 #define USES_CDC_SERIAL
@@ -15,35 +14,35 @@
 #define HW_SPI_SCK      12
 #define HW_SPI_MISO     13
 #define HW_SPI_MOSI     11
+#define SPI_SCK         HW_SPI_SCK
+#define SPI_MISO        HW_SPI_MISO
+#define SPI_MOSI        HW_SPI_MOSI
 
 // ─── LoRa RFM95W ─────────────────────────────────────────────────────────────
-#define USE_RF95
 #define LORA_SCK        12
 #define LORA_MISO       13
 #define LORA_MOSI       11
 #define LORA_CS         10
 #define LORA_RESET      9
 #define LORA_DIO0       14   // IRQ
-#define LORA_DIO1       15   // not used but defined
+#define LORA_DIO1       -1   // not connected on RFM95W
+#define LORA_DIO2       -1   // not connected
 
 // ─── ILI9341 Display ─────────────────────────────────────────────────────────
-#define USE_ST7789       // ILI9341 uses same driver family in LGFX
-#define SCREEN_ROTATE
-
-// Use LovyanGFX template driver
-#define LGFX_DRIVER_TEMPLATE
-
-// ILI9341 pins
 #define TFT_SCK         12
 #define TFT_MOSI        11
 #define TFT_MISO        13
-#define TFT_CS          5
-#define TFT_DC          6
-#define TFT_RST         7
-#define TFT_BL          8    // backlight PWM
+#define TFT_CS          15
+#define TFT_DC          16
+#define TFT_RST         3
+#define TFT_BL          4    // backlight PWM
 
-#define SCREEN_WIDTH    320
-#define SCREEN_HEIGHT   240
+// ─── XPT2046 Touch Controller ────────────────────────────────────────────────
+#define TOUCH_CS        5
+#define SCREEN_TOUCH_INT 6
+
+// ─── SD Card ─────────────────────────────────────────────────────────────────
+#define SDCARD_CS       7
 
 // ─── I2C (CardKB + BMP280) ───────────────────────────────────────────────────
 #define I2C_SDA         2
@@ -59,15 +58,15 @@
 
 // ─── GPS GK9501S ─────────────────────────────────────────────────────────────
 #define GPS_SERIAL_NUM  1
-#define GPS_RX_PIN      17
-#define GPS_TX_PIN      18
+#define GPS_RX_PIN      42
+#define GPS_TX_PIN      41
 #define GPS_BAUDRATE    9600
 #define HAS_GPS         1
 #define GPS_THREAD_INTERVAL 200
 
 // ─── Buttons ─────────────────────────────────────────────────────────────────
 #define BUTTON_PIN      0    // Boot button, used as user button
-#define BUTTON_ACTIVE_LOW
+#define BUTTON_ACTIVE_LOW true
 
 // ─── Power ───────────────────────────────────────────────────────────────────
 // No PMU on this build — USB powered or raw LiPo with external regulator
@@ -88,3 +87,6 @@
 #define LED_PIN         -1   // no onboard LED
 #define HAS_TELEMETRY   1
 #define HAS_ENVIRONMENTAL_SENSOR 1
+
+
+

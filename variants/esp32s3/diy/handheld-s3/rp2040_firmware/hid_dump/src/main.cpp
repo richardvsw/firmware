@@ -1,5 +1,6 @@
 // ─── hid_dump/src/main.cpp ────────────────────────────────────────────────────
 // Dumps all USB HID reports from Rii i8 dongle to USB Serial (CDC)
+#ifndef ARDUINO_ARCH_ESP32  // skip when compiled by ESP32-S3 toolchain
 // Use this FIRST to verify exact keycodes from your specific unit.
 //
 // Wiring:
@@ -118,3 +119,4 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
 
     tuh_hid_receive_report(dev_addr, instance);
 }
+#endif // ARDUINO_ARCH_ESP32

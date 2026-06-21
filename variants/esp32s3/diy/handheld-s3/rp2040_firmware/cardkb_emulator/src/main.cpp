@@ -1,5 +1,6 @@
 // ─── cardkb_emulator/src/main.cpp ────────────────────────────────────────────
 // RP2040 Zero — Rii i8 USB HID → CardKB I2C Emulator
+#ifndef ARDUINO_ARCH_ESP32  // skip when compiled by ESP32-S3 toolchain
 //
 // Core0: I2C slave @ 0x5F (CardKB protocol)
 // Core1: USB Host (pio_usb) reading Rii i8 dongle
@@ -231,3 +232,4 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
 
     tuh_hid_receive_report(dev_addr, instance);
 }
+#endif // ARDUINO_ARCH_ESP32

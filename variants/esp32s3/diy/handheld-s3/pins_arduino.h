@@ -1,7 +1,7 @@
-// pins_arduino.h — handheld-s3 variant
-// Required by Arduino-ESP32 framework alongside variant.h
+#ifndef Pins_Arduino_h
+#define Pins_Arduino_h
 
-#pragma once
+#include <stdint.h>
 #include "variant.h"
 
 // I2C
@@ -17,3 +17,5 @@ static const uint8_t SCK  = HW_SPI_SCK;
 // UART (GPS)
 static const uint8_t TX = GPS_TX_PIN;
 static const uint8_t RX = GPS_RX_PIN;
+
+#endif /* Pins_Arduino_h */
