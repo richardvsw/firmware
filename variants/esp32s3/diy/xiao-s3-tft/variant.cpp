@@ -1,3 +1,4 @@
+#ifndef NO_DISPLAY_TEST
 #include "variant.h"
 #include "Arduino.h"
 
@@ -63,5 +64,10 @@ void initVariant()
 #ifdef TOUCH_CS
     pinMode(TOUCH_CS,   OUTPUT);  digitalWrite(TOUCH_CS,   HIGH);
 #endif
+#ifdef SDCARD_CS
+    pinMode(SDCARD_CS,  OUTPUT);  digitalWrite(SDCARD_CS,  HIGH);
+#endif
     delay(10);
 }
+
+#endif // NO_DISPLAY_TEST

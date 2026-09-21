@@ -1,9 +1,63 @@
 // XIAO-S3-TFT Meshtastic Variant
-// Hardware: Seeed XIAO ESP32S3 + Wio-SX1262 baseboard + WeAct 2.8" ILI9341 SPI TFT + XPT2046 touch
+// Hardware: Seeed XIAO ESP32S3 + Wio-SX1262 baseboard + 3.5" ILI9488 SPI TFT (480x320) + XPT2046 touch
 // LoRa pinout copied from variants/esp32s3/seeed_xiao_s3 (official Wio-SX1262 support).
 // Display/touch/UI logic adapted from variants/esp32s3/diy/handheld-s3 (RFM95W -> SX1262 swap).
 
 #pragma once
+
+#ifdef NO_DISPLAY_TEST
+// Control config: identical to variants/esp32s3/seeed_xiao_s3/variant.h (official Wio-SX1262 support).
+#define LED_POWER 48
+#define LED_STATE_ON 1 // State when LED is lit
+
+#define BUTTON_PIN 21 // This is the Program Button
+#define BUTTON_NEED_PULLUP
+
+#define BATTERY_PIN -1
+#define ADC_CHANNEL ADC_CHANNEL_0
+#define BATTERY_SENSE_RESOLUTION_BITS 12
+
+#define GPS_L76K
+#ifdef GPS_L76K
+#define GPS_RX_PIN 44
+#define GPS_TX_PIN 43
+#define HAS_GPS 1
+#define GPS_THREAD_INTERVAL 50
+#define PIN_SERIAL1_RX PIN_GPS_TX
+#define PIN_SERIAL1_TX PIN_GPS_RX
+#define PIN_GPS_STANDBY 1
+#endif
+
+#define USCREEN_SSD1306
+
+#define I2C_SDA 5
+#define I2C_SCL 6
+
+#define USE_SX1262
+
+#define LORA_MISO 8
+#define LORA_SCK 7
+#define LORA_MOSI 9
+#define LORA_CS 41
+
+#define LORA_RESET 42
+#define LORA_DIO1 39
+
+#define LORA_DIO2 38
+
+#ifdef USE_SX1262
+#define SX126X_CS LORA_CS
+#define SX126X_DIO1 LORA_DIO1
+#define SX126X_BUSY 40
+#define SX126X_RESET LORA_RESET
+
+//  DIO2 controlls an antenna switch and the TCXO voltage is controlled by DIO3
+#define SX126X_DIO2_AS_RF_SWITCH
+#define SX126X_RXEN 38
+#define SX126X_TXEN RADIOLIB_NC
+#define SX126X_DIO3_TCXO_VOLTAGE 1.8
+#endif
+#else // !NO_DISPLAY_TEST
 
 // ─── Chip & Flash ────────────────────────────────────────────────────────────
 // (Architecture macros defined by PlatformIO)
@@ -28,6 +82,7 @@
 #define LORA_CS         41
 #define LORA_RESET      42
 #define LORA_DIO1       39
+#define LORA_DIO2       38
 
 #define SX126X_CS               LORA_CS
 #define SX126X_DIO1              LORA_DIO1
@@ -39,7 +94,9 @@
 #define SX126X_TXEN              RADIOLIB_NC
 #define SX126X_DIO3_TCXO_VOLTAGE 1.8
 
-// ─── ILI9341 Display (WeAct 2.8", shares SPI bus with LoRa) ──────────────────
+// ─── ILI9488 Display (3.5" 480x320, shares SPI bus with LoRa) ────────────────
+// Do NOT wire the LCD's SDO/MISO pin: ILI9488 keeps driving it when deselected, the radio then
+// fails init ("SX126x init result -2"). The display is write-only; touch T_DO still goes to MISO.
 #define TFT_SCK         HW_SPI_SCK
 #define TFT_MOSI        HW_SPI_MOSI
 #define TFT_MISO        HW_SPI_MISO
@@ -51,6 +108,17 @@
 // ─── XPT2046 Touch Controller (shares SPI bus, polling mode — no IRQ pin) ────
 #define TOUCH_CS        5    // XIAO D4
 #define SCREEN_TOUCH_INT -1  // not wired, polled via SPI
+
+// ─── SD card (SPI, shares the bus; only CS needed) ───────────────────────────
+#define SDCARD_CS       44   // XIAO D7
+
+// ─── GPS (UART) — defaults only; override in the app: Position > GPS RX/TX GPIO ─
+// I2C is compiled out (MESHTASTIC_EXCLUDE_I2C) so D5/D6 are free for this.
+#define GPS_RX_PIN      6    // XIAO D5  <- GPS module TX
+#define GPS_TX_PIN      43   // XIAO D6  -> GPS module RX
+#define GPS_BAUDRATE    9600
+#define GPS_THREAD_INTERVAL 50
+#define HAS_GPS         1
 
 // ─── Button ──────────────────────────────────────────────────────────────────
 #define BUTTON_PIN      21   // XIAO onboard BOOT button
@@ -69,8 +137,11 @@
 #undef INPUTBROKER_MATRIX_TYPE
 
 // ─── MUI / LVGL ──────────────────────────────────────────────────────────────
-#define USE_EINK_DYNAMICDISPLAY 0
-#define HAS_SCREEN      1
+// HAS_SCREEN is set by the platformio env (0: MUI drives the TFT, legacy Screen is excluded)
 
 // ─── Misc ────────────────────────────────────────────────────────────────────
-#define LED_PIN         -1   // no onboard status LED wired
+// Wio-SX1262 green power LED is driven from GPIO48 (same as the official seeed_xiao_s3 variant)
+#define LED_POWER       48
+#define LED_STATE_ON    1
+
+#endif // NO_DISPLAY_TEST
