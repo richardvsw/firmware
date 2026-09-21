@@ -1,4 +1,3 @@
-#ifndef NO_DISPLAY_TEST
 #include "variant.h"
 #include "Arduino.h"
 
@@ -70,4 +69,3 @@ void initVariant()
     delay(10);
 }
 
-#endif // NO_DISPLAY_TEST

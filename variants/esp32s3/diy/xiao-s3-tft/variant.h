@@ -1,63 +1,9 @@
 // XIAO-S3-TFT Meshtastic Variant
-// Hardware: Seeed XIAO ESP32S3 + Wio-SX1262 baseboard + 3.5" ILI9488 SPI TFT (480x320) + XPT2046 touch
+// Hardware: Seeed XIAO ESP32S3 + Wio-SX1262 baseboard + 3.5" ILI9488 IPS SPI TFT (landscape 480x320 or portrait 320x480) + XPT2046 touch
 // LoRa pinout copied from variants/esp32s3/seeed_xiao_s3 (official Wio-SX1262 support).
 // Display/touch/UI logic adapted from variants/esp32s3/diy/handheld-s3 (RFM95W -> SX1262 swap).
 
 #pragma once
-
-#ifdef NO_DISPLAY_TEST
-// Control config: identical to variants/esp32s3/seeed_xiao_s3/variant.h (official Wio-SX1262 support).
-#define LED_POWER 48
-#define LED_STATE_ON 1 // State when LED is lit
-
-#define BUTTON_PIN 21 // This is the Program Button
-#define BUTTON_NEED_PULLUP
-
-#define BATTERY_PIN -1
-#define ADC_CHANNEL ADC_CHANNEL_0
-#define BATTERY_SENSE_RESOLUTION_BITS 12
-
-#define GPS_L76K
-#ifdef GPS_L76K
-#define GPS_RX_PIN 44
-#define GPS_TX_PIN 43
-#define HAS_GPS 1
-#define GPS_THREAD_INTERVAL 50
-#define PIN_SERIAL1_RX PIN_GPS_TX
-#define PIN_SERIAL1_TX PIN_GPS_RX
-#define PIN_GPS_STANDBY 1
-#endif
-
-#define USCREEN_SSD1306
-
-#define I2C_SDA 5
-#define I2C_SCL 6
-
-#define USE_SX1262
-
-#define LORA_MISO 8
-#define LORA_SCK 7
-#define LORA_MOSI 9
-#define LORA_CS 41
-
-#define LORA_RESET 42
-#define LORA_DIO1 39
-
-#define LORA_DIO2 38
-
-#ifdef USE_SX1262
-#define SX126X_CS LORA_CS
-#define SX126X_DIO1 LORA_DIO1
-#define SX126X_BUSY 40
-#define SX126X_RESET LORA_RESET
-
-//  DIO2 controlls an antenna switch and the TCXO voltage is controlled by DIO3
-#define SX126X_DIO2_AS_RF_SWITCH
-#define SX126X_RXEN 38
-#define SX126X_TXEN RADIOLIB_NC
-#define SX126X_DIO3_TCXO_VOLTAGE 1.8
-#endif
-#else // !NO_DISPLAY_TEST
 
 // ─── Chip & Flash ────────────────────────────────────────────────────────────
 // (Architecture macros defined by PlatformIO)
@@ -65,7 +11,7 @@
 // ─── USB ─────────────────────────────────────────────────────────────────────
 #define USES_CDC_SERIAL
 
-// ─── SPI (Wio-SX1262 hardware SPI bus, shared with ILI9341 + XPT2046) ────────
+// ─── SPI (Wio-SX1262 hardware SPI bus, shared with ILI9488 + XPT2046 + SD) ────────
 #define HW_SPI_SCK      7
 #define HW_SPI_MISO     8
 #define HW_SPI_MOSI     9
@@ -121,7 +67,7 @@
 #define HAS_GPS         1
 
 // ─── Button ──────────────────────────────────────────────────────────────────
-#define BUTTON_PIN      21   // XIAO onboard BOOT button
+#define BUTTON_PIN      21   // XIAO user LED / Wio user button (GPIO21); unused, input broker is excluded
 #define BUTTON_NEED_PULLUP
 
 // ─── Power ───────────────────────────────────────────────────────────────────
@@ -129,8 +75,7 @@
 #undef HAS_AXP192
 #undef HAS_AXP2101
 
-// ─── No GPS / SD / CardKB / sensor / encoder / RTC / buzzer / WS2812 ─────────
-// XIAO D5/D6/D7 (GPIO6/43/44) are left free for future expansion (I2C, GPS, etc.)
+// ─── Not fitted: RTC / buzzer / WS2812 / matrix keyboard (all XIAO header pins D0-D10 are in use) ─────────
 #undef HAS_RTC
 #undef HAS_BUZZER
 #undef HAS_WS2812
@@ -144,4 +89,3 @@
 #define LED_POWER       48
 #define LED_STATE_ON    1
 
-#endif // NO_DISPLAY_TEST
