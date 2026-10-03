@@ -1,0 +1,332 @@
+#ifdef INPUTDRIVER_ENCODER_TYPE
+
+#include "input/EncoderInputDriver.h"
+#include "Arduino.h"
+#include "util/ILog.h"
+#include <limits.h>
+
+volatile EncoderInputDriver::EncoderActionType EncoderInputDriver::action = TB_ACTION_NONE;
+
+// JOYSTICK NAVIGATION STATE
+static lv_obj_t *joyLastSidebar = NULL;
+static lv_obj_t *joyLastContent = NULL;
+static bool joyChatScrolling = false;
+
+// CHAT WIDGETS, SET BY TFTView_320x240.cpp
+lv_obj_t *joyMessagesPanel = NULL;
+lv_obj_t *joyMessageInput = NULL;
+lv_obj_t *joyKeyboardButton = NULL;
+
+// SIDEBAR = LEFT NAVIGATION BUTTON COLUMN
+static bool joyIsSidebar(lv_obj_t *o)
+{
+    lv_area_t a;
+    lv_obj_get_coords(o, &a);
+    return a.x2 < 48;
+}
+
+static void joyTrack(void)
+{
+    lv_group_t *g = lv_group_get_default();
+    lv_obj_t *f = g ? lv_group_get_focused(g) : NULL;
+    if (!f)
+        return;
+    // CHAT TEXT FIELD IS NOT A STOP, THE KEYBOARD BUTTON OPENS THE KEYBOARD
+    if (f == joyMessageInput && joyKeyboardButton && lv_obj_is_visible(joyKeyboardButton)) {
+        lv_group_focus_obj(joyKeyboardButton);
+        return;
+    }
+    if (joyIsSidebar(f))
+        joyLastSidebar = f;
+    else
+        joyLastContent = f;
+}
+
+// NEAREST FOCUSABLE OBJECT IN A DIRECTION, LIKE A PHONE DPAD
+static lv_obj_t *joyNeighbor(lv_group_t *g, lv_obj_t *cur, int dx, int dy, bool sameRegion)
+{
+    lv_area_t c;
+    lv_obj_get_coords(cur, &c);
+    int cx = (c.x1 + c.x2) / 2;
+    int cy = (c.y1 + c.y2) / 2;
+    bool curSide = joyIsSidebar(cur);
+    lv_obj_t *best = NULL;
+    long bestScore = LONG_MAX;
+    uint32_t n = lv_group_get_obj_count(g);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *o = lv_group_get_obj_by_index(g, i);
+        if (!o || o == cur || o == joyMessageInput || !lv_obj_is_visible(o) || lv_obj_has_state(o, LV_STATE_DISABLED))
+            continue;
+        if (sameRegion && joyIsSidebar(o) != curSide)
+            continue;
+        lv_area_t a;
+        lv_obj_get_coords(o, &a);
+        int ox = (a.x1 + a.x2) / 2;
+        int oy = (a.y1 + a.y2) / 2;
+        int along = dx ? (ox - cx) * dx : (oy - cy) * dy;
+        int across = dx ? oy - cy : ox - cx;
+        if (along <= 0)
+            continue;
+        if (across < 0)
+            across = -across;
+        long score = along + 3L * across;
+        if (score < bestScore) {
+            bestScore = score;
+            best = o;
+        }
+    }
+    return best;
+}
+
+// VISIBLE MESSAGE LIST OF THE CHAT PANEL
+static lv_obj_t *joyFindChat(void)
+{
+    lv_obj_t *p = joyMessagesPanel;
+    if (!p)
+        return NULL;
+    uint32_t n = lv_obj_get_child_count(p);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *c = lv_obj_get_child(p, i);
+        if (!lv_obj_has_class(c, &lv_obj_class) || !lv_obj_is_visible(c) || !lv_obj_has_flag(c, LV_OBJ_FLAG_SCROLLABLE) ||
+            lv_obj_get_height(c) < 80)
+            continue;
+        return c;
+    }
+    return NULL;
+}
+
+// CHAT: UP FROM THE KEYBOARD BUTTON SCROLLS THE MESSAGES, DOWN TO THE END RETURNS TO THE BUTTON
+static bool joyChatNavigate(lv_obj_t *f, bool up, bool down)
+{
+    if (f != joyKeyboardButton || !joyMessagesPanel || !lv_obj_is_visible(joyMessagesPanel)) {
+        joyChatScrolling = false;
+        return false;
+    }
+    lv_obj_t *chat = joyFindChat();
+    if (!chat) {
+        joyChatScrolling = false;
+        return false;
+    }
+    const int32_t step = 48;
+    int32_t top = lv_obj_get_scroll_top(chat);
+    int32_t bottom = lv_obj_get_scroll_bottom(chat);
+    // ENTER THE MESSAGE LIST WHEN IT HAS ANYTHING TO SCROLL
+    if (up && !joyChatScrolling && (top > 0 || bottom > 0))
+        joyChatScrolling = true;
+    if (!joyChatScrolling)
+        return false;
+    if (up) {
+        if (top > 0)
+            lv_obj_scroll_by(chat, 0, top < step ? top : step, LV_ANIM_OFF);
+        return true;
+    }
+    if (down) {
+        if (bottom > 0)
+            lv_obj_scroll_by(chat, 0, -(bottom < step ? bottom : step), LV_ANIM_OFF);
+        if (lv_obj_get_scroll_bottom(chat) <= 0)
+            joyChatScrolling = false;
+        return true;
+    }
+    return false;
+}
+
+static void joyNavigate(lv_indev_data_t *data, bool up, bool down, bool left, bool right)
+{
+    lv_group_t *g = lv_group_get_default();
+    lv_obj_t *f = g ? lv_group_get_focused(g) : NULL;
+    if (!f) {
+        data->enc_diff = (up || left) ? -1 : 1;
+        return;
+    }
+
+    // KEYBOARD: REAL DIRECTION KEYS
+    if (lv_obj_has_class(f, &lv_keyboard_class)) {
+        joyChatScrolling = false;
+        data->key = up ? LV_KEY_UP : down ? LV_KEY_DOWN : left ? LV_KEY_LEFT : LV_KEY_RIGHT;
+        data->state = LV_INDEV_STATE_PRESSED;
+        return;
+    }
+
+    // SLIDER: LEFT/RIGHT ADJUST
+    if ((left || right) && lv_obj_has_class(f, &lv_slider_class)) {
+        data->key = left ? LV_KEY_DOWN : LV_KEY_UP;
+        data->state = LV_INDEV_STATE_PRESSED;
+        return;
+    }
+
+    // CHAT SCROLL
+    if ((up || down) && joyChatNavigate(f, up, down))
+        return;
+    if (left || right)
+        joyChatScrolling = false;
+
+    lv_obj_t *t = NULL;
+    if (left) {
+        if (!joyIsSidebar(f)) {
+            t = joyNeighbor(g, f, -1, 0, false);
+            if ((!t || joyIsSidebar(t)) && joyLastSidebar && lv_obj_is_visible(joyLastSidebar))
+                t = joyLastSidebar;
+        }
+    } else if (right) {
+        if (joyIsSidebar(f) && joyLastContent && lv_obj_is_visible(joyLastContent) && !joyIsSidebar(joyLastContent))
+            t = joyLastContent;
+        else
+            t = joyNeighbor(g, f, 1, 0, false);
+    } else {
+        t = joyNeighbor(g, f, 0, up ? -1 : 1, true);
+    }
+
+    if (t)
+        lv_group_focus_obj(t);
+    else if (up || down)
+        data->enc_diff = up ? -1 : 1;
+}
+
+EncoderInputDriver::EncoderInputDriver(void) {}
+
+void EncoderInputDriver::init(void)
+{
+    // trackball or joystick type encoder with four directions
+    if (INPUTDRIVER_ENCODER_TYPE == 3) {
+#ifdef INPUTDRIVER_ENCODER_LEFT
+        pinMode(INPUTDRIVER_ENCODER_LEFT, INPUT_PULLUP);
+        attachInterrupt(INPUTDRIVER_ENCODER_LEFT, intLeftHandler, RISING);
+#endif
+#ifdef INPUTDRIVER_ENCODER_RIGHT
+        pinMode(INPUTDRIVER_ENCODER_RIGHT, INPUT_PULLUP);
+        attachInterrupt(INPUTDRIVER_ENCODER_RIGHT, intRightHandler, RISING);
+#endif
+#ifdef INPUTDRIVER_ENCODER_UP
+        pinMode(INPUTDRIVER_ENCODER_UP, INPUT_PULLUP);
+        attachInterrupt(INPUTDRIVER_ENCODER_UP, intUpHandler, RISING);
+#endif
+#ifdef INPUTDRIVER_ENCODER_DOWN
+        pinMode(INPUTDRIVER_ENCODER_DOWN, INPUT_PULLUP);
+        attachInterrupt(INPUTDRIVER_ENCODER_DOWN, intDownHandler, RISING);
+#endif
+#ifdef INPUTDRIVER_ENCODER_BTN
+        pinMode(INPUTDRIVER_ENCODER_BTN, INPUT_PULLUP);
+#endif
+    }
+
+    encoder = lv_indev_create();
+    lv_indev_set_type(encoder, LV_INDEV_TYPE_ENCODER);
+    lv_indev_set_read_cb(encoder, encoder_read);
+
+    if (!inputGroup) {
+        inputGroup = lv_group_create();
+        lv_group_set_default(inputGroup);
+    }
+    lv_indev_set_group(encoder, inputGroup);
+}
+
+void EncoderInputDriver::encoder_read(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    // encoder w/o interrupts but read GPIOs directly
+    if (INPUTDRIVER_ENCODER_TYPE == 1) {
+#ifdef INPUTDRIVER_ENCODER_LEFT
+        if (digitalRead(INPUTDRIVER_ENCODER_LEFT))
+            data->enc_diff = -1;
+#endif
+#ifdef INPUTDRIVER_ENCODER_RIGHT
+        if (digitalRead(INPUTDRIVER_ENCODER_RIGHT))
+            data->enc_diff = 1;
+#endif
+#ifdef INPUTDRIVER_ENCODER_BTN
+        // FIXME: need same logix as below to trigger LONG_PRESSED events
+        if (!digitalRead(INPUTDRIVER_ENCODER_BTN)) {
+            data->key = LV_KEY_ENTER;
+            data->state = LV_INDEV_STATE_PRESSED;
+        }
+#endif
+    }
+    // trackball/joystick with additional up/down inputs to control sliders
+    else if (INPUTDRIVER_ENCODER_TYPE == 3) {
+        static uint32_t prevkey = 0;
+        static uint32_t lastPressed = millis();
+
+        data->key = 0;
+        data->enc_diff = 0;
+        data->state = LV_INDEV_STATE_RELEASED;
+
+        joyTrack();
+
+#ifdef INPUTDRIVER_ENCODER_BTN
+        if (action == TB_ACTION_NONE) {
+            if (!digitalRead(INPUTDRIVER_ENCODER_BTN)) {
+                action = TB_ACTION_PRESSED;
+            }
+        }
+#endif
+        // slow down repeating key to max. four events per second
+        // the button is an exception for LONG_PRESSED monitoring
+        if (action != TB_ACTION_NONE && (action == TB_ACTION_PRESSED || millis() > lastPressed + 250)) {
+            if (action == TB_ACTION_PRESSED) {
+                joyChatScrolling = false;
+                data->key = LV_KEY_ENTER;
+                data->state = LV_INDEV_STATE_PRESSED;
+            } else {
+                joyNavigate(data, action == TB_ACTION_UP, action == TB_ACTION_DOWN, action == TB_ACTION_LEFT,
+                            action == TB_ACTION_RIGHT);
+            }
+
+            lastPressed = millis();
+            prevkey = data->key;
+            action = TB_ACTION_NONE;
+        } else {
+            // this logic is required for LONG_PRESSED event, see lv_indev.c
+            if (prevkey != 0) {
+                data->state = LV_INDEV_STATE_RELEASED;
+                data->key = prevkey;
+                prevkey = 0;
+            }
+        }
+    }
+}
+
+void EncoderInputDriver::intPressHandler()
+{
+    action = TB_ACTION_PRESSED;
+}
+
+void EncoderInputDriver::intDownHandler()
+{
+    static uint32_t lastEdge = 0;
+    uint32_t now = millis();
+    if (now - lastEdge < 150)
+        return;
+    lastEdge = now;
+    action = TB_ACTION_DOWN;
+}
+
+void EncoderInputDriver::intUpHandler()
+{
+    static uint32_t lastEdge = 0;
+    uint32_t now = millis();
+    if (now - lastEdge < 150)
+        return;
+    lastEdge = now;
+    action = TB_ACTION_UP;
+}
+
+void EncoderInputDriver::intLeftHandler()
+{
+    static uint32_t lastEdge = 0;
+    uint32_t now = millis();
+    if (now - lastEdge < 150)
+        return;
+    lastEdge = now;
+    action = TB_ACTION_LEFT;
+}
+
+void EncoderInputDriver::intRightHandler()
+{
+    static uint32_t lastEdge = 0;
+    uint32_t now = millis();
+    if (now - lastEdge < 150)
+        return;
+    lastEdge = now;
+    action = TB_ACTION_RIGHT;
+}
+
+#endif
