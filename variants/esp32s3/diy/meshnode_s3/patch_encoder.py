@@ -121,54 +121,70 @@ def patch_encoder_iram(source, target, env):
             }
         }"""
 
-        new_btn_read = """#ifdef INPUTDRIVER_ENCODER_BTN
-        // Poll button (INPUT_PULLUP: LOW = pressed).
-        // On release, decide short vs long press and route through action so the
-        // existing pressed→released state machine (prevkey/else branch) works correctly.
+        new_btn_read = """data->enc_diff = 0;
+        data->state = LV_INDEV_STATE_RELEASED;
+
+        // Auto-enter editing mode whenever a keyboard widget is focused so
+        // enc_diff routes through lv_group_send_data(KEY_LEFT/RIGHT) instead
+        // of cycling focus between group objects.
+        {
+            lv_group_t *encGroup = lv_group_get_default();
+            if (encGroup) {
+                lv_obj_t *focusedObj = lv_group_get_focused(encGroup);
+                if (focusedObj && lv_obj_check_type(focusedObj, &lv_keyboard_class)
+                        && !lv_group_get_editing(encGroup)) {
+                    lv_group_set_editing(encGroup, true);
+                }
+            }
+        }
+
+#ifdef INPUTDRIVER_ENCODER_BTN
+        // Button mirrors touchscreen: sustain PRESSED while held, RELEASED on release.
+        // LVGL decides click vs long_press at its 400 ms threshold — identical to touch.
+        // Noise filter: ignore presses shorter than 20 ms.
         bool pinHeld = !digitalRead(INPUTDRIVER_ENCODER_BTN);
         uint32_t now = millis();
+
         if (pinHeld && !btnWasHeld) {
             btnPressTime = now;
             btnWasHeld   = true;
         } else if (!pinHeld && btnWasHeld) {
-            uint32_t held = now - btnPressTime;
-            btnWasHeld    = false;
-            if (held >= 600) {
-                action = TB_ACTION_LEFT;    // long press -> ESC/back
-            } else if (held >= 20) {
-                action = TB_ACTION_PRESSED; // short press -> ENTER
+            btnWasHeld = false;
+            if (now - btnPressTime < 20) {
+                prevkey = 0;  // noise: cancel any PRESSED we started reporting
             }
-            // < 20 ms: noise, ignore
+            // RELEASED handled by prevkey block below
+        }
+
+        if (btnWasHeld && (now - btnPressTime) >= 20) {
+            data->key   = LV_KEY_ENTER;
+            data->state = LV_INDEV_STATE_PRESSED;
+            prevkey     = LV_KEY_ENTER;
+        } else if (!btnWasHeld && prevkey == LV_KEY_ENTER) {
+            data->key   = LV_KEY_ENTER;
+            data->state = LV_INDEV_STATE_RELEASED;
+            prevkey     = 0;
         }
 #endif
 
-        if (action != TB_ACTION_NONE &&
-            (action == TB_ACTION_PRESSED || action == TB_ACTION_LEFT || millis() > lastPressed + 100)) {
-            if (action == TB_ACTION_PRESSED) {
-                data->key   = LV_KEY_ENTER;
-                data->state = LV_INDEV_STATE_PRESSED;
-            } else if (action == TB_ACTION_UP) {
+        // Encoder rotation (rate-limited to 100 ms between steps)
+        if (action != TB_ACTION_NONE && millis() > lastPressed + 100) {
+            if (action == TB_ACTION_UP) {
                 data->enc_diff = -1;
             } else if (action == TB_ACTION_DOWN) {
                 data->enc_diff = 1;
-            } else if (action == TB_ACTION_LEFT) {
-                data->key   = LV_KEY_ESC;
-                data->state = LV_INDEV_STATE_PRESSED;
             } else if (action == TB_ACTION_RIGHT) {
                 data->key   = LV_KEY_UP;
                 data->state = LV_INDEV_STATE_PRESSED;
+                prevkey     = LV_KEY_UP;
             }
-
             lastPressed = millis();
-            prevkey = data->key;
-            action  = TB_ACTION_NONE;
-        } else {
-            // this logic is required for LONG_PRESSED event, see lv_indev.c
-            if (prevkey != 0) {
-                data->state = LV_INDEV_STATE_RELEASED;
-                data->key   = prevkey;
-                prevkey     = 0;
-            }
+            action      = TB_ACTION_NONE;
+        } else if (prevkey != 0 && prevkey != LV_KEY_ENTER) {
+            // complete RELEASED cycle for RIGHT
+            data->key   = prevkey;
+            data->state = LV_INDEV_STATE_RELEASED;
+            prevkey     = 0;
         }"""
 
         # The btnPressed latch variable declaration (inserted after lastPressed)
@@ -356,12 +372,104 @@ def patch_encoder_iram(source, target, env):
             with open(filepath_tft, 'w', encoding='utf-8') as f:
                 f.write(content)
 
+    # 6. Patch TFTView_320x240.cpp — shift LVGL encoder focus + editing mode to the
+    # on-screen keyboard when it becomes visible, so enc_diff routes LV_KEY_RIGHT/LEFT
+    # into the keyboard widget (requires editing mode, not just focus).
+    filepath_tft_view = env.subst("$PROJECT_DIR/.pio/libdeps/${PIOENV}/meshtastic-device-ui/source/graphics/TFT/TFTView_320x240.cpp")
+    if os.path.exists(filepath_tft_view):
+        with open(filepath_tft_view, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # shown_cb final state (upstream → final, single-pass)
+        old_shown_cb = """        static auto shown_cb = [](_lv_anim_t *) { kbdSlideState = eKbdShown; };"""
+        new_shown_cb = """        static auto shown_cb = [](_lv_anim_t *) {
+            kbdSlideState = eKbdShown;
+            if (lv_obj_get_group(objects.keyboard) == NULL)
+                lv_group_add_obj(lv_group_get_default(), objects.keyboard);
+            lv_group_focus_obj(objects.keyboard);
+            lv_group_set_editing(lv_group_get_default(), true);
+        };"""
+
+        # shown_cb intermediate → final (TFTView already patched once without editing mode)
+        old_shown_cb_v1 = """        static auto shown_cb = [](_lv_anim_t *) {
+            kbdSlideState = eKbdShown;
+            if (lv_obj_get_group(objects.keyboard) == NULL)
+                lv_group_add_obj(lv_group_get_default(), objects.keyboard);
+            lv_group_focus_obj(objects.keyboard);
+        };"""
+        # new_shown_cb is the same final target
+
+        # deleted_cb final state (upstream → final)
+        old_deleted_cb = """            lv_obj_add_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN);
+            kbdSlideState = eKbdHidden;
+        };"""
+        new_deleted_cb = """            lv_obj_add_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN);
+            kbdSlideState = eKbdHidden;
+            lv_group_set_editing(lv_group_get_default(), false);
+            lv_group_focus_obj(objects.message_input_area);
+        };"""
+
+        # deleted_cb intermediate → final (has focus call but no editing=false)
+        old_deleted_cb_v1 = """            lv_obj_add_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN);
+            kbdSlideState = eKbdHidden;
+            lv_group_focus_obj(objects.message_input_area);
+        };"""
+        # new_deleted_cb is the same final target
+
+        # showKeyboard else-branch upstream → final
+        old_set_textarea = """    lv_keyboard_set_textarea(objects.keyboard, textArea);
+}
+
+void TFTView_320x240::hideKeyboard"""
+        new_set_textarea = """    lv_keyboard_set_textarea(objects.keyboard, textArea);
+    if (textArea != objects.message_input_area) {
+        if (lv_obj_get_group(objects.keyboard) == NULL)
+            lv_group_add_obj(lv_group_get_default(), objects.keyboard);
+        lv_group_focus_obj(objects.keyboard);
+        lv_group_set_editing(lv_group_get_default(), true);
+    }
+}
+
+void TFTView_320x240::hideKeyboard"""
+
+        # showKeyboard else-branch intermediate → final (has focus but no editing mode)
+        old_set_textarea_v1 = """    lv_keyboard_set_textarea(objects.keyboard, textArea);
+    if (textArea != objects.message_input_area) {
+        if (lv_obj_get_group(objects.keyboard) == NULL)
+            lv_group_add_obj(lv_group_get_default(), objects.keyboard);
+        lv_group_focus_obj(objects.keyboard);
+    }
+}
+
+void TFTView_320x240::hideKeyboard"""
+        # new_set_textarea is the same final target
+
+        changed = False
+        for old, new in [
+            (old_shown_cb,       new_shown_cb),
+            (old_shown_cb_v1,    new_shown_cb),
+            (old_deleted_cb,     new_deleted_cb),
+            (old_deleted_cb_v1,  new_deleted_cb),
+            (old_set_textarea,   new_set_textarea),
+            (old_set_textarea_v1, new_set_textarea),
+        ]:
+            if old in content and new not in content:
+                content = content.replace(old, new)
+                changed = True
+
+        if changed:
+            print(f"Patched {filepath_tft_view}: encoder focus + editing mode for on-screen keyboard")
+            with open(filepath_tft_view, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+
 # Run immediately when PlatformIO loads this script (ensures files are patched BEFORE dependency checking/compilation)
 patch_encoder_iram(None, None, env)
 
 env.AddPreAction("buildprog", patch_encoder_iram)
 env.AddPreAction("$PROJECT_DIR/.pio/libdeps/${PIOENV}/meshtastic-device-ui/source/input/EncoderInputDriver.cpp.o", patch_encoder_iram)
 env.AddPreAction("$PROJECT_DIR/.pio/libdeps/${PIOENV}/lvgl/src/widgets/dropdown/lv_dropdown.c.o", patch_encoder_iram)
+env.AddPreAction("$PROJECT_DIR/.pio/libdeps/${PIOENV}/meshtastic-device-ui/source/graphics/TFT/TFTView_320x240.cpp.o", patch_encoder_iram)
 env.AddPreAction("$PROJECT_DIR/src/graphics/TFTDisplay.cpp", patch_encoder_iram)
 env.AddPreAction("$PROJECT_DIR/src/graphics/TFTDisplay.cpp.o", patch_encoder_iram)
 env.AddPreAction("$PROJECT_DIR/src/mesh/api/ServerAPI.cpp", patch_encoder_iram)
