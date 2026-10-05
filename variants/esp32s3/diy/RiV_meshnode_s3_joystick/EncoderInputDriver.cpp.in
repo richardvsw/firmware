@@ -8,21 +8,45 @@
 volatile EncoderInputDriver::EncoderActionType EncoderInputDriver::action = TB_ACTION_NONE;
 
 // JOYSTICK NAVIGATION STATE
-static lv_obj_t *joyLastSidebar = NULL;
+static lv_obj_t *joyLastNav = NULL;
 static lv_obj_t *joyLastContent = NULL;
 static bool joyChatScrolling = false;
 
-// CHAT WIDGETS, SET BY TFTView_320x240.cpp
+// WIDGETS, SET BY TFTView_320x240.cpp
+lv_obj_t *joyHomeButton = NULL;
 lv_obj_t *joyMessagesPanel = NULL;
 lv_obj_t *joyMessageInput = NULL;
 lv_obj_t *joyKeyboardButton = NULL;
 
-// SIDEBAR = LEFT NAVIGATION BUTTON COLUMN
-static bool joyIsSidebar(lv_obj_t *o)
+// DIRECTIONS, OPPOSITE = DIR ^ 1
+enum { JOY_LEFT = 0, JOY_RIGHT = 1, JOY_UP = 2, JOY_DOWN = 3 };
+
+// NAVIGATION BAR = CONTAINER OF THE HOME BUTTON (LEFT COLUMN IN LANDSCAPE, BOTTOM ROW IN PORTRAIT)
+static lv_obj_t *joyNavBar(void)
 {
+    return joyHomeButton ? lv_obj_get_parent(joyHomeButton) : NULL;
+}
+
+static bool joyIsNav(lv_obj_t *o)
+{
+    lv_obj_t *bar = joyNavBar();
+    return bar && o && lv_obj_get_parent(o) == bar;
+}
+
+// DIRECTION THAT LEADS FROM THE CONTENT TO THE NAVIGATION BAR
+static int joyBackDir(void)
+{
+    lv_obj_t *bar = joyNavBar();
+    if (!bar)
+        return JOY_LEFT;
     lv_area_t a;
-    lv_obj_get_coords(o, &a);
-    return a.x2 < 48;
+    lv_obj_get_coords(bar, &a);
+    lv_display_t *d = lv_display_get_default();
+    int sw = d ? lv_display_get_horizontal_resolution(d) : 320;
+    int sh = d ? lv_display_get_vertical_resolution(d) : 240;
+    if ((a.x2 - a.x1) > (a.y2 - a.y1))
+        return ((a.y1 + a.y2) / 2 > sh / 2) ? JOY_DOWN : JOY_UP;
+    return ((a.x1 + a.x2) / 2 < sw / 2) ? JOY_LEFT : JOY_RIGHT;
 }
 
 static void joyTrack(void)
@@ -36,20 +60,22 @@ static void joyTrack(void)
         lv_group_focus_obj(joyKeyboardButton);
         return;
     }
-    if (joyIsSidebar(f))
-        joyLastSidebar = f;
+    if (joyIsNav(f))
+        joyLastNav = f;
     else
         joyLastContent = f;
 }
 
 // NEAREST FOCUSABLE OBJECT IN A DIRECTION, LIKE A PHONE DPAD
-static lv_obj_t *joyNeighbor(lv_group_t *g, lv_obj_t *cur, int dx, int dy, bool sameRegion)
+static lv_obj_t *joyNeighbor(lv_group_t *g, lv_obj_t *cur, int dir, bool sameRegion)
 {
+    int dx = dir == JOY_RIGHT ? 1 : dir == JOY_LEFT ? -1 : 0;
+    int dy = dir == JOY_DOWN ? 1 : dir == JOY_UP ? -1 : 0;
     lv_area_t c;
     lv_obj_get_coords(cur, &c);
     int cx = (c.x1 + c.x2) / 2;
     int cy = (c.y1 + c.y2) / 2;
-    bool curSide = joyIsSidebar(cur);
+    bool curNav = joyIsNav(cur);
     lv_obj_t *best = NULL;
     long bestScore = LONG_MAX;
     uint32_t n = lv_group_get_obj_count(g);
@@ -57,7 +83,7 @@ static lv_obj_t *joyNeighbor(lv_group_t *g, lv_obj_t *cur, int dx, int dy, bool 
         lv_obj_t *o = lv_group_get_obj_by_index(g, i);
         if (!o || o == cur || o == joyMessageInput || !lv_obj_is_visible(o) || lv_obj_has_state(o, LV_STATE_DISABLED))
             continue;
-        if (sameRegion && joyIsSidebar(o) != curSide)
+        if (sameRegion && joyIsNav(o) != curNav)
             continue;
         lv_area_t a;
         lv_obj_get_coords(o, &a);
@@ -130,6 +156,38 @@ static bool joyChatNavigate(lv_obj_t *f, bool up, bool down)
     return false;
 }
 
+// NEXT FOCUSABLE SIBLING ABOVE/BELOW IN THE SAME LIST, INCLUDING ROWS SCROLLED OFF SCREEN
+static lv_obj_t *joyListNeighbor(lv_obj_t *f, bool down)
+{
+    lv_obj_t *p = lv_obj_get_parent(f);
+    lv_group_t *g = lv_obj_get_group(f);
+    if (!p || !g)
+        return NULL;
+    lv_area_t fa;
+    lv_obj_get_coords(f, &fa);
+    lv_obj_t *best = NULL;
+    int bestY = INT_MAX;
+    uint32_t n = lv_obj_get_child_count(p);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *c = lv_obj_get_child(p, i);
+        if (c == f || c == joyMessageInput || lv_obj_get_group(c) != g || lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN) ||
+            lv_obj_has_state(c, LV_STATE_DISABLED))
+            continue;
+        lv_area_t a;
+        lv_obj_get_coords(c, &a);
+        if (a.x2 < fa.x1 || a.x1 > fa.x2)
+            continue;
+        int dy = down ? a.y1 - fa.y1 : fa.y1 - a.y1;
+        if (dy <= 0)
+            continue;
+        if (dy < bestY) {
+            bestY = dy;
+            best = c;
+        }
+    }
+    return best;
+}
+
 static void joyNavigate(lv_indev_data_t *data, bool up, bool down, bool left, bool right)
 {
     lv_group_t *g = lv_group_get_default();
@@ -160,26 +218,52 @@ static void joyNavigate(lv_indev_data_t *data, bool up, bool down, bool left, bo
     if (left || right)
         joyChatScrolling = false;
 
+    int dir = left ? JOY_LEFT : right ? JOY_RIGHT : up ? JOY_UP : JOY_DOWN;
+    int back = joyBackDir();
+    int fwd = back ^ 1;
     lv_obj_t *t = NULL;
-    if (left) {
-        if (!joyIsSidebar(f)) {
-            t = joyNeighbor(g, f, -1, 0, false);
-            if ((!t || joyIsSidebar(t)) && joyLastSidebar && lv_obj_is_visible(joyLastSidebar))
-                t = joyLastSidebar;
+
+    if (joyIsNav(f)) {
+        if (dir == fwd) {
+            // BAR TO CONTENT: BACK TO THE LAST WIDGET
+            if (joyLastContent && lv_obj_is_visible(joyLastContent) && !joyIsNav(joyLastContent))
+                t = joyLastContent;
+            else
+                t = joyNeighbor(g, f, dir, false);
+        } else if (dir != back) {
+            // ALONG THE BAR
+            t = joyNeighbor(g, f, dir, true);
         }
-    } else if (right) {
-        if (joyIsSidebar(f) && joyLastContent && lv_obj_is_visible(joyLastContent) && !joyIsSidebar(joyLastContent))
-            t = joyLastContent;
-        else
-            t = joyNeighbor(g, f, 1, 0, false);
     } else {
-        t = joyNeighbor(g, f, 0, up ? -1 : 1, true);
+        // LANDSCAPE: UP/DOWN STEP THROUGH THE GROUP IN LIST ORDER, AS ON THE T-DECK
+        if ((dir == JOY_UP || dir == JOY_DOWN) && (back == JOY_LEFT || back == JOY_RIGHT)) {
+            data->enc_diff = up ? -1 : 1;
+            return;
+        }
+        // PORTRAIT: NEXT ROW, EVEN WHEN SCROLLED OFF SCREEN
+        if (dir == JOY_UP || dir == JOY_DOWN) {
+            lv_obj_t *row = joyListNeighbor(f, dir == JOY_DOWN);
+            if (row) {
+                lv_group_focus_obj(row);
+                return;
+            }
+        }
+        // INSIDE THE CONTENT FIRST
+        t = joyNeighbor(g, f, dir, true);
+        if (!t && dir == back) {
+            // CONTENT TO BAR: BACK TO THE LAST BUTTON
+            if (joyLastNav && lv_obj_is_visible(joyLastNav))
+                t = joyLastNav;
+            else
+                t = joyNeighbor(g, f, dir, false);
+        } else if (!t && (dir == JOY_UP || dir == JOY_DOWN)) {
+            // LISTS: STEP THROUGH THE GROUP
+            data->enc_diff = up ? -1 : 1;
+        }
     }
 
     if (t)
         lv_group_focus_obj(t);
-    else if (up || down)
-        data->enc_diff = up ? -1 : 1;
 }
 
 EncoderInputDriver::EncoderInputDriver(void) {}
@@ -190,19 +274,19 @@ void EncoderInputDriver::init(void)
     if (INPUTDRIVER_ENCODER_TYPE == 3) {
 #ifdef INPUTDRIVER_ENCODER_LEFT
         pinMode(INPUTDRIVER_ENCODER_LEFT, INPUT_PULLUP);
-        attachInterrupt(INPUTDRIVER_ENCODER_LEFT, intLeftHandler, RISING);
+        attachInterrupt(INPUTDRIVER_ENCODER_LEFT, intLeftHandler, FALLING);
 #endif
 #ifdef INPUTDRIVER_ENCODER_RIGHT
         pinMode(INPUTDRIVER_ENCODER_RIGHT, INPUT_PULLUP);
-        attachInterrupt(INPUTDRIVER_ENCODER_RIGHT, intRightHandler, RISING);
+        attachInterrupt(INPUTDRIVER_ENCODER_RIGHT, intRightHandler, FALLING);
 #endif
 #ifdef INPUTDRIVER_ENCODER_UP
         pinMode(INPUTDRIVER_ENCODER_UP, INPUT_PULLUP);
-        attachInterrupt(INPUTDRIVER_ENCODER_UP, intUpHandler, RISING);
+        attachInterrupt(INPUTDRIVER_ENCODER_UP, intUpHandler, FALLING);
 #endif
 #ifdef INPUTDRIVER_ENCODER_DOWN
         pinMode(INPUTDRIVER_ENCODER_DOWN, INPUT_PULLUP);
-        attachInterrupt(INPUTDRIVER_ENCODER_DOWN, intDownHandler, RISING);
+        attachInterrupt(INPUTDRIVER_ENCODER_DOWN, intDownHandler, FALLING);
 #endif
 #ifdef INPUTDRIVER_ENCODER_BTN
         pinMode(INPUTDRIVER_ENCODER_BTN, INPUT_PULLUP);

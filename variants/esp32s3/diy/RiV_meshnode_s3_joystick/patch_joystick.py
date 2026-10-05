@@ -191,6 +191,14 @@ void TFTView_320x240::hideKeyboard"""
                 content = content.replace(old, new)
                 changed = True
 
+        # NAVIGATION BAR HOOK
+        if "extern lv_obj_t *joyHomeButton;" not in content and "extern lv_obj_t *joyMessagesPanel;\n" in content:
+            content = content.replace("extern lv_obj_t *joyMessagesPanel;\n", "extern lv_obj_t *joyHomeButton;\nextern lv_obj_t *joyMessagesPanel;\n", 1)
+            changed = True
+        if "joyHomeButton = objects.home_button;" not in content and "    joyMessagesPanel = objects.messages_panel;\n" in content:
+            content = content.replace("    joyMessagesPanel = objects.messages_panel;\n", "    joyHomeButton = objects.home_button;\n    joyMessagesPanel = objects.messages_panel;\n", 1)
+            changed = True
+
         if changed:
             print(f"Patched {filepath_tft_view}: encoder focus + editing mode for on-screen keyboard")
             with open(filepath_tft_view, 'w', encoding='utf-8') as f:
