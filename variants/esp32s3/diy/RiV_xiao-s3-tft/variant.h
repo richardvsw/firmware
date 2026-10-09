@@ -48,7 +48,11 @@
 #define TFT_MISO        HW_SPI_MISO
 #define TFT_CS          1    // XIAO D0
 #define TFT_DC          2    // XIAO D1
+#ifdef XIAO_TFT_EN_RST
+#define TFT_RST         -1   // LCD RST wired to the EN pad
+#else
 #define TFT_RST         3    // XIAO D2
+#endif
 #define TFT_BL          4    // XIAO D3, backlight PWM
 
 // ─── XPT2046 Touch Controller (shares SPI bus, polling mode — no IRQ pin) ────
@@ -58,13 +62,25 @@
 // ─── SD card (SPI, shares the bus; only CS needed) ───────────────────────────
 #define SDCARD_CS       44   // XIAO D7
 
-// ─── GPS (UART) — defaults only; override in the app: Position > GPS RX/TX GPIO ─
-// I2C is compiled out (MESHTASTIC_EXCLUDE_I2C) so D5/D6 are free for this.
+// ─── GPS (UART) or I2C on D5/D6 ──────────────────────────────────────────────
+#ifdef XIAO_TFT_I2C
+#define I2C_SDA         43   // XIAO D6
+#define I2C_SCL         6    // XIAO D5
+#ifdef XIAO_TFT_EN_RST
+#define GPS_RX_PIN      3    // XIAO D2  <- GPS module TX, receive only
+#define GPS_TX_PIN      10   // unconnected chip pin
+#define GPS_BAUDRATE    9600
+#define GPS_THREAD_INTERVAL 50
+#define HAS_GPS         1
+#endif
+#else
+// defaults only; override in the app: Position > GPS RX/TX GPIO
 #define GPS_RX_PIN      6    // XIAO D5  <- GPS module TX
 #define GPS_TX_PIN      43   // XIAO D6  -> GPS module RX
 #define GPS_BAUDRATE    9600
 #define GPS_THREAD_INTERVAL 50
 #define HAS_GPS         1
+#endif
 
 // ─── Button ──────────────────────────────────────────────────────────────────
 #define BUTTON_PIN      21   // XIAO user LED / Wio user button (GPIO21); unused, input broker is excluded

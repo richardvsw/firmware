@@ -1,0 +1,7 @@
+Import("env")
+
+# I2C AND SENSORS WERE EXCLUDED IN THE BASE ENV, DROP THOSE FLAGS
+DROP = {"-DMESHTASTIC_EXCLUDE_I2C=1", "-DMESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR=1"}
+
+flags = env.get("BUILD_FLAGS", [])
+env.Replace(BUILD_FLAGS=[f for f in flags if f.replace(" ", "") not in DROP])

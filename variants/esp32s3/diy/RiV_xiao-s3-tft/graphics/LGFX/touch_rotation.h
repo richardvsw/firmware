@@ -1,0 +1,1 @@
+#define LGFX_TOUCH_ROTATION 4

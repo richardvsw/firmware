@@ -195,6 +195,11 @@
 #endif
 
 #ifndef LGFX_TOUCH_ROTATION
+#if __has_include("touch_rotation.h")
+#include "touch_rotation.h"
+#endif
+#endif
+#ifndef LGFX_TOUCH_ROTATION
 #define LGFX_TOUCH_ROTATION 0
 #endif
 
