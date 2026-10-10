@@ -170,10 +170,6 @@
 #define LGFX_TOUCH_CS -1
 #endif
 
-#if __has_include("touch_rotation.h")
-#include "touch_rotation.h"
-#endif
-
 #ifndef LGFX_TOUCH_X_MIN
 #define LGFX_TOUCH_X_MIN 0
 #endif
@@ -198,6 +194,11 @@
 #define LGFX_TOUCH_RST -1
 #endif
 
+#ifndef LGFX_TOUCH_ROTATION
+#if __has_include("touch_rotation.h")
+#include "touch_rotation.h"
+#endif
+#endif
 #ifndef LGFX_TOUCH_ROTATION
 #define LGFX_TOUCH_ROTATION 0
 #endif
