@@ -29,11 +29,11 @@
 #define TFT_BL          4
 
 // JOYSTICK
-#define JOY_UP          17
-#define JOY_DOWN        18
-#define JOY_CENTER      38
-#define JOY_LEFT        5
-#define JOY_RIGHT       6
+#define STICK_UP          17
+#define STICK_DOWN        18
+#define STICK_CENTER      38
+#define STICK_LEFT        5
+#define STICK_RIGHT       6
 
 // BUTTON
 #define BUTTON_PIN      0
