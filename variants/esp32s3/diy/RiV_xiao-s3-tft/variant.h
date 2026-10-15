@@ -105,7 +105,8 @@
 // HAS_SCREEN is set by the platformio env (0: MUI drives the TFT, legacy Screen is excluded)
 
 // ─── Misc ────────────────────────────────────────────────────────────────────
-// Wio-SX1262 green power LED is driven from GPIO48 (same as the official seeed_xiao_s3 variant)
-#define LED_POWER       48
+// Wio-SX1262 green LED on GPIO48 is the message notification LED: off normally, lit when a text message arrives
+// (External Notification defaults: output 48, active high, alert message, 1 s)
+#define LED_NOTIFICATION 48
 #define LED_STATE_ON    1
 
