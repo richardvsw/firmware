@@ -66,6 +66,10 @@
 #ifdef XIAO_TFT_I2C
 #define I2C_SDA         43   // XIAO D6
 #define I2C_SCL         6    // XIAO D5
+// INA219 as the node battery (Power > INA I2C address 64): the battery path only starts when an ADC pin is defined,
+// GPIO10 is an unconnected chip pad and is never read while the INA answers
+#define BATTERY_PIN     10
+#define ADC_CHANNEL     ADC_CHANNEL_9
 #ifdef XIAO_TFT_EN_RST
 #define GPS_RX_PIN      3    // XIAO D2  <- GPS module TX, receive only
 #define GPS_TX_PIN      10   // unconnected chip pin
