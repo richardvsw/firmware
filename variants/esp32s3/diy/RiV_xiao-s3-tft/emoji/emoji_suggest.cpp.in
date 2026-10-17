@@ -8,6 +8,7 @@
 #include "emoji_names.inc"
 
 static const int MAX_SUGGESTIONS = 8;
+extern "C" bool emoji_reply_active(void);
 static lv_obj_t *g_strip = nullptr;
 static lv_obj_t *g_ta = nullptr;
 static bool g_picking = false;
@@ -138,7 +139,7 @@ static void text_changed_cb(lv_event_t *e)
         lv_obj_add_event_cb(label, pick_cb, LV_EVENT_CLICKED, nullptr);
     }
     lv_obj_remove_flag(g_strip, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_align_to(g_strip, g_ta, LV_ALIGN_OUT_TOP_LEFT, 0, -2);
+    lv_obj_align_to(g_strip, g_ta, LV_ALIGN_OUT_TOP_LEFT, 0, emoji_reply_active() ? -40 : -2);
     lv_obj_move_foreground(g_strip);
 }
 
@@ -219,4 +220,66 @@ extern "C" void emoji_settings_init(lv_obj_t *anchor)
     names_text();
     lv_obj_add_event_cb(btn, names_click_cb, LV_EVENT_CLICKED, nullptr);
     lv_obj_move_to_index(btn, lv_obj_get_index(anchor) + 1);
+}
+
+// Replies and reactions carry the id of the message they answer. Remember the last few text messages so a reply can show a
+// quote line with what it answers, like the phone app does.
+struct QuoteEntry {
+    uint32_t id;
+    char text[40];
+};
+static QuoteEntry g_quotes[16];
+static int g_quoteNext = 0;
+
+static void quote_store(uint32_t id, const char *text, size_t len)
+{
+    if (id == 0)
+        return;
+    QuoteEntry &e = g_quotes[g_quoteNext];
+    g_quoteNext = (g_quoteNext + 1) % 16;
+    e.id = id;
+    size_t n = len < 34 ? len : 34;
+    if (len > 34)
+        while (n > 0 && ((unsigned char)text[n] & 0xC0) == 0x80)
+            n--;
+    memcpy(e.text, text, n);
+    for (size_t i = 0; i < n; i++)
+        if (e.text[i] == '\n')
+            e.text[i] = ' ';
+    if (len > 34) {
+        e.text[n++] = '.';
+        e.text[n++] = '.';
+    }
+    e.text[n] = 0;
+}
+
+extern "C" void emoji_quote_record(uint32_t id, const char *text)
+{
+    quote_store(id, text, strlen(text));
+}
+
+// returns the text to show: for a reply or a reaction a quote line comes first, then the message
+extern "C" size_t emoji_quote_compose(uint32_t id, uint32_t replyId, uint32_t emojiFlag, const char *payload, size_t size, char *out,
+                                      size_t outSize)
+{
+    size_t pos = 0;
+    if (replyId != 0 || emojiFlag != 0) {
+        const char *orig = nullptr;
+        for (int i = 0; i < 16; i++)
+            if (g_quotes[i].id == replyId && replyId != 0)
+                orig = g_quotes[i].text;
+        int w = snprintf(out, outSize, "> %s\n", orig ? orig : "earlier message");
+        pos = (w < 0) ? 0 : ((size_t)w < outSize ? (size_t)w : outSize - 1);
+    }
+    quote_store(id, payload, size);
+    size_t room = outSize - 1 - pos;
+    size_t n = size < room ? size : room;
+    memcpy(out + pos, payload, n);
+    out[pos + n] = 0;
+    return pos + n;
+}
+
+extern "C" lv_obj_t *emoji_textarea(void)
+{
+    return g_ta;
 }

@@ -15,6 +15,14 @@ static lv_obj_t *g_bot = nullptr; // message container of the bot chat
 static lv_obj_t *g_bg = nullptr;  // white panel with the logo, sits under the message containers
 static lv_image_dsc_t g_dsc;
 
+extern "C" int emoji_panel_kind(lv_obj_t *panel);
+extern "C" void emoji_aux_restyle(lv_obj_t *label, bool quote, bool bot);
+
+extern "C" bool emoji_bot_container(lv_obj_t *container)
+{
+    return g_bot && container == g_bot;
+}
+
 static void make_bg(lv_obj_t *container)
 {
     if (g_bg)
@@ -79,6 +87,11 @@ static void restyle_existing(lv_obj_t *container)
         lv_obj_t *label = lv_obj_get_child(panel, 0);
         if (!label)
             continue;
+        int kind = emoji_panel_kind(panel);
+        if (kind) {
+            emoji_aux_restyle(label, kind == 2, true);
+            continue;
+        }
         bool sent = lv_obj_get_style_align(label, LV_PART_MAIN) == LV_ALIGN_RIGHT_MID;
         style_bubble(label, sent);
     }

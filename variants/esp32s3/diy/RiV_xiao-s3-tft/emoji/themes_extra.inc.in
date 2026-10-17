@@ -1,0 +1,74 @@
+// Extra themes made from the dark palette: Red (2), OLED (3), Ocean (4), Amber (5), Purple (6).
+// Saturated colours get their hue turned, neutral greys get a tint, and for OLED the dark greys go to near black.
+#include <math.h>
+
+static uint32_t themeXform(uint32_t argb, int th)
+{
+    if ((argb & 0xff000000u) != 0xff000000u)
+        return argb; // not a colour, an opacity or a transparent entry
+    float r = (float)((argb >> 16) & 0xff), g = (float)((argb >> 8) & 0xff), b = (float)(argb & 0xff);
+    float mx = fmaxf(r, fmaxf(g, b)), mn = fminf(r, fminf(g, b));
+    float delta = 0, kr = 1, kg = 1, kb = 1;
+    switch (th) {
+    case 2: // red
+        delta = -145;
+        kr = 1.10f, kg = 0.80f, kb = 0.80f;
+        break;
+    case 3: // oled
+        break;
+    case 4: // ocean
+        delta = 75;
+        kr = 0.55f, kg = 0.75f, kb = 1.15f;
+        break;
+    case 5: // amber
+        delta = -105;
+        kr = 1.05f, kg = 0.88f, kb = 0.62f;
+        break;
+    case 6: // purple
+        delta = 140;
+        kr = 0.95f, kg = 0.75f, kb = 1.15f;
+        break;
+    default:
+        return argb;
+    }
+    if (mx - mn < 16.0f) {
+        // neutral grey: backgrounds and borders are below 0x90, text stays as it is
+        if (mx >= 144.0f)
+            return argb;
+        float l = mx;
+        if (th == 3) {
+            l = l < 40.0f ? 0.0f : (l - 40.0f) * 0.55f;
+            kr = kg = kb = 1.0f;
+        }
+        r = fminf(255.0f, l * kr);
+        g = fminf(255.0f, l * kg);
+        b = fminf(255.0f, l * kb);
+        return 0xff000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+    }
+    // saturated colour: rotate the hue
+    float v = mx / 255.0f, s = (mx - mn) / mx, h;
+    float d = mx - mn;
+    if (mx == r)
+        h = 60.0f * fmodf((g - b) / d, 6.0f);
+    else if (mx == g)
+        h = 60.0f * ((b - r) / d + 2.0f);
+    else
+        h = 60.0f * ((r - g) / d + 4.0f);
+    if (h < 0)
+        h += 360.0f;
+    h = fmodf(h + delta + 360.0f, 360.0f);
+    if (th == 3 && v < 0.6f)
+        v *= 0.5f; // dark accent backgrounds go darker on OLED
+    float c = v * s, x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f)), m = v - c;
+    float rr, gg, bb;
+    int sector = (int)(h / 60.0f);
+    switch (sector) {
+    case 0: rr = c, gg = x, bb = 0; break;
+    case 1: rr = x, gg = c, bb = 0; break;
+    case 2: rr = 0, gg = c, bb = x; break;
+    case 3: rr = 0, gg = x, bb = c; break;
+    case 4: rr = x, gg = 0, bb = c; break;
+    default: rr = c, gg = 0, bb = x; break;
+    }
+    return 0xff000000u | ((uint32_t)((rr + m) * 255.0f) << 16) | ((uint32_t)((gg + m) * 255.0f) << 8) | (uint32_t)((bb + m) * 255.0f);
+}

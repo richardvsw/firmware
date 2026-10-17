@@ -245,3 +245,102 @@ if os.path.isdir(UI) and os.path.isdir(LV):
                  "                }\n"
                  "            }\n")
     patch(tft, names_old, names_new)
+
+    # replies and reactions show a quote line with the message they answer
+    vc = os.path.join(UI, "source", "graphics", "common", "ViewController.cpp")
+    patch(vc, "void ViewController::sendTextMessage(",
+          'extern "C" void emoji_quote_record(uint32_t, const char *);\n'
+          'extern "C" size_t emoji_quote_compose(uint32_t, uint32_t, uint32_t, const char *, size_t, char *, size_t);\n'
+          "void ViewController::sendTextMessage(")
+    send_old = "    size_t msgLen = strlen(textmsg);\n    assert(msgLen <= (size_t)DATA_PAYLOAD_LEN);\n"
+    patch(vc, send_old, send_old + "    emoji_quote_record(requestId, textmsg);\n")
+    recv_old = ("        view->newMessage(p.from, p.to, p.channel, (const char *)p.decoded.payload.bytes, time);\n"
+                "        log.write(LogMessageEnv(p.from, p.to, p.channel, time, LogMessage::eDefault, false, p.decoded.payload.size,\n"
+                "                                (const uint8_t *)p.decoded.payload.bytes));\n")
+    recv_new = ("        char quoted[DATA_PAYLOAD_LEN + 1];\n"
+                "        size_t quotedLen = emoji_quote_compose(p.id, p.decoded.reply_id, p.decoded.emoji,\n"
+                "                                               (const char *)p.decoded.payload.bytes, p.decoded.payload.size, quoted,\n"
+                "                                               sizeof(quoted));\n"
+                "        view->newMessage(p.from, p.to, p.channel, quoted, time);\n"
+                "        log.write(LogMessageEnv(p.from, p.to, p.channel, time, LogMessage::eDefault, false, quotedLen,\n"
+                "                                (const uint8_t *)quoted));\n")
+    patch(vc, recv_old, recv_new)
+
+    # reactions go onto the bubble they answer
+    patch(tft, 'extern "C" void emoji_suggest_init(lv_obj_t *);\n',
+          'extern "C" void emoji_suggest_init(lv_obj_t *);\n'
+          'extern "C" void emoji_bubble_register(lv_obj_t *, uint32_t);\n')
+    patch(tft, "    emoji_bubble_style(textLabel, container, true);\n",
+          "    emoji_bubble_style(textLabel, container, true);\n    emoji_bubble_register(textLabel, requestId);\n")
+    patch(tft, "    emoji_bubble_style(msgLabel, container, false);\n",
+          "    emoji_bubble_style(msgLabel, container, false);\n    emoji_bubble_register(msgLabel, 0);\n")
+    patch(vc, 'extern "C" void emoji_quote_record(uint32_t, const char *);\n',
+          'extern "C" void emoji_quote_record(uint32_t, const char *);\n'
+          'extern "C" void emoji_pending_id(uint32_t);\n'
+          'extern "C" bool emoji_reaction_apply(uint32_t, const char *, size_t);\n')
+    patch(vc, "        char quoted[DATA_PAYLOAD_LEN + 1];\n",
+          "        if (p.decoded.emoji != 0 &&\n"
+          "            emoji_reaction_apply(p.decoded.reply_id, (const char *)p.decoded.payload.bytes, p.decoded.payload.size))\n"
+          "            break;\n"
+          "        char quoted[DATA_PAYLOAD_LEN + 1];\n")
+    patch(vc, "        view->newMessage(p.from, p.to, p.channel, quoted, time);\n",
+          "        emoji_pending_id(p.id);\n        view->newMessage(p.from, p.to, p.channel, quoted, time);\n")
+
+    # quote header and reaction chips like the Android app
+    shutil.copyfile(os.path.join(HERE, "emoji_bubbles.cpp.in"), os.path.join(dst, "emoji_bubbles.cpp"))
+
+    # extra themes: Red, OLED, Ocean, Amber, Purple made from the dark palette
+    shutil.copyfile(os.path.join(HERE, "themes_extra.inc.in"), os.path.join(UI, "source", "graphics", "TFT", "themes_extra.inc"))
+    themes_cpp = os.path.join(UI, "source", "graphics", "TFT", "Themes.cpp")
+    patch(themes_cpp, "#define THEME(COLOR) (themeColor[COLOR][theme])\n",
+          '#include "themes_extra.inc"\n'
+          "#define THEME(COLOR) (theme < 2 ? themeColor[COLOR][theme] : themeXform(themeColor[COLOR][0], (int)theme))\n")
+    if os.path.exists(themes_cpp):
+        s, crlf = read(themes_cpp)
+        if "switch (theme < 2 ? theme : eDark)" not in s and "switch (theme) {" in s:
+            write(themes_cpp, s.replace("switch (theme) {", "switch (theme < 2 ? theme : eDark) {"), crlf)
+            print("Patched", themes_cpp, "(switch)")
+    patch(os.path.join(UI, "include", "graphics", "view", "TFT", "Themes.h"),
+          "enum Theme { eDark, eLight, eRed };", "enum Theme { eDark, eLight, eRed, eOled, eOcean, eAmber, ePurple };")
+    for d in ("ui_320x240", "ui_240x320"):
+        patch(os.path.join(UI, "generated", d, "screens.c"), r'_("Dark\nLight")', r'_("Dark\nLight\nRed\nOLED\nOcean\nAmber\nPurple")')
+
+    # long press on a bubble: react or reply, the reply id and the reaction flag go into the packet
+    patch(vc, 'extern "C" void emoji_pending_id(uint32_t);\n',
+          'extern "C" void emoji_pending_id(uint32_t);\n'
+          'extern "C" int emoji_ctx_mode(void);\n'
+          'extern "C" uint32_t emoji_send_reply_id(void);\n'
+          'extern "C" uint32_t emoji_send_emoji_flag(void);\n'
+          'extern "C" size_t emoji_log_text(const char *, size_t, char *, size_t);\n')
+    patch(vc, "                .want_response = wantRsp}, // FIXME: traceRoute, requestPosition, remote config: true\n",
+          "                .want_response = wantRsp,\n"
+          "                .reply_id = emoji_send_reply_id(),\n"
+          "                .emoji = emoji_send_emoji_flag()},\n")
+    log_old = "        log.write(LogMessageEnv(myNodeNum, to, ch, msgTime, LogMessage::eDefault, false, msgLen, (const uint8_t *)textmsg));\n"
+    log_new = ("        if (emoji_ctx_mode() != 1) {\n"
+               "            char logText[DATA_PAYLOAD_LEN + 1];\n"
+               "            size_t logLen = emoji_log_text(textmsg, msgLen, logText, sizeof(logText));\n"
+               "            log.write(LogMessageEnv(myNodeNum, to, ch, msgTime, LogMessage::eDefault, false, logLen, (const uint8_t *)logText));\n"
+               "        }\n")
+    patch(vc, log_old, log_new)
+    patch(tft, 'extern "C" void emoji_suggest_init(lv_obj_t *);\n',
+          'extern "C" void emoji_suggest_init(lv_obj_t *);\n'
+          'extern "C" void emoji_set_reply(uint32_t, bool);\n'
+          'extern "C" int emoji_ctx_mode(void);\n'
+          'extern "C" uint32_t emoji_ctx_target(void);\n'
+          'extern "C" void emoji_ctx_done(void);\n'
+          'extern "C" bool emoji_reaction_apply(uint32_t, const char *, size_t);\n')
+    add_old = ("    controller->sendTextMessage(to, ch, hopLimit, actTime, requestId, usePkc, msg);\n"
+               "    addMessage(activeMsgContainer, actTime, requestId, msg, LogMessage::eNone);\n")
+    add_new = ("    emoji_set_reply(emoji_ctx_target(), emoji_ctx_mode() == 1);\n"
+               "    controller->sendTextMessage(to, ch, hopLimit, actTime, requestId, usePkc, msg);\n"
+               "    emoji_set_reply(0, false);\n"
+               "    if (emoji_ctx_mode() == 1) {\n"
+               "        // a reaction goes onto the bubble it answers, there is no bubble of its own\n"
+               "        emoji_reaction_apply(emoji_ctx_target(), msg, strlen(msg));\n"
+               "        emoji_ctx_done();\n"
+               "        return;\n"
+               "    }\n"
+               "    addMessage(activeMsgContainer, actTime, requestId, msg, LogMessage::eNone);\n"
+               "    emoji_ctx_done();\n")
+    patch(tft, add_old, add_new)
