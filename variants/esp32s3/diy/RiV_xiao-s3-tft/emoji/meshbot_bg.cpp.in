@@ -1,0 +1,103 @@
+// Custom chat background for the B-48 / RiV-meshBot node: white background, the bot logo at 25 percent behind the messages,
+// solid bubbles so the text stays readable over the logo. Every other chat keeps the normal look.
+#include "lvgl.h"
+#include <stdint.h>
+#include <string.h>
+#include <strings.h>
+
+#include "meshbot_logo.inc"
+
+static const char *BOT_SHORT = "B-48";
+static const char *BOT_LONG = "RiV-meshBot";
+static const lv_opa_t LOGO_OPA = (lv_opa_t)64; // 25 percent
+
+static lv_obj_t *g_bot = nullptr; // message container of the bot chat
+static lv_obj_t *g_bg = nullptr;  // white panel with the logo, sits under the message containers
+static lv_image_dsc_t g_dsc;
+
+static void make_bg(lv_obj_t *container)
+{
+    if (g_bg)
+        return;
+    memset(&g_dsc, 0, sizeof(g_dsc));
+    g_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    g_dsc.header.cf = LV_COLOR_FORMAT_RGB565A8;
+    g_dsc.header.w = MESHBOT_W;
+    g_dsc.header.h = MESHBOT_H;
+    g_dsc.header.stride = MESHBOT_W * 2;
+    g_dsc.data_size = MESHBOT_W * MESHBOT_H * 3;
+    g_dsc.data = meshbot_data;
+
+    lv_obj_t *parent = lv_obj_get_parent(container);
+    g_bg = lv_obj_create(parent);
+    lv_obj_remove_style_all(g_bg);
+    lv_obj_set_width(g_bg, lv_pct(100));
+    lv_obj_set_height(g_bg, lv_pct(88));
+    lv_obj_set_align(g_bg, LV_ALIGN_TOP_MID);
+    lv_obj_remove_flag(g_bg, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+    lv_obj_set_style_bg_color(g_bg, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(g_bg, LV_OPA_COVER, 0);
+    lv_obj_t *img = lv_image_create(g_bg);
+    lv_image_set_src(img, &g_dsc);
+    lv_obj_set_style_image_opa(img, LOGO_OPA, 0);
+    lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_move_to_index(g_bg, 0);
+    lv_obj_add_flag(g_bg, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void style_bubble(lv_obj_t *label, bool sent)
+{
+    lv_obj_set_style_bg_opa(label, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(label, 8, 0);
+    lv_obj_set_style_border_width(label, 1, 0);
+    if (sent) {
+        lv_obj_set_style_bg_color(label, lv_color_hex(0x3D4A86), 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_border_color(label, lv_color_hex(0x3D4A86), 0);
+    } else {
+        lv_obj_set_style_bg_color(label, lv_color_hex(0xE6F1E1), 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(0x173404), 0);
+        lv_obj_set_style_border_color(label, lv_color_hex(0x97C459), 0);
+    }
+}
+
+// sent bubbles are right aligned inside their panel, received ones left aligned
+static void restyle_existing(lv_obj_t *container)
+{
+    uint32_t n = lv_obj_get_child_count(container);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *panel = lv_obj_get_child(container, i);
+        if (!panel || lv_obj_get_child_count(panel) == 0)
+            continue;
+        lv_obj_t *label = lv_obj_get_child(panel, 0);
+        if (!label)
+            continue;
+        bool sent = lv_obj_get_style_align(label, LV_PART_MAIN) == LV_ALIGN_RIGHT_MID;
+        style_bubble(label, sent);
+    }
+}
+
+// called when a chat is opened, container is nullptr for channel chats
+extern "C" void emoji_chat_style(lv_obj_t *container, const char *shortName, const char *longName)
+{
+    bool isBot = container && shortName && longName && strcasecmp(shortName, BOT_SHORT) == 0 && strcasecmp(longName, BOT_LONG) == 0;
+    if (!isBot) {
+        if (g_bg)
+            lv_obj_add_flag(g_bg, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    make_bg(container);
+    if (!g_bg)
+        return;
+    g_bot = container;
+    restyle_existing(container);
+    lv_obj_move_to_index(g_bg, 0);
+    lv_obj_remove_flag(g_bg, LV_OBJ_FLAG_HIDDEN);
+}
+
+// called for each new bubble, styles it when it belongs to the bot chat
+extern "C" void emoji_bubble_style(lv_obj_t *label, lv_obj_t *container, bool sent)
+{
+    if (g_bot && container == g_bot)
+        style_bubble(label, sent);
+}
