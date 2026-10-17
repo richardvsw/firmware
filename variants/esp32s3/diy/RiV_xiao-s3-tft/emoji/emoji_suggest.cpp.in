@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <stdint.h>
 #include <string.h>
+#include <Preferences.h>
 
 #include "emoji_names.inc"
 
@@ -160,4 +161,62 @@ extern "C" void emoji_suggest_init(lv_obj_t *ta)
     lv_obj_set_style_pad_gap(g_strip, 0, 0);
     lv_obj_add_flag(g_strip, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_event_cb(ta, text_changed_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
+// Setting: show the sender's long name instead of the 4 character short name in group chat bubbles, kept in NVS
+extern "C" void add_style_settings_button_style(lv_obj_t *obj);
+
+static bool g_longNames = false;
+static lv_obj_t *g_namesLabel = nullptr;
+
+extern "C" bool emoji_long_names(void)
+{
+    return g_longNames;
+}
+
+static void names_text(void)
+{
+    if (g_namesLabel)
+        lv_label_set_text(g_namesLabel, g_longNames ? "Chat names: long" : "Chat names: short");
+}
+
+static void names_click_cb(lv_event_t *e)
+{
+    g_longNames = !g_longNames;
+    Preferences prefs;
+    if (prefs.begin("chatui", false)) {
+        prefs.putBool("longnames", g_longNames);
+        prefs.end();
+    }
+    names_text();
+}
+
+// adds the entry to the settings list, right below the button given
+extern "C" void emoji_settings_init(lv_obj_t *anchor)
+{
+    if (g_namesLabel || !anchor)
+        return;
+    Preferences prefs;
+    if (prefs.begin("chatui", true)) {
+        g_longNames = prefs.getBool("longnames", false);
+        prefs.end();
+    }
+    lv_obj_t *parent = lv_obj_get_parent(anchor);
+    lv_obj_t *btn = lv_button_create(parent);
+    lv_obj_set_pos(btn, 0, 0);
+    lv_obj_set_size(btn, LV_PCT(95), 30);
+    add_style_settings_button_style(btn);
+    lv_obj_set_style_align(btn, LV_ALIGN_TOP_MID, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_left(btn, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_right(btn, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x4db270), LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_text_color(btn, lv_color_hex(0x015114), LV_PART_MAIN | LV_STATE_PRESSED);
+    g_namesLabel = lv_label_create(btn);
+    lv_obj_set_size(g_namesLabel, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_label_set_long_mode(g_namesLabel, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_align(g_namesLabel, LV_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
+    names_text();
+    lv_obj_add_event_cb(btn, names_click_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_move_to_index(btn, lv_obj_get_index(anchor) + 1);
 }

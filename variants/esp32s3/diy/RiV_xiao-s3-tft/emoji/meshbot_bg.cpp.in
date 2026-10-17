@@ -21,11 +21,11 @@ static void make_bg(lv_obj_t *container)
         return;
     memset(&g_dsc, 0, sizeof(g_dsc));
     g_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-    g_dsc.header.cf = LV_COLOR_FORMAT_RGB565A8;
+    g_dsc.header.cf = LV_COLOR_FORMAT_I4;
     g_dsc.header.w = MESHBOT_W;
     g_dsc.header.h = MESHBOT_H;
-    g_dsc.header.stride = MESHBOT_W * 2;
-    g_dsc.data_size = MESHBOT_W * MESHBOT_H * 3;
+    g_dsc.header.stride = MESHBOT_STRIDE;
+    g_dsc.data_size = sizeof(meshbot_data);
     g_dsc.data = meshbot_data;
 
     lv_obj_t *parent = lv_obj_get_parent(container);
@@ -47,6 +47,13 @@ static void make_bg(lv_obj_t *container)
 
 static void style_bubble(lv_obj_t *label, bool sent)
 {
+    // each bubble sits in a full width panel with the normal dark background, make it see-through so the white and the logo show
+    lv_obj_t *panel = lv_obj_get_parent(label);
+    if (panel) {
+        lv_obj_set_style_bg_opa(panel, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(panel, 0, 0);
+        lv_obj_set_style_shadow_width(panel, 0, 0);
+    }
     lv_obj_set_style_bg_opa(label, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(label, 8, 0);
     lv_obj_set_style_border_width(label, 1, 0);

@@ -215,3 +215,33 @@ if os.path.isdir(UI) and os.path.isdir(LV):
     patch(tft, sent, sent + "    emoji_bubble_style(textLabel, container, true);\n")
     recv = "    add_style_new_message_style(msgLabel);\n"
     patch(tft, recv, recv + "    emoji_bubble_style(msgLabel, container, false);\n")
+
+    # chat names setting: a settings entry below Language, and the group bubbles use the long name when it is on
+    patch(tft, 'extern "C" void emoji_suggest_init(lv_obj_t *);\n',
+          'extern "C" void emoji_suggest_init(lv_obj_t *);\n'
+          'extern "C" bool emoji_long_names(void);\n'
+          'extern "C" void emoji_settings_init(lv_obj_t *);\n')
+    patch(tft, "    emoji_suggest_init(objects.message_input_area);\n",
+          "    emoji_suggest_init(objects.message_input_area);\n"
+          "    emoji_settings_init(objects.basic_settings_language_button);\n")
+    names_old = ("            char *userData = (char *)&(nodes[from]->LV_OBJ_IDX(node_lbs_idx)->user_data);\n"
+                 "            while (pos < 4 && userData[pos] != 0) {\n"
+                 "                buf[pos] = userData[pos];\n"
+                 "                pos++;\n"
+                 "            }\n")
+    names_new = ("            char *userData = (char *)&(nodes[from]->LV_OBJ_IDX(node_lbs_idx)->user_data);\n"
+                 "            const char *longName = lv_label_get_text(nodes[from]->LV_OBJ_IDX(node_lbl_idx));\n"
+                 "            if (emoji_long_names() && longName && longName[0]) {\n"
+                 "                while (pos < 18 && longName[pos] != 0) {\n"
+                 "                    buf[pos] = longName[pos];\n"
+                 "                    pos++;\n"
+                 "                }\n"
+                 "                while (pos > 0 && longName[pos] != 0 && ((unsigned char)longName[pos] & 0xC0) == 0x80)\n"
+                 "                    pos--;\n"
+                 "            } else {\n"
+                 "                while (pos < 4 && userData[pos] != 0) {\n"
+                 "                    buf[pos] = userData[pos];\n"
+                 "                    pos++;\n"
+                 "                }\n"
+                 "            }\n")
+    patch(tft, names_old, names_new)
