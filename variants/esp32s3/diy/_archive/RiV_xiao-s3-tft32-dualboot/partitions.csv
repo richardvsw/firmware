@@ -1,0 +1,8 @@
+# 8 MB: launcher in the factory slot, Meshtastic in ota_0, Pathfinder in ota_1
+# Name,    Type, SubType, Offset,   Size,     Flags
+nvs,       data, nvs,     0x9000,   0x5000,
+otadata,   data, ota,     0xe000,   0x2000,
+factory,   app,  factory, 0x10000,  0x80000,
+app0,      app,  ota_0,   0x90000,  0x3A0000,
+pathfinder,app,  ota_1,   0x430000, 0x2A0000,
+spiffs,    data, spiffs,  0x6D0000, 0x130000,
