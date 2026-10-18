@@ -176,7 +176,8 @@ void TFTView_320x240::hideKeyboard"""
                 '#include "graphics/view/TFT/TFTView_320x240.h"\n'
                 "extern lv_obj_t *joyMessagesPanel;\n"
                 "extern lv_obj_t *joyMessageInput;\n"
-                "extern lv_obj_t *joyKeyboardButton;\n",
+                "extern lv_obj_t *joyKeyboardButton;\n"
+                "extern \"C\" int emoji_strip_height(void);\n",
             ),
             (
                 "    setInputButtonLabel();\n    lv_group_focus_obj(objects.home_button);\n",
@@ -197,6 +198,91 @@ void TFTView_320x240::hideKeyboard"""
             changed = True
         if "joyHomeButton = objects.home_button;" not in content and "    joyMessagesPanel = objects.messages_panel;\n" in content:
             content = content.replace("    joyMessagesPanel = objects.messages_panel;\n", "    joyHomeButton = objects.home_button;\n    joyMessagesPanel = objects.messages_panel;\n", 1)
+            changed = True
+        if "extern lv_obj_t *joyChatsPanel;" not in content and "extern lv_obj_t *joyHomeButton;\n" in content:
+            content = content.replace("extern lv_obj_t *joyHomeButton;\n", "extern lv_obj_t *joyHomeButton;\nextern lv_obj_t *joyChatsPanel;\n", 1)
+            changed = True
+        if "joyChatsPanel = objects.chats_panel;" not in content and "    joyHomeButton = objects.home_button;\n" in content:
+            content = content.replace("    joyHomeButton = objects.home_button;\n", "    joyHomeButton = objects.home_button;\n    joyChatsPanel = objects.chats_panel;\n", 1)
+            changed = True
+        if "extern lv_obj_t *joyMapPanel;" not in content and "extern lv_obj_t *joyChatsPanel;\n" in content:
+            content = content.replace("extern lv_obj_t *joyChatsPanel;\n",
+                "extern lv_obj_t *joyChatsPanel;\n"
+                "extern lv_obj_t *joyMapPanel;\n"
+                "extern lv_obj_t *joyArrowUpButton;\n"
+                "extern lv_obj_t *joyArrowDownButton;\n"
+                "extern lv_obj_t *joyArrowLeftButton;\n"
+                "extern lv_obj_t *joyArrowRightButton;\n"
+                "extern lv_obj_t *joyZoomInButton;\n"
+                "extern lv_obj_t *joyZoomOutButton;\n", 1)
+            changed = True
+        if "lv_group_add_obj(g, objects.nav_button);" in content and "lv_group_add_obj(g, objects.arrow_up_button);" not in content:
+            # nav_button was added alone before; add the rest of the map buttons
+            content = content.replace(
+                "        lv_group_add_obj(g, objects.nav_button);\n",
+                "        lv_group_add_obj(g, objects.nav_button);\n"
+                "        lv_group_add_obj(g, objects.arrow_up_button);\n"
+                "        lv_group_add_obj(g, objects.arrow_left_button);\n"
+                "        lv_group_add_obj(g, objects.arrow_right_button);\n"
+                "        lv_group_add_obj(g, objects.arrow_down_button);\n", 1)
+            changed = True
+        if "joyMapPanel = objects.map_panel;" not in content and "    joyChatsPanel = objects.chats_panel;\n" in content:
+            content = content.replace("    joyChatsPanel = objects.chats_panel;\n",
+                "    joyChatsPanel = objects.chats_panel;\n"
+                "    joyMapPanel = objects.map_panel;\n"
+                "    joyArrowUpButton = objects.arrow_up_button;\n"
+                "    joyArrowDownButton = objects.arrow_down_button;\n"
+                "    joyArrowLeftButton = objects.arrow_left_button;\n"
+                "    joyArrowRightButton = objects.arrow_right_button;\n"
+                "    joyZoomInButton = objects.zoom_in_button;\n"
+                "    joyZoomOutButton = objects.zoom_out_button;\n", 1)
+            changed = True
+        if "lv_group_add_obj(g, objects.zoom_in_button);" not in content and "    joyZoomInButton = objects.zoom_in_button;\n" in content:
+            content = content.replace("    joyZoomInButton = objects.zoom_in_button;\n",
+                "    joyZoomInButton = objects.zoom_in_button;\n"
+                "    { lv_group_t *g = lv_group_get_default(); if (g) {\n"
+                "        lv_group_add_obj(g, objects.zoom_in_button);\n"
+                "        lv_group_add_obj(g, objects.zoom_out_button);\n"
+                "        lv_group_add_obj(g, objects.nav_button);\n"
+                "        lv_group_add_obj(g, objects.arrow_up_button);\n"
+                "        lv_group_add_obj(g, objects.arrow_left_button);\n"
+                "        lv_group_add_obj(g, objects.arrow_right_button);\n"
+                "        lv_group_add_obj(g, objects.arrow_down_button);\n"
+                "    } }\n", 1)
+            changed = True
+        # focus highlight style for map imagebuttons (outline on LV_STATE_FOCUSED)
+        map_focus_style_anchor = "    } }\n"
+        map_focus_style_add    = (
+            "    { static lv_style_t _mfs; lv_style_init(&_mfs);"
+            " lv_style_set_outline_width(&_mfs, 2);"
+            " lv_style_set_outline_color(&_mfs, lv_color_make(255,255,255));"
+            " lv_style_set_outline_opa(&_mfs, LV_OPA_80);"
+            " lv_obj_t *_mb[] = {objects.zoom_in_button, objects.zoom_out_button, objects.nav_button,"
+            " objects.arrow_up_button, objects.arrow_left_button, objects.arrow_right_button, objects.arrow_down_button};"
+            " for (int _i = 0; _i < 7; _i++) lv_obj_add_style(_mb[_i], &_mfs, LV_STATE_FOCUSED); }\n"
+        )
+        if ("lv_group_add_obj(g, objects.arrow_down_button);" in content
+                and map_focus_style_add not in content
+                and map_focus_style_anchor in content):
+            # insert once after the first occurrence of the closing "    } }" of the group block
+            idx = content.find("    lv_group_add_obj(g, objects.arrow_down_button);\n    } }\n")
+            if idx != -1:
+                end = idx + len("    lv_group_add_obj(g, objects.arrow_down_button);\n    } }\n")
+                content = content[:end] + map_focus_style_add + content[end:]
+                changed = True
+
+        # scroll messages_panel up enough to keep textarea visible above the emoji strip
+        old_panel_anim = "lv_anim_set_values(&a1, panelY, kbdPanelBaseY - kb_h);"
+        new_panel_anim = "lv_anim_set_values(&a1, panelY, kbdPanelBaseY - kb_h - emoji_strip_height());"
+        if old_panel_anim in content and new_panel_anim not in content:
+            content = content.replace(old_panel_anim, new_panel_anim, 1)
+            changed = True
+
+        # setGroupFocus for map_panel: focus nav_button
+        old_map_focus = "    } else if (panel == objects.map_panel) {\n\n    } else if (panel == objects.settings_screen_lock_panel) {"
+        new_map_focus = "    } else if (panel == objects.map_panel) {\n        lv_group_focus_obj(objects.nav_button);\n    } else if (panel == objects.settings_screen_lock_panel) {"
+        if old_map_focus in content and new_map_focus not in content:
+            content = content.replace(old_map_focus, new_map_focus, 1)
             changed = True
 
         if changed:

@@ -49,15 +49,60 @@ static void hide_kb(void)
         lv_obj_add_flag(g_kb, LV_OBJ_FLAG_HIDDEN);
 }
 
+// ---- joystick group management for panels ----
+static lv_obj_t *g_panelStack[8];
+static int       g_panelDepth = 0;
+
+static void panel_group_add(lv_obj_t *obj, lv_group_t *g)
+{
+    if (lv_obj_has_flag(obj, LV_OBJ_FLAG_CLICKABLE)
+        || lv_obj_check_type(obj, &lv_switch_class)
+        || lv_obj_check_type(obj, &lv_textarea_class)
+        || lv_obj_check_type(obj, &lv_dropdown_class))
+        lv_group_add_obj(g, obj);
+    for (uint32_t i = 0; i < lv_obj_get_child_count(obj); i++)
+        panel_group_add(lv_obj_get_child(obj, i), g);
+}
+
+static void panel_group_remove(lv_obj_t *obj)
+{
+    lv_group_remove_obj(obj);
+    for (uint32_t i = 0; i < lv_obj_get_child_count(obj); i++)
+        panel_group_remove(lv_obj_get_child(obj, i));
+}
+
+static void panel_focus_first(lv_obj_t *p)
+{
+    lv_group_t *g = lv_group_get_default();
+    if (!g) return;
+    // content is second child of the panel (bar=0, content=1)
+    lv_obj_t *content = lv_obj_get_child_count(p) > 1 ? lv_obj_get_child(p, 1) : p;
+    if (lv_obj_get_child_count(content) > 0)
+        lv_group_focus_obj(lv_obj_get_child(content, 0));
+    lv_group_set_editing(g, false);
+}
+
 static void open_panel(lv_obj_t *p)
 {
     lv_obj_remove_flag(p, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(p);
+    lv_group_t *g = lv_group_get_default();
+    if (g) {
+        panel_group_add(p, g);
+        if (g_panelDepth < 8) g_panelStack[g_panelDepth++] = p;
+        panel_focus_first(p);
+    }
 }
 
 static void close_panel(lv_obj_t *p)
 {
     hide_kb();
+    lv_group_t *g = lv_group_get_default();
+    if (g) {
+        panel_group_remove(p);
+        if (g_panelDepth > 0 && g_panelStack[g_panelDepth - 1] == p) g_panelDepth--;
+        if (g_panelDepth > 0) panel_focus_first(g_panelStack[g_panelDepth - 1]);
+    }
     lv_obj_add_flag(p, LV_OBJ_FLAG_HIDDEN);
 }
 

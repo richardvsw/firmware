@@ -17,9 +17,20 @@ lv_obj_t *joyHomeButton = NULL;
 lv_obj_t *joyMessagesPanel = NULL;
 lv_obj_t *joyMessageInput = NULL;
 lv_obj_t *joyKeyboardButton = NULL;
+lv_obj_t *joyChatsPanel = NULL;
+lv_obj_t *joyMapPanel = NULL;
+lv_obj_t *joyArrowUpButton = NULL;
+lv_obj_t *joyArrowDownButton = NULL;
+lv_obj_t *joyArrowLeftButton = NULL;
+lv_obj_t *joyArrowRightButton = NULL;
+lv_obj_t *joyZoomInButton = NULL;
+lv_obj_t *joyZoomOutButton = NULL;
 
 // DIRECTIONS, OPPOSITE = DIR ^ 1
 enum { JOY_LEFT = 0, JOY_RIGHT = 1, JOY_UP = 2, JOY_DOWN = 3 };
+
+// B/I format toggle — provided by emoji_compose.cpp.in; no-op if compose not compiled in
+extern "C" __attribute__((weak)) void emoji_format_key(int kind);
 
 // NAVIGATION BAR = CONTAINER OF THE HOME BUTTON (LEFT COLUMN IN LANDSCAPE, BOTTOM ROW IN PORTRAIT)
 static lv_obj_t *joyNavBar(void)
@@ -235,9 +246,38 @@ static void joyNavigate(lv_indev_data_t *data, bool up, bool down, bool left, bo
             t = joyNeighbor(g, f, dir, true);
         }
     } else {
+        // MAP PANEL: SPATIAL DPAD NAVIGATION WITHIN MAP BUTTONS
+        bool inMap = false;
+        if (joyMapPanel && f) {
+            for (lv_obj_t *p = lv_obj_get_parent(f); p; p = lv_obj_get_parent(p)) {
+                if (p == joyMapPanel) { inMap = true; break; }
+            }
+        }
+        if (inMap) {
+            if (dir == back) {
+                lv_obj_t *nb = (joyLastNav && lv_obj_is_visible(joyLastNav))
+                                   ? joyLastNav
+                                   : joyNeighbor(g, f, dir, false);
+                if (nb)
+                    lv_group_focus_obj(nb);
+            } else {
+                t = joyNeighbor(g, f, dir, true);
+                if (t)
+                    lv_group_focus_obj(t);
+            }
+            return;
+        }
         // LANDSCAPE: UP/DOWN STEP THROUGH THE GROUP IN LIST ORDER, AS ON THE T-DECK
         if ((dir == JOY_UP || dir == JOY_DOWN) && (back == JOY_LEFT || back == JOY_RIGHT)) {
-            data->enc_diff = up ? -1 : 1;
+            // try spatial sibling first — handles buttons inserted out of group order (e.g. Advanced settings)
+            lv_obj_t *row = joyListNeighbor(f, dir == JOY_DOWN);
+            if (row) {
+                lv_group_focus_obj(row);
+                return;
+            }
+            // chats_panel adds items bottom-to-top, so focus_prev visually moves down — invert
+            bool inChats = joyChatsPanel && f && lv_obj_get_parent(f) == joyChatsPanel;
+            data->enc_diff = (up != inChats) ? -1 : 1;
             return;
         }
         // PORTRAIT: NEXT ROW, EVEN WHEN SCROLLED OFF SCREEN
@@ -258,7 +298,7 @@ static void joyNavigate(lv_indev_data_t *data, bool up, bool down, bool left, bo
                 t = joyNeighbor(g, f, dir, false);
         } else if (!t && (dir == JOY_UP || dir == JOY_DOWN)) {
             // LISTS: STEP THROUGH THE GROUP
-            data->enc_diff = up ? -1 : 1;
+            data->enc_diff = up ? 1 : -1;
         }
     }
 
@@ -336,9 +376,33 @@ void EncoderInputDriver::encoder_read(lv_indev_t *indev, lv_indev_data_t *data)
         joyTrack();
 
 #ifdef INPUTDRIVER_ENCODER_BTN
-        if (action == TB_ACTION_NONE) {
-            if (!digitalRead(INPUTDRIVER_ENCODER_BTN)) {
-                action = TB_ACTION_PRESSED;
+        {
+            static uint32_t joyBtnDownMs  = 0;
+            static bool     joyBtnHandled = false;
+            lv_group_t *_bg = lv_group_get_default();
+            lv_obj_t   *_bf = _bg ? lv_group_get_focused(_bg) : NULL;
+            bool kbdFocused = _bf && lv_obj_has_class(_bf, &lv_keyboard_class);
+            bool btnNow = !digitalRead(INPUTDRIVER_ENCODER_BTN);
+            if (kbdFocused) {
+                // keyboard: long-press (>500 ms) → B/I toggle; short press → ENTER
+                if (btnNow) {
+                    if (!joyBtnDownMs) { joyBtnDownMs = millis(); joyBtnHandled = false; }
+                    if (!joyBtnHandled && millis() - joyBtnDownMs > 500) {
+                        if (emoji_format_key) emoji_format_key(-1);
+                        joyBtnHandled = true;
+                    }
+                } else {
+                    if (joyBtnDownMs && !joyBtnHandled && action == TB_ACTION_NONE)
+                        action = TB_ACTION_PRESSED;
+                    joyBtnDownMs  = 0;
+                    joyBtnHandled = false;
+                }
+            } else {
+                // non-keyboard: original polling — sustains LV_EVENT_LONG_PRESSED
+                joyBtnDownMs  = 0;
+                joyBtnHandled = false;
+                if (action == TB_ACTION_NONE && btnNow)
+                    action = TB_ACTION_PRESSED;
             }
         }
 #endif
