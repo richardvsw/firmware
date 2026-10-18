@@ -344,3 +344,67 @@ if os.path.isdir(UI) and os.path.isdir(LV):
                "    addMessage(activeMsgContainer, actTime, requestId, msg, LogMessage::eNone);\n"
                "    emoji_ctx_done();\n")
     patch(tft, add_old, add_new)
+
+    # advanced settings panel with the chat names switch and the MQTT form
+    shutil.copyfile(os.path.join(HERE, "emoji_advanced.cpp.in"), os.path.join(dst, "emoji_advanced.cpp"))
+    patch(tft, 'extern "C" void emoji_settings_init(lv_obj_t *);\n',
+          'extern "C" void emoji_settings_init(lv_obj_t *, lv_obj_t *, lv_obj_t *, void *(*)(void), void (*)(void), void (*)(lv_obj_t *));\n')
+    patch(tft, "    emoji_settings_init(objects.basic_settings_language_button);\n",
+          "    emoji_settings_init(\n"
+          "        objects.basic_settings_language_button, objects.main_screen, objects.keyboard,\n"
+          "        []() -> void * { return &THIS->db.module_config.mqtt; },\n"
+          "        []() { THIS->controller->sendConfig(meshtastic_ModuleConfig_MQTTConfig{THIS->db.module_config.mqtt}); },\n"
+          "        [](lv_obj_t *ta) {\n"
+          "            lv_obj_move_foreground(objects.keyboard);\n"
+          "            THIS->showKeyboard(ta);\n"
+          "        });\n")
+
+    # a received message wakes the screen for a few seconds, then it goes back to sleep
+    patch(os.path.join(UI, "include", "graphics", "driver", "DisplayDriver.h"),
+          "    virtual void forceWakeup(void) {}\n",
+          "    virtual void forceWakeup(void) {}\n    virtual void wakeForMessage(void) {}\n")
+    drv2 = os.path.join(UI, "include", "graphics", "driver", "LGFXDriver.h")
+    patch(drv2, "    void forceWakeup(void) override { forcedWakeup = true; }\n",
+          "    void forceWakeup(void) override { forcedWakeup = true; }\n"
+          "    // a message wakes the screen, it stays on for 8 seconds unless the normal timeout is shorter, a touch ends this early rule\n"
+          "    void wakeForMessage(void) override\n"
+          "    {\n"
+          "        if (screenTimeout > 0) {\n"
+          "            msgWakeAt = millis();\n"
+          "            if (powerSaving)\n"
+          "                forcedWakeup = true;\n"
+          "            lv_display_trigger_activity(NULL);\n"
+          "        }\n"
+          "    }\n")
+    patch(drv2, "    bool forcedWakeup;\n", "    bool forcedWakeup;\n    uint32_t msgWakeAt = 0;\n")
+    patch(drv2, "    if ((screenTimeout > 0 && lv_display_get_inactive_time(NULL) > screenTimeout) || powerSaving ||\n",
+          "    if (msgWakeAt && lv_display_get_inactive_time(NULL) + 1000 < millis() - msgWakeAt)\n"
+          "        msgWakeAt = 0; // something touched the screen after the wake, back to the normal timeout\n"
+          "    uint32_t effTimeout = (msgWakeAt && screenTimeout > 8000) ? 8000 : screenTimeout;\n"
+          "    if ((effTimeout > 0 && lv_display_get_inactive_time(NULL) > effTimeout) || powerSaving ||\n")
+    patch(tft, "    if (!restore) {\n        // display msg popup if not already viewing the messages\n",
+          "    if (!restore) {\n"
+          "        if (!db.channel[ch].settings.module_settings.is_muted)\n"
+          "            displaydriver->wakeForMessage();\n"
+          "        // display msg popup if not already viewing the messages\n")
+
+    # the declaration patches above can run again on every build and leave copies, put the new signature everywhere and keep one
+    # copy of every declaration line
+    OLD_DECL = 'extern "C" void emoji_settings_init(lv_obj_t *);\n'
+    NEW_DECL = ('extern "C" void emoji_settings_init(lv_obj_t *, lv_obj_t *, lv_obj_t *, void *(*)(void), void (*)(void), '
+                'void (*)(lv_obj_t *));\n')
+    for fp in (tft, vc):
+        if not os.path.exists(fp):
+            continue
+        s, crlf = read(fp)
+        s = s.replace(OLD_DECL, NEW_DECL)
+        s = s.replace("    emoji_settings_init(objects.basic_settings_language_button);\n", "")  # the old one argument call
+        seen = set()
+        out = []
+        for line in s.split("\n"):
+            if line.startswith('extern "C" ') and " emoji_" in line:
+                if line in seen:
+                    continue
+                seen.add(line)
+            out.append(line)
+        write(fp, "\n".join(out), crlf)
