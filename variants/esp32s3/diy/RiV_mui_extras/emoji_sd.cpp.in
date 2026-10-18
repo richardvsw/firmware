@@ -25,8 +25,15 @@ static uint8_t *read_file(const char *path, uint32_t *size_out)
     return buf;
 }
 
+static bool g_sdReady = false;
+extern "C" bool emoji_sd_ready(void)
+{
+    return g_sdReady;
+}
+
 extern "C" void emoji_load_from_sd(void)
 {
+    g_sdReady = true;
     static bool loaded = false;
     if (loaded)
         return;

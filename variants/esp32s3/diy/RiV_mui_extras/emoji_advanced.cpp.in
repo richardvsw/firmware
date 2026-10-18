@@ -568,7 +568,7 @@ static void gps_open_cb(lv_event_t *e)
 extern "C" int emoji_ss_cfg_get(int key) __attribute__((weak));
 extern "C" void emoji_ss_cfg_set(int key, int val) __attribute__((weak));
 extern "C" void emoji_led_set_pin(int pin) __attribute__((weak));
-static lv_obj_t *g_ssPanel = nullptr, *g_ssStatus, *g_ssSw[12], *g_ssDim, *g_ssOff, *g_ssTap;
+static lv_obj_t *g_ssPanel = nullptr, *g_ssStatus, *g_ssSw[12], *g_ssDim, *g_ssOff, *g_ssTap, *g_ssLook, *g_ssClock, *g_ssSecs, *g_ssSlide;
 static void ss_back_cb(lv_event_t *e)
 {
     close_panel(g_ssPanel);
@@ -583,6 +583,10 @@ static void ss_save_cb(lv_event_t *e)
     emoji_ss_cfg_set(1, lv_dropdown_get_selected(g_ssDim));
     emoji_ss_cfg_set(2, lv_dropdown_get_selected(g_ssOff));
     emoji_ss_cfg_set(3, lv_dropdown_get_selected(g_ssTap));
+    emoji_ss_cfg_set(13, lv_dropdown_get_selected(g_ssLook));
+    emoji_ss_cfg_set(14, lv_dropdown_get_selected(g_ssClock));
+    emoji_ss_cfg_set(15, lv_obj_has_state(g_ssSecs, LV_STATE_CHECKED) ? 1 : 0);
+    emoji_ss_cfg_set(16, lv_dropdown_get_selected(g_ssSlide));
     lv_label_set_text(g_ssStatus, "Saved");
 }
 static void ss_open_cb(lv_event_t *e)
@@ -596,8 +600,12 @@ static void ss_open_cb(lv_event_t *e)
                                               "GPS (sats, fix)", "Channel use bar", "MQTT / Wi-Fi status", "Uptime"};
         g_ssSw[0] = make_switch_row(content, names[0]);
         g_ssDim = make_dropdown(content, "Dim level", "5%\n10%\n20%");
-        g_ssOff = make_dropdown(content, "Backlight off after the dim time", "2 minutes\n5 minutes\nNever");
+        g_ssOff = make_dropdown(content, "Backlight off after the dim time", "5 seconds\n10 seconds\n30 seconds\n1 minute\n2 minutes\nNever");
         g_ssTap = make_dropdown(content, "Unlock", "Double tap\nSingle tap");
+        g_ssLook = make_dropdown(content, "Style (images come from the SD card)", "Clock page\nImage and clock\nImage only");
+        g_ssSlide = make_dropdown(content, "Image file", "/screensaver.png\nSlideshow /screensaver/1..9.png");
+        g_ssClock = make_dropdown(content, "Clock", "Digital\nAnalog\nAnalog and digital");
+        g_ssSecs = make_switch_row(content, "Seconds hand");
         for (int k = 4; k < 12; k++)
             g_ssSw[k] = make_switch_row(content, names[k]);
         g_ssStatus = make_status(content);
@@ -612,6 +620,10 @@ static void ss_open_cb(lv_event_t *e)
     lv_dropdown_set_selected(g_ssDim, emoji_ss_cfg_get(1));
     lv_dropdown_set_selected(g_ssOff, emoji_ss_cfg_get(2));
     lv_dropdown_set_selected(g_ssTap, emoji_ss_cfg_get(3));
+    lv_dropdown_set_selected(g_ssLook, emoji_ss_cfg_get(13));
+    lv_dropdown_set_selected(g_ssSlide, emoji_ss_cfg_get(16));
+    lv_dropdown_set_selected(g_ssClock, emoji_ss_cfg_get(14));
+    set_switch(g_ssSecs, emoji_ss_cfg_get(15) != 0);
     lv_label_set_text(g_ssStatus, "The dim time is the normal screen timeout in Settings");
     open_panel(g_ssPanel);
 }
