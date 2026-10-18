@@ -4,15 +4,18 @@
 #include "lvgl.h"
 #include <Arduino.h>
 #include <Preferences.h>
-#include <SdFat.h>
 #include <esp_heap_caps.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
+#ifdef HAS_SDCARD
+#include <SdFat.h>
 extern SdFs SDFs;
+#endif
 extern "C" bool emoji_sd_ready(void) __attribute__((weak));
 
 extern "C" {
@@ -27,6 +30,8 @@ extern const lv_font_t mui_font_clock_64;
 // 15 seconds hand, 16 slideshow from /screensaver/N.png instead of /screensaver.png
 static int g_cfg[17] = {0, 1, 2, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 static bool g_cfgLoaded = false;
+static char g_imgPath[96] = ""; // empty: the first PNG in /screensaver
+static bool g_preview = false;
 
 static void cfg_load(void)
 {
@@ -40,7 +45,30 @@ static void cfg_load(void)
         snprintf(key, sizeof(key), "ss%d", i);
         g_cfg[i] = p.getInt(key, g_cfg[i]);
     }
+    String ip = p.getString("ssimg", "");
+    snprintf(g_imgPath, sizeof(g_imgPath), "%s", ip.c_str());
     p.end();
+}
+
+extern "C" void emoji_ss_img_get(char *out, size_t size)
+{
+    cfg_load();
+    snprintf(out, size, "%s", g_imgPath);
+}
+
+extern "C" void emoji_ss_img_set(const char *path)
+{
+    cfg_load();
+    snprintf(g_imgPath, sizeof(g_imgPath), "%s", path);
+    Preferences p;
+    p.begin("chatui", false);
+    p.putString("ssimg", g_imgPath);
+    p.end();
+}
+
+extern "C" void emoji_ss_preview(void)
+{
+    g_preview = true;
 }
 
 extern "C" int emoji_ss_cfg_get(int key)
@@ -373,6 +401,7 @@ static void timer_cb(lv_timer_t *t)
 
 static uint8_t *read_sd(const char *path, uint32_t *size_out)
 {
+#ifdef HAS_SDCARD
     if (!emoji_sd_ready || !emoji_sd_ready())
         return nullptr;
     FsFile f = SDFs.open(path, O_RDONLY);
@@ -391,6 +420,11 @@ static uint8_t *read_sd(const char *path, uint32_t *size_out)
     f.close();
     *size_out = size;
     return buf;
+#else
+    (void)path;
+    *size_out = 0;
+    return nullptr;
+#endif
 }
 
 static void image_free(void)
@@ -409,18 +443,44 @@ static void image_load(void)
     image_free();
     if (g_cfg[13] == 0)
         return;
-    char path[40];
+    char path[120];
     uint32_t size = 0;
     uint8_t *buf = nullptr;
-    if (g_cfg[16]) {
-        for (int tries = 0; tries < 9 && !buf; tries++) {
-            snprintf(path, sizeof(path), "/screensaver/%d.png", g_slideNext);
-            buf = read_sd(path, &size);
-            g_slideNext = g_slideNext >= 9 ? 1 : g_slideNext + 1;
+#ifdef HAS_SDCARD
+    if (emoji_sd_ready && emoji_sd_ready()) {
+        // the PNG files in /screensaver: the chosen one, or the next one for a slideshow, or the first when none is chosen
+        FsFile d = SDFs.open("/screensaver");
+        if (d && d.isDir()) {
+            static char names[40][40];
+            int n = 0;
+            FsFile e;
+            while (n < 40 && e.openNext(&d, O_RDONLY)) {
+                char nm[40];
+                if (!e.isDir()) {
+                    e.getName(nm, sizeof(nm));
+                    size_t l = strlen(nm);
+                    if (l > 4 && strcasecmp(nm + l - 4, ".png") == 0)
+                        snprintf(names[n++], sizeof(names[0]), "%s", nm);
+                }
+                e.close();
+            }
+            d.close();
+            if (n > 0) {
+                int pick = 0;
+                if (g_cfg[16]) {
+                    pick = g_slideNext % n;
+                    g_slideNext++;
+                } else if (g_imgPath[0]) {
+                    for (int i = 0; i < n; i++)
+                        if (strcmp(g_imgPath, names[i]) == 0)
+                            pick = i;
+                }
+                snprintf(path, sizeof(path), "/screensaver/%s", names[pick]);
+                buf = read_sd(path, &size);
+            }
         }
-    } else {
-        buf = read_sd("/screensaver.png", &size);
     }
+#endif
     if (!buf)
         return; // no card or no file, the clock page shows alone
     g_imgBuf = buf;
@@ -449,6 +509,7 @@ static void ss_show(void)
 static void ss_hide(void)
 {
     g_active = false;
+    g_preview = false;
     if (g_ov)
         lv_obj_add_flag(g_ov, LV_OBJ_FLAG_HIDDEN);
     image_free();
@@ -460,7 +521,7 @@ extern "C" int emoji_ss_poll(uint32_t inactiveMs, uint32_t timeoutMs, bool power
 {
     *outBl = -1;
     cfg_load();
-    if (!g_cfg[0]) {
+    if (!g_cfg[0] && !g_preview) {
         if (g_active)
             ss_hide();
         return 0;
@@ -471,7 +532,7 @@ extern "C" int emoji_ss_poll(uint32_t inactiveMs, uint32_t timeoutMs, bool power
         return 3;
     }
     if (!g_active) {
-        if (timeoutMs > 0 && inactiveMs > timeoutMs && !powerSaving)
+        if (g_preview || (timeoutMs > 0 && inactiveMs > timeoutMs && !powerSaving))
             ss_show();
         else
             return 0;
@@ -480,10 +541,12 @@ extern "C" int emoji_ss_poll(uint32_t inactiveMs, uint32_t timeoutMs, bool power
     uint32_t off = OFF_MS[(g_cfg[2] >= 0 && g_cfg[2] < 6) ? g_cfg[2] : 2];
     if (off != 0xFFFFFFFF && inactiveMs > timeoutMs + off)
         return 2;
-    static const uint32_t PCT[3] = {5, 10, 20};
+    static const uint32_t PCT[3] = {10, 25, 50};
     uint32_t bl = lastBl * PCT[(g_cfg[1] >= 0 && g_cfg[1] < 3) ? g_cfg[1] : 1] / 100;
-    if (bl < 3)
-        bl = 3;
+    // never so dark that the page cannot be read, even when the normal brightness is set low
+    uint32_t floorBl = lastBl < 40 ? lastBl : 40;
+    if (bl < floorBl)
+        bl = floorBl;
     if (millis() < g_boostUntil && bl < lastBl * 6 / 10)
         bl = lastBl * 6 / 10;
     *outBl = (int)bl;
