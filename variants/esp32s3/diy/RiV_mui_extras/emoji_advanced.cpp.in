@@ -1,7 +1,15 @@
 // "Advanced settings" entry in the settings list. It opens a panel with the chat name setting and an MQTT form, so the node can be set
 // up without the phone app.
 #include "lvgl.h"
+#include "meshtastic/config.pb.h"
+#include "meshtastic/mesh.pb.h"
+#include <Arduino.h>
 #include "meshtastic/module_config.pb.h"
+#include "esp_random.h"
+#include <Preferences.h>
+#include <Wire.h>
+#include <math.h>
+#include <time.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -23,7 +31,7 @@ static lv_obj_t *g_advPanel = nullptr;
 static lv_obj_t *g_namesLabel = nullptr;
 static lv_obj_t *g_mqttPanel = nullptr;
 static lv_obj_t *g_mqttStatus = nullptr;
-static lv_obj_t *g_swEnabled = nullptr, *g_swEnc = nullptr, *g_swTls = nullptr, *g_swProxy = nullptr;
+static lv_obj_t *g_swEnabled = nullptr, *g_swEnc = nullptr, *g_swTls = nullptr;
 static lv_obj_t *g_taAddress = nullptr, *g_taUser = nullptr, *g_taPass = nullptr, *g_taRoot = nullptr;
 
 static const uint32_t COL_BG = 0x1E2142;
@@ -166,7 +174,6 @@ static void mqtt_load(void)
     set_switch(g_swEnabled, c->enabled);
     set_switch(g_swEnc, c->encryption_enabled);
     set_switch(g_swTls, c->tls_enabled);
-    set_switch(g_swProxy, c->proxy_to_client_enabled);
     lv_textarea_set_text(g_taAddress, c->address);
     lv_textarea_set_text(g_taUser, c->username);
     lv_textarea_set_text(g_taPass, c->password);
@@ -186,7 +193,6 @@ static void mqtt_save_cb(lv_event_t *e)
     c->enabled = lv_obj_has_state(g_swEnabled, LV_STATE_CHECKED);
     c->encryption_enabled = lv_obj_has_state(g_swEnc, LV_STATE_CHECKED);
     c->tls_enabled = lv_obj_has_state(g_swTls, LV_STATE_CHECKED);
-    c->proxy_to_client_enabled = lv_obj_has_state(g_swProxy, LV_STATE_CHECKED);
     copy_text(c->address, sizeof(c->address), g_taAddress);
     copy_text(c->username, sizeof(c->username), g_taUser);
     copy_text(c->password, sizeof(c->password), g_taPass);
@@ -219,7 +225,6 @@ static void build_mqtt_panel(void)
     g_swEnc = make_switch_row(content, "Encryption enabled");
     g_swTls = make_switch_row(content, "TLS enabled");
     g_taRoot = make_field(content, "Root topic", 31, false);
-    g_swProxy = make_switch_row(content, "Proxy to client enabled");
     g_mqttStatus = lv_label_create(content);
     lv_label_set_text(g_mqttStatus, "");
     lv_obj_set_style_text_color(g_mqttStatus, lv_color_hex(0x8FE0A8), 0);
@@ -243,6 +248,741 @@ static void mqtt_open_cb(lv_event_t *e)
         build_mqtt_panel();
     mqtt_load();
     open_panel(g_mqttPanel);
+}
+
+// ---- LoRa extras, position, quiet hours, security ----
+
+typedef void *(*CfgFn)(void);
+static CfgFn g_loraCfg = nullptr, g_posCfg = nullptr, g_secCfg = nullptr;
+static VoidFn g_sendLora = nullptr, g_sendPos = nullptr, g_sendSec = nullptr;
+
+static lv_obj_t *make_dropdown(lv_obj_t *content, const char *label, const char *options)
+{
+    lv_obj_t *l = lv_label_create(content);
+    lv_label_set_text(l, label);
+    lv_obj_set_style_text_color(l, lv_color_hex(0xB8BEE6), 0);
+    lv_obj_t *dd = lv_dropdown_create(content);
+    lv_obj_set_width(dd, lv_pct(100));
+    lv_dropdown_set_options(dd, options);
+    lv_obj_set_style_bg_color(dd, lv_color_hex(COL_FIELD), 0);
+    lv_obj_set_style_text_color(dd, lv_color_hex(0x1F2937), 0);
+    return dd;
+}
+
+static lv_obj_t *make_status(lv_obj_t *content)
+{
+    lv_obj_t *l = lv_label_create(content);
+    lv_label_set_text(l, "");
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(l, lv_pct(100));
+    lv_obj_set_style_text_color(l, lv_color_hex(0x8FE0A8), 0);
+    return l;
+}
+
+static void make_save_cancel(lv_obj_t *content, lv_event_cb_t save, lv_event_cb_t cancel)
+{
+    lv_obj_t *buttons = lv_obj_create(content);
+    lv_obj_remove_style_all(buttons);
+    lv_obj_set_size(buttons, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
+    make_label_button(buttons, "Save", 0x2F7D4F, save);
+    make_label_button(buttons, "Cancel", 0x5A6078, cancel);
+}
+
+static lv_obj_t *make_nav(lv_obj_t *content, const char *text, lv_event_cb_t cb)
+{
+    lv_obj_t *b = make_label_button(content, text, COL_BTN, cb);
+    lv_obj_set_width(b, lv_pct(100));
+    return b;
+}
+
+// LoRa
+static lv_obj_t *g_loraPanel = nullptr, *g_loraStatus, *g_swTx, *g_ddHop, *g_ddPower;
+static void lora_back_cb(lv_event_t *e)
+{
+    close_panel(g_loraPanel);
+}
+static void lora_save_cb(lv_event_t *e)
+{
+    meshtastic_Config_LoRaConfig *c = (meshtastic_Config_LoRaConfig *)g_loraCfg();
+    c->tx_enabled = lv_obj_has_state(g_swTx, LV_STATE_CHECKED);
+    c->hop_limit = lv_dropdown_get_selected(g_ddHop) + 1;
+    c->tx_power = lv_dropdown_get_selected(g_ddPower);
+    g_sendLora();
+    lv_label_set_text(g_loraStatus, "Saved, the node applies it after a restart");
+}
+static void lora_open_cb(lv_event_t *e)
+{
+    if (!g_loraPanel) {
+        lv_obj_t *content;
+        g_loraPanel = make_panel("LoRa extras", lora_back_cb, &content);
+        g_swTx = make_switch_row(content, "TX enabled");
+        g_ddHop = make_dropdown(content, "Hop limit", "1\n2\n3\n4\n5\n6\n7");
+        g_ddPower = make_dropdown(content, "TX power in dBm, 0 is the region maximum",
+                                  "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30");
+        g_loraStatus = make_status(content);
+        make_save_cancel(content, lora_save_cb, lora_back_cb);
+    }
+    meshtastic_Config_LoRaConfig *c = (meshtastic_Config_LoRaConfig *)g_loraCfg();
+    set_switch(g_swTx, c->tx_enabled);
+    lv_dropdown_set_selected(g_ddHop, (c->hop_limit >= 1 && c->hop_limit <= 7) ? c->hop_limit - 1 : 2);
+    lv_dropdown_set_selected(g_ddPower, c->tx_power <= 30 ? c->tx_power : 0);
+    lv_label_set_text(g_loraStatus, "");
+    open_panel(g_loraPanel);
+}
+
+// position
+static const uint32_t POS_SECS[] = {0, 900, 1800, 3600, 7200, 21600, 43200, 86400};
+static lv_obj_t *g_posPanel = nullptr, *g_posStatus, *g_ddGps, *g_ddInt;
+static void pos_back_cb(lv_event_t *e)
+{
+    close_panel(g_posPanel);
+}
+static void pos_save_cb(lv_event_t *e)
+{
+    meshtastic_Config_PositionConfig *c = (meshtastic_Config_PositionConfig *)g_posCfg();
+    c->gps_mode = (meshtastic_Config_PositionConfig_GpsMode)lv_dropdown_get_selected(g_ddGps);
+    c->position_broadcast_secs = POS_SECS[lv_dropdown_get_selected(g_ddInt)];
+    g_sendPos();
+    lv_label_set_text(g_posStatus, "Saved");
+}
+static void pos_open_cb(lv_event_t *e)
+{
+    if (!g_posPanel) {
+        lv_obj_t *content;
+        g_posPanel = make_panel("Position", pos_back_cb, &content);
+        g_ddGps = make_dropdown(content, "GPS mode", "Disabled\nEnabled\nNot present");
+        g_ddInt = make_dropdown(content, "Position broadcast interval",
+                                "Default\n15 minutes\n30 minutes\n1 hour\n2 hours\n6 hours\n12 hours\n24 hours");
+        g_posStatus = make_status(content);
+        make_save_cancel(content, pos_save_cb, pos_back_cb);
+    }
+    meshtastic_Config_PositionConfig *c = (meshtastic_Config_PositionConfig *)g_posCfg();
+    lv_dropdown_set_selected(g_ddGps, (uint32_t)c->gps_mode <= 2 ? (uint32_t)c->gps_mode : 0);
+    uint32_t idx = 0;
+    for (uint32_t i = 0; i < sizeof(POS_SECS) / sizeof(POS_SECS[0]); i++)
+        if (POS_SECS[i] == c->position_broadcast_secs)
+            idx = i;
+    lv_dropdown_set_selected(g_ddInt, idx);
+    lv_label_set_text(g_posStatus, "");
+    open_panel(g_posPanel);
+}
+
+// quiet hours, kept on the device
+static bool qh_on(void)
+{
+    Preferences p;
+    p.begin("chatui", true);
+    bool v = p.getBool("qhon", false);
+    p.end();
+    return v;
+}
+static int qh_hour(const char *key, int def)
+{
+    Preferences p;
+    p.begin("chatui", true);
+    int v = p.getInt(key, def);
+    p.end();
+    return v;
+}
+extern "C" bool emoji_quiet_now(void)
+{
+    if (!qh_on())
+        return false;
+    time_t now = time(nullptr);
+    if (now < 1700000000)
+        return false; // clock not set
+    struct tm t;
+    localtime_r(&now, &t);
+    int from = qh_hour("qhfrom", 22), to = qh_hour("qhto", 6), h = t.tm_hour;
+    if (from == to)
+        return false;
+    return from < to ? (h >= from && h < to) : (h >= from || h < to);
+}
+static lv_obj_t *g_qhPanel = nullptr, *g_qhStatus, *g_swQh, *g_ddFrom, *g_ddTo;
+static void qh_back_cb(lv_event_t *e)
+{
+    close_panel(g_qhPanel);
+}
+static void qh_save_cb(lv_event_t *e)
+{
+    Preferences p;
+    p.begin("chatui", false);
+    p.putBool("qhon", lv_obj_has_state(g_swQh, LV_STATE_CHECKED));
+    p.putInt("qhfrom", lv_dropdown_get_selected(g_ddFrom));
+    p.putInt("qhto", lv_dropdown_get_selected(g_ddTo));
+    p.end();
+    lv_label_set_text(g_qhStatus, "Saved");
+}
+static void qh_open_cb(lv_event_t *e)
+{
+    if (!g_qhPanel) {
+        static char hours[24 * 6 + 1];
+        hours[0] = 0;
+        for (int i = 0; i < 24; i++)
+            sprintf(hours + strlen(hours), "%02d:00%s", i, i < 23 ? "\n" : "");
+        lv_obj_t *content;
+        g_qhPanel = make_panel("Quiet hours", qh_back_cb, &content);
+        g_swQh = make_switch_row(content, "Quiet hours on");
+        g_ddFrom = make_dropdown(content, "From", hours);
+        g_ddTo = make_dropdown(content, "To", hours);
+        lv_obj_t *n = make_status(content);
+        lv_label_set_text(n, "A received message does not wake the screen in this window. Needs the clock to be set.");
+        lv_obj_set_style_text_color(n, lv_color_hex(0xB8BEE6), 0);
+        g_qhStatus = make_status(content);
+        make_save_cancel(content, qh_save_cb, qh_back_cb);
+    }
+    set_switch(g_swQh, qh_on());
+    lv_dropdown_set_selected(g_ddFrom, qh_hour("qhfrom", 22));
+    lv_dropdown_set_selected(g_ddTo, qh_hour("qhto", 6));
+    lv_label_set_text(g_qhStatus, "");
+    open_panel(g_qhPanel);
+}
+
+// security: new private key
+static lv_obj_t *g_secPanel = nullptr, *g_secStatus, *g_regenBtn;
+static bool g_regenArmed = false;
+static void sec_back_cb(lv_event_t *e)
+{
+    g_regenArmed = false;
+    lv_label_set_text(g_regenBtn, "Regenerate private key");
+    close_panel(g_secPanel);
+}
+static void regen_cb(lv_event_t *e)
+{
+    if (!g_regenArmed) {
+        g_regenArmed = true;
+        lv_label_set_text(g_regenBtn, "Tap again to confirm");
+        lv_label_set_text(g_secStatus, "New identity key, the node restarts. Nodes that cached the old key must see your nodeinfo again before direct messages work.");
+        return;
+    }
+    g_regenArmed = false;
+    meshtastic_Config_SecurityConfig *c = (meshtastic_Config_SecurityConfig *)g_secCfg();
+    esp_fill_random(c->private_key.bytes, 32);
+    c->private_key.bytes[0] &= 248;
+    c->private_key.bytes[31] &= 127;
+    c->private_key.bytes[31] |= 64;
+    c->private_key.size = 32;
+    c->public_key.size = 0;
+    g_sendSec();
+    lv_label_set_text(g_regenBtn, "Regenerate private key");
+    lv_label_set_text(g_secStatus, "Sent, the node restarts");
+}
+static void sec_open_cb(lv_event_t *e)
+{
+    if (!g_secPanel) {
+        lv_obj_t *content;
+        g_secPanel = make_panel("Security", sec_back_cb, &content);
+        g_regenBtn = make_label_button(content, "Regenerate private key", 0x8A2F36, regen_cb);
+        lv_obj_set_width(g_regenBtn, lv_pct(100));
+        g_secStatus = make_status(content);
+        lv_obj_set_style_text_color(g_secStatus, lv_color_hex(0xF2A0A0), 0);
+    }
+    lv_label_set_text(g_secStatus, "");
+    open_panel(g_secPanel);
+}
+
+// GPS status from our own node's position reports
+struct GpsSnap {
+    bool valid;
+    uint32_t at, sats, fixType, time;
+    float hdop, pdop, vdop, speedKmh, heading;
+    int32_t alt, lat, lon;
+};
+static GpsSnap g_gps = {};
+extern "C" void emoji_gps_record(const void *pp)
+{
+    const meshtastic_Position *p = (const meshtastic_Position *)pp;
+    g_gps.valid = true;
+    g_gps.at = millis();
+    g_gps.sats = p->sats_in_view;
+    g_gps.fixType = p->fix_type;
+    g_gps.hdop = p->HDOP / 100.0f;
+    g_gps.pdop = p->PDOP / 100.0f;
+    g_gps.vdop = p->VDOP / 100.0f;
+    g_gps.speedKmh = p->ground_speed * 3.6f;
+    g_gps.heading = p->ground_track / 100000.0f;
+    g_gps.alt = p->altitude;
+    g_gps.lat = p->latitude_i;
+    g_gps.lon = p->longitude_i;
+    g_gps.time = p->time;
+}
+
+extern "C" bool emoji_gps_snapshot(uint32_t *sats, uint32_t *fix, float *hdop)
+{
+    if (!g_gps.valid || millis() - g_gps.at > 1800000)
+        return false; // no report for 30 minutes
+    *sats = g_gps.sats;
+    *fix = g_gps.fixType;
+    *hdop = g_gps.hdop;
+    return true;
+}
+
+static lv_obj_t *g_gpsPanel = nullptr, *g_gpsText = nullptr;
+static void gps_refresh(void)
+{
+    if (!g_gpsText)
+        return;
+    if (!g_gps.valid) {
+        lv_label_set_text(g_gpsText, "No position received from the node yet.\nThe node reports its position on the broadcast interval, wait for a fix.");
+        return;
+    }
+    const char *fix = g_gps.fixType == 3 ? "3D" : (g_gps.fixType == 2 ? "2D" : (g_gps.fixType == 1 ? "none" : "unknown"));
+    char buf[320];
+    uint32_t t = g_gps.time;
+    snprintf(buf, sizeof(buf),
+             "Satellites: %u\nFix: %s\nHDOP: %.1f   PDOP: %.1f   VDOP: %.1f\nSpeed: %.1f km/h\nHeading: %.0f deg\nAltitude: %d m\n"
+             "Position: %.5f %.5f\nGPS time (UTC): %02u:%02u:%02u\nReported %u s ago",
+             (unsigned)g_gps.sats, fix, g_gps.hdop, g_gps.pdop, g_gps.vdop, g_gps.speedKmh, g_gps.heading, (int)g_gps.alt,
+             g_gps.lat * 1e-7, g_gps.lon * 1e-7, (unsigned)((t / 3600) % 24), (unsigned)((t / 60) % 60), (unsigned)(t % 60),
+             (unsigned)((millis() - g_gps.at) / 1000));
+    lv_label_set_text(g_gpsText, buf);
+}
+static void gps_timer_cb(lv_timer_t *tm)
+{
+    if (g_gpsPanel && !lv_obj_has_flag(g_gpsPanel, LV_OBJ_FLAG_HIDDEN))
+        gps_refresh();
+}
+static void gps_back_cb(lv_event_t *e)
+{
+    close_panel(g_gpsPanel);
+}
+static void gps_open_cb(lv_event_t *e)
+{
+    if (!g_gpsPanel) {
+        lv_obj_t *content;
+        g_gpsPanel = make_panel("GPS status", gps_back_cb, &content);
+        g_gpsText = lv_label_create(content);
+        lv_label_set_long_mode(g_gpsText, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(g_gpsText, lv_pct(100));
+        lv_obj_set_style_text_color(g_gpsText, lv_color_hex(0xFFFFFF), 0);
+        lv_timer_create(gps_timer_cb, 1000, nullptr);
+    }
+    gps_refresh();
+    open_panel(g_gpsPanel);
+}
+
+// screensaver settings
+extern "C" int emoji_ss_cfg_get(int key) __attribute__((weak));
+extern "C" void emoji_ss_cfg_set(int key, int val) __attribute__((weak));
+extern "C" void emoji_led_set_pin(int pin) __attribute__((weak));
+static lv_obj_t *g_ssPanel = nullptr, *g_ssStatus, *g_ssSw[12], *g_ssDim, *g_ssOff, *g_ssTap;
+static void ss_back_cb(lv_event_t *e)
+{
+    close_panel(g_ssPanel);
+}
+static void ss_save_cb(lv_event_t *e)
+{
+    if (!emoji_ss_cfg_set)
+        return;
+    for (int k = 0; k < 12; k++)
+        if (g_ssSw[k])
+            emoji_ss_cfg_set(k, lv_obj_has_state(g_ssSw[k], LV_STATE_CHECKED) ? 1 : 0);
+    emoji_ss_cfg_set(1, lv_dropdown_get_selected(g_ssDim));
+    emoji_ss_cfg_set(2, lv_dropdown_get_selected(g_ssOff));
+    emoji_ss_cfg_set(3, lv_dropdown_get_selected(g_ssTap));
+    lv_label_set_text(g_ssStatus, "Saved");
+}
+static void ss_open_cb(lv_event_t *e)
+{
+    if (!emoji_ss_cfg_get)
+        return;
+    if (!g_ssPanel) {
+        lv_obj_t *content;
+        g_ssPanel = make_panel("Screensaver", ss_back_cb, &content);
+        static const char *const names[12] = {"Screensaver on", "", "", "", "Battery", "Nodes online", "Unread badge", "Last message (privacy)",
+                                              "GPS (sats, fix)", "Channel use bar", "MQTT / Wi-Fi status", "Uptime"};
+        g_ssSw[0] = make_switch_row(content, names[0]);
+        g_ssDim = make_dropdown(content, "Dim level", "5%\n10%\n20%");
+        g_ssOff = make_dropdown(content, "Backlight off after the dim time", "2 minutes\n5 minutes\nNever");
+        g_ssTap = make_dropdown(content, "Unlock", "Double tap\nSingle tap");
+        for (int k = 4; k < 12; k++)
+            g_ssSw[k] = make_switch_row(content, names[k]);
+        g_ssStatus = make_status(content);
+        make_save_cancel(content, ss_save_cb, ss_back_cb);
+        lv_obj_t *pad = lv_obj_create(content);
+        lv_obj_remove_style_all(pad);
+        lv_obj_set_size(pad, 10, 20);
+    }
+    for (int k = 0; k < 12; k++)
+        if (g_ssSw[k])
+            set_switch(g_ssSw[k], emoji_ss_cfg_get(k) != 0);
+    lv_dropdown_set_selected(g_ssDim, emoji_ss_cfg_get(1));
+    lv_dropdown_set_selected(g_ssOff, emoji_ss_cfg_get(2));
+    lv_dropdown_set_selected(g_ssTap, emoji_ss_cfg_get(3));
+    lv_label_set_text(g_ssStatus, "The dim time is the normal screen timeout in Settings");
+    open_panel(g_ssPanel);
+}
+
+// RTTTL ringtone: presets, a small player for the test button
+// RTTTL ringtone presets
+static const char *const RING_NAME[17] = {"Beep", "Alert", "Chime", "Siren", "Knock", "Ping", "Doorbell", "SOS", "Rising", "Falling", "Arpeggio", "Cuckoo", "Ode to Joy", "Twinkle", "Fur Elise", "Jingle Bells", "Custom"};
+static const char *const RING_TUNE[16] = {
+    "beep:d=16,o=6,b=200:c,e,g,c7",
+    "alert:d=8,o=6,b=180:a,p,a,p,a",
+    "chime:d=8,o=6,b=140:e,c,g5,2c",
+    "siren:d=8,o=5,b=160:a,d6,a,d6,a,d6",
+    "knock:d=16,o=5,b=200:8c,p,8c,p,4c",
+    "ping:d=16,o=7,b=240:e,8p,e6",
+    "bell:d=4,o=6,b=120:e,2c",
+    "sos:d=16,o=6,b=200:c,p,c,p,c,8p,8c,p,8c,p,8c,8p,c,p,c,p,c",
+    "rise:d=16,o=5,b=200:c,d,e,f,g,a,b,c6",
+    "fall:d=16,o=6,b=200:c,b5,a5,g5,f5,e5,d5,c5",
+    "arp:d=16,o=5,b=180:c,e,g,c6,g,e,c",
+    "cuckoo:d=4,o=6,b=100:g,e",
+    "joy:d=4,o=5,b=140:e,e,f,g,g,f,e,d,c,c,d,e,8e.,16d,2d",
+    "twinkle:d=4,o=5,b=120:c,c,g,g,a,a,2g,f,f,e,e,d,d,2c",
+    "elise:d=16,o=6,b=125:e,d#,e,d#,e,b5,d,c,8a5",
+    "jingle:d=8,o=5,b=180:e,e,4e,e,e,4e,e,g,c.,16d,2e"};
+
+static void tone_pin(int pin, float freq, uint32_t ms)
+{
+    if (freq < 50.0f) {
+        delay(ms);
+        return;
+    }
+    uint32_t halfUs = (uint32_t)(500000.0f / freq);
+    uint32_t cycles = (uint32_t)((float)ms * 1000.0f / (2.0f * (float)halfUs));
+    for (uint32_t i = 0; i < cycles; i++) {
+        digitalWrite(pin, HIGH);
+        delayMicroseconds(halfUs);
+        digitalWrite(pin, LOW);
+        delayMicroseconds(halfUs);
+    }
+}
+
+static void rtttl_play(const char *s, int pin)
+{
+    int d = 4, o = 6, b = 63;
+    const char *p = strchr(s, ':');
+    if (!p)
+        return;
+    p++;
+    while (*p && *p != ':') {
+        char k = *p++;
+        if (*p == '=')
+            p++;
+        int v = 0;
+        while (*p >= '0' && *p <= '9')
+            v = v * 10 + (*p++ - '0');
+        if (k == 'd')
+            d = v;
+        else if (k == 'o')
+            o = v;
+        else if (k == 'b')
+            b = v;
+        if (*p == ',')
+            p++;
+    }
+    if (*p == ':')
+        p++;
+    if (b <= 0 || d <= 0)
+        return;
+    uint32_t whole = 240000 / (uint32_t)b;
+    for (int count = 0; *p && count < 60; count++) {
+        int dur = 0;
+        while (*p >= '0' && *p <= '9')
+            dur = dur * 10 + (*p++ - '0');
+        if (dur == 0)
+            dur = d;
+        int note = -1;
+        switch (*p) {
+        case 'c': note = 0; break;
+        case 'd': note = 2; break;
+        case 'e': note = 4; break;
+        case 'f': note = 5; break;
+        case 'g': note = 7; break;
+        case 'a': note = 9; break;
+        case 'b': note = 11; break;
+        default: break; // p is a pause
+        }
+        if (*p)
+            p++;
+        if (*p == '#') {
+            note++;
+            p++;
+        }
+        bool dotted = false;
+        if (*p == '.') {
+            dotted = true;
+            p++;
+        }
+        int oct = o;
+        if (*p >= '0' && *p <= '9')
+            oct = *p++ - '0';
+        if (*p == '.') {
+            dotted = true;
+            p++;
+        }
+        uint32_t ms = whole / (uint32_t)dur;
+        if (dotted)
+            ms += ms / 2;
+        if (note >= 0) {
+            float freq = 440.0f * powf(2.0f, (float)((oct + 1) * 12 + note - 69) / 12.0f);
+            tone_pin(pin, freq, ms * 9 / 10);
+            delay(ms / 10);
+        } else {
+            delay(ms);
+        }
+        while (*p && *p != ',')
+            p++;
+        if (*p == ',')
+            p++;
+    }
+}
+
+// notification output on one GPIO: LED or buzzer, written to the External Notification config
+static CfgFn g_extCfg = nullptr;
+static VoidFn g_sendExt = nullptr;
+typedef void (*RingFn)(const char *);
+static RingFn g_sendRing = nullptr;
+static lv_obj_t *g_ntRingDd = nullptr, *g_ntRingTa = nullptr;
+static int g_extPin = 48;
+
+// welcome sound: a ringtone at boot, played from its own task so the screen does not wait for it
+#define RING_COUNT ((int)(sizeof(RING_TUNE) / sizeof(RING_TUNE[0])))
+static char g_welTune[232];
+static void welcome_task(void *arg)
+{
+    pinMode(g_extPin, OUTPUT);
+    rtttl_play(g_welTune, g_extPin);
+    digitalWrite(g_extPin, LOW);
+    vTaskDelete(NULL);
+}
+static void welcome_start(void)
+{
+    Preferences wp;
+    wp.begin("chatui", true);
+    int idx = wp.getInt("welidx", 0);
+    bool buz = wp.getBool("welbuz", false);
+    String txt = wp.getString("weltxt", "");
+    wp.end();
+    if (idx <= 0 || !buz)
+        return;
+    snprintf(g_welTune, sizeof(g_welTune), "%s", idx <= RING_COUNT ? RING_TUNE[idx - 1] : txt.c_str());
+    xTaskCreate(welcome_task, "welcome", 4096, NULL, 1, NULL);
+}
+static lv_obj_t *g_ntWelDd = nullptr;
+static lv_obj_t *g_ntPanel = nullptr, *g_ntStatus, *g_ntMode, *g_ntMsg, *g_ntBell, *g_ntLed;
+static void nt_back_cb(lv_event_t *e)
+{
+    close_panel(g_ntPanel);
+}
+static void nt_ring_cb(lv_event_t *e)
+{
+    uint32_t sel = lv_dropdown_get_selected(g_ntRingDd);
+    if (sel < 16)
+        lv_textarea_set_text(g_ntRingTa, RING_TUNE[sel]);
+}
+static void nt_save_cb(lv_event_t *e)
+{
+    meshtastic_ModuleConfig_ExternalNotificationConfig *c = (meshtastic_ModuleConfig_ExternalNotificationConfig *)g_extCfg();
+    uint32_t mode = lv_dropdown_get_selected(g_ntMode);
+    bool msg = lv_obj_has_state(g_ntMsg, LV_STATE_CHECKED), bell = lv_obj_has_state(g_ntBell, LV_STATE_CHECKED);
+    if (mode == 0) {
+        if (c->output == (uint32_t)g_extPin)
+            c->output = 0;
+        if (c->output_buzzer == (uint32_t)g_extPin)
+            c->output_buzzer = 0;
+        c->enabled = (c->output || c->output_buzzer || c->output_vibra);
+    } else if (mode == 1 && lv_dropdown_get_selected(g_ntLed) > 0) {
+        // the display firmware drives the LED itself, the module leaves the pin alone
+        if (c->output == (uint32_t)g_extPin)
+            c->output = 0;
+        if (c->output_buzzer == (uint32_t)g_extPin)
+            c->output_buzzer = 0;
+        c->enabled = (c->output || c->output_buzzer || c->output_vibra);
+    } else if (mode == 1) {
+        c->output = g_extPin;
+        if (c->output_buzzer == (uint32_t)g_extPin)
+            c->output_buzzer = 0;
+        c->use_pwm = false;
+        c->active = true;
+        c->enabled = true;
+        c->alert_message = msg;
+        c->alert_bell = bell;
+        c->alert_message_buzzer = false;
+        c->alert_bell_buzzer = false;
+        if (c->output_ms == 0)
+            c->output_ms = 1000;
+    } else {
+        c->output_buzzer = g_extPin;
+        if (c->output == (uint32_t)g_extPin)
+            c->output = 0;
+        c->use_pwm = true;
+        c->enabled = true;
+        c->alert_message_buzzer = msg;
+        c->alert_bell_buzzer = bell;
+        c->alert_message = false;
+        c->alert_bell = false;
+        if (c->output_ms == 0)
+            c->output_ms = 1000;
+    }
+    if (emoji_ss_cfg_set)
+        emoji_ss_cfg_set(12, (mode == 1) ? (int)lv_dropdown_get_selected(g_ntLed) : 0);
+    {
+        Preferences wp;
+        wp.begin("chatui", false);
+        uint32_t wsel = lv_dropdown_get_selected(g_ntWelDd);
+        wp.putInt("welidx", (int)wsel);
+        wp.putBool("welbuz", mode == 2);
+        if ((int)wsel > RING_COUNT)
+            wp.putString("weltxt", lv_textarea_get_text(g_ntRingTa));
+        wp.end();
+    }
+    g_sendExt();
+    if (mode == 2 && g_sendRing && lv_textarea_get_text(g_ntRingTa)[0]) {
+        g_sendRing(lv_textarea_get_text(g_ntRingTa));
+        Preferences rp;
+        rp.begin("chatui", false);
+        rp.putString("ring", lv_textarea_get_text(g_ntRingTa));
+        rp.end();
+    }
+    lv_label_set_text(g_ntStatus, "Saved, the node restarts to apply it");
+}
+static void nt_test_cb(lv_event_t *e)
+{
+    uint32_t mode = lv_dropdown_get_selected(g_ntMode);
+    if (mode == 0 || (mode == 1 && lv_dropdown_get_selected(g_ntLed) > 0))
+        return; // the status LED modes need no test
+    pinMode(g_extPin, OUTPUT);
+    if (mode == 1) {
+        digitalWrite(g_extPin, HIGH);
+        delay(400);
+        digitalWrite(g_extPin, LOW);
+    } else {
+        rtttl_play(lv_textarea_get_text(g_ntRingTa), g_extPin);
+        digitalWrite(g_extPin, LOW);
+    }
+}
+static void nt_open_cb(lv_event_t *e)
+{
+    if (!g_ntPanel) {
+        lv_obj_t *content;
+        g_ntPanel = make_panel("Notification output", nt_back_cb, &content);
+        char label[48];
+        snprintf(label, sizeof(label), "Output on GPIO%d", g_extPin);
+        g_ntMode = make_dropdown(content, label, "Off\nLED\nBuzzer");
+        g_ntLed = make_dropdown(content, "LED behaviour", "Incoming chat\nAlways on\nGPS fix\nUnread messages\nLow battery\nCharging");
+        g_ntRingDd = make_dropdown(content, "Buzzer ringtone", "Beep\nAlert\nChime\nSiren\nKnock\nPing\nDoorbell\nSOS\nRising\nFalling\nArpeggio\nCuckoo\nOde to Joy\nTwinkle\nFur Elise\nJingle Bells\nCustom");
+        lv_obj_add_event_cb(g_ntRingDd, nt_ring_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+        g_ntRingTa = make_field(content, "Ringtone (RTTTL, 230 characters at most)", 230, false);
+        {
+            Preferences rp;
+            rp.begin("chatui", true);
+            String saved = rp.getString("ring", RING_TUNE[0]);
+            rp.end();
+            lv_textarea_set_text(g_ntRingTa, saved.c_str());
+        }
+        {
+            static char welOpts[640];
+            snprintf(welOpts, sizeof(welOpts), "Off");
+            for (int i = 0; i < RING_COUNT; i++)
+                snprintf(welOpts + strlen(welOpts), sizeof(welOpts) - strlen(welOpts), "\n%s", RING_NAME[i]);
+            snprintf(welOpts + strlen(welOpts), sizeof(welOpts) - strlen(welOpts), "\nCurrent ringtone text");
+            g_ntWelDd = make_dropdown(content, "Welcome sound at boot (buzzer only)", welOpts);
+        }
+        g_ntMsg = make_switch_row(content, "Alert on new message");
+        g_ntBell = make_switch_row(content, "Alert on bell");
+        lv_obj_t *test = make_label_button(content, "Test output", COL_BTN, nt_test_cb);
+        lv_obj_set_width(test, lv_pct(100));
+        g_ntStatus = make_status(content);
+        make_save_cancel(content, nt_save_cb, nt_back_cb);
+        lv_obj_t *ntPad = lv_obj_create(content);
+        lv_obj_remove_style_all(ntPad);
+        lv_obj_set_size(ntPad, 10, 150);
+    }
+    meshtastic_ModuleConfig_ExternalNotificationConfig *c = (meshtastic_ModuleConfig_ExternalNotificationConfig *)g_extCfg();
+    uint32_t mode = 0;
+    int ledMode = emoji_ss_cfg_get ? emoji_ss_cfg_get(12) : 0;
+    if (ledMode > 0)
+        mode = 1;
+    else if (c->enabled && c->output == (uint32_t)g_extPin)
+        mode = 1;
+    else if (c->enabled && c->output_buzzer == (uint32_t)g_extPin)
+        mode = 2;
+    lv_dropdown_set_selected(g_ntMode, mode);
+    {
+        Preferences wp;
+        wp.begin("chatui", true);
+        lv_dropdown_set_selected(g_ntWelDd, (uint32_t)wp.getInt("welidx", 0));
+        wp.end();
+    }
+    lv_dropdown_set_selected(g_ntLed, ledMode > 0 ? ledMode : 0);
+    set_switch(g_ntMsg, c->alert_message || c->alert_message_buzzer);
+    set_switch(g_ntBell, c->alert_bell || c->alert_bell_buzzer);
+    lv_label_set_text(g_ntStatus, "");
+    open_panel(g_ntPanel);
+}
+extern "C" void emoji_settings_host2(void *(*ext)(void), void (*sendExt)(void), int pin, void (*sendRing)(const char *))
+{
+    g_sendRing = sendRing;
+    g_extCfg = ext;
+    g_sendExt = sendExt;
+    g_extPin = pin;
+    if (emoji_led_set_pin)
+        emoji_led_set_pin(pin);
+    welcome_start();
+}
+
+// power: battery INA address and an I2C bus scan
+static CfgFn g_powCfg = nullptr;
+static VoidFn g_sendPow = nullptr;
+static lv_obj_t *g_i2cPanel = nullptr, *g_i2cStatus, *g_i2cList, *g_ddIna;
+static void i2c_back_cb(lv_event_t *e)
+{
+    close_panel(g_i2cPanel);
+}
+static void i2c_scan_cb(lv_event_t *e)
+{
+    char buf[160];
+    int n = 0;
+    buf[0] = 0;
+    for (uint8_t a = 0x08; a < 0x78 && strlen(buf) < sizeof(buf) - 8; a++) {
+        Wire.beginTransmission(a);
+        if (Wire.endTransmission() == 0) {
+            sprintf(buf + strlen(buf), "%s0x%02X", n ? "  " : "", a);
+            n++;
+        }
+    }
+    lv_label_set_text(g_i2cList, n ? buf : "No device answered");
+}
+static void ina_save_cb(lv_event_t *e)
+{
+    meshtastic_Config_PowerConfig *c = (meshtastic_Config_PowerConfig *)g_powCfg();
+    uint32_t sel = lv_dropdown_get_selected(g_ddIna);
+    c->device_battery_ina_address = sel == 0 ? 0 : (sel == 1 ? 0x40 : (sel == 2 ? 0x41 : (sel == 3 ? 0x44 : 0x45)));
+    g_sendPow();
+    lv_label_set_text(g_i2cStatus, "Saved, the node applies it after a restart");
+}
+static void i2c_open_cb(lv_event_t *e)
+{
+    if (!g_i2cPanel) {
+        lv_obj_t *content;
+        g_i2cPanel = make_panel("Power and I2C", i2c_back_cb, &content);
+        g_ddIna = make_dropdown(content, "Battery INA I2C address", "Off\n0x40\n0x41\n0x44\n0x45");
+        g_i2cStatus = make_status(content);
+        make_save_cancel(content, ina_save_cb, i2c_back_cb);
+        lv_obj_t *sc = make_label_button(content, "Scan I2C bus", COL_BTN, i2c_scan_cb);
+        lv_obj_set_width(sc, lv_pct(100));
+        g_i2cList = make_status(content);
+        lv_obj_set_style_text_color(g_i2cList, lv_color_hex(0xFFFFFF), 0);
+    }
+    meshtastic_Config_PowerConfig *c = (meshtastic_Config_PowerConfig *)g_powCfg();
+    uint32_t a = c->device_battery_ina_address;
+    lv_dropdown_set_selected(g_ddIna, a == 0x40 ? 1 : (a == 0x41 ? 2 : (a == 0x44 ? 3 : (a == 0x45 ? 4 : 0))));
+    lv_label_set_text(g_i2cStatus, "");
+    lv_label_set_text(g_i2cList, "");
+    open_panel(g_i2cPanel);
+}
+
+extern "C" void emoji_settings_host(void *(*lora)(void), void *(*pos)(void), void *(*sec)(void), void *(*pow)(void),
+                                    void (*sendLora)(void), void (*sendPos)(void), void (*sendSec)(void), void (*sendPow)(void))
+{
+    g_loraCfg = lora, g_posCfg = pos, g_secCfg = sec, g_powCfg = pow;
+    g_sendLora = sendLora, g_sendPos = sendPos, g_sendSec = sendSec, g_sendPow = sendPow;
 }
 
 // ---- advanced list ----
@@ -272,8 +1012,18 @@ static void build_adv_panel(void)
     lv_obj_set_width(names, lv_pct(100));
     g_namesLabel = names;
     names_text();
-    lv_obj_t *mqtt = make_label_button(content, "MQTT  >", COL_BTN, mqtt_open_cb);
-    lv_obj_set_width(mqtt, lv_pct(100));
+    make_nav(content, "MQTT  >", mqtt_open_cb);
+    if (g_loraCfg) {
+        make_nav(content, "LoRa extras  >", lora_open_cb);
+        make_nav(content, "Position  >", pos_open_cb);
+        make_nav(content, "GPS status  >", gps_open_cb);
+        make_nav(content, "Quiet hours  >", qh_open_cb);
+        make_nav(content, "Power and I2C  >", i2c_open_cb);
+        make_nav(content, "Screensaver  >", ss_open_cb);
+        if (g_extCfg)
+            make_nav(content, "Notification output  >", nt_open_cb);
+        make_nav(content, "Security  >", sec_open_cb);
+    }
 }
 
 static void adv_open_cb(lv_event_t *e)

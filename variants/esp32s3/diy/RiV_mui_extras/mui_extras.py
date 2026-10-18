@@ -14,9 +14,11 @@ LIB = env.subst("$PROJECT_DIR/.pio/libdeps/${PIOENV}")
 UI = os.path.join(LIB, "meshtastic-device-ui")
 LV = os.path.join(LIB, "lvgl")
 
-ALL = "keyboard emoji chat themes advanced wake"
+ALL = "keyboard emoji chat themes advanced wake compose screensaver"
 feat = set(str(env.GetProjectOption("custom_riv_mui_features", ALL)).replace(",", " ").split())
 emoji_set = str(env.GetProjectOption("custom_riv_mui_emoji", "full")).strip()
+ina_addr = str(env.GetProjectOption("custom_riv_mui_ina_address", "")).strip()
+notify_pin = str(env.GetProjectOption("custom_riv_mui_notify_pin", "48")).strip()
 kb_pct = str(env.GetProjectOption("custom_riv_mui_kb_height", "")).strip()
 full = "_all" if emoji_set == "full" else ""
 
@@ -26,6 +28,9 @@ ROW2 = ["\U0001F44D", "\U0001F44E", "\U0001F44B", "\U0001F64F", "\U0001F44C", "\
 ROW3 = ["\U0001F525", "\u2B50", "\u2705", "\u274C", "\u26A0", "\u2753", "\U0001F4CD", "\U0001F50B", "\U0001F4E1", "\U0001F697", "\U0001F3E0", "\u26F0"]
 
 WRAP_MARK = "/*Initialize a public general font descriptor*/"
+
+
+REC = ["\U0001F44D", "❤", "\U0001F602", "\U0001F64F", "\U0001F525", "\U0001F600", "✅", "\U0001F622", "\U0001F389", "\U0001F62E"]
 
 
 def cstr(ch):
@@ -102,7 +107,7 @@ def patch_fonts():
             print("Patched", p)
 
 
-def patch_keyboard_emoji():
+def patch_keyboard_emoji(compose):
     kb = os.path.join(LV, "src", "widgets", "keyboard", "lv_keyboard.c")
     if not os.path.exists(kb):
         return
@@ -111,8 +116,15 @@ def patch_keyboard_emoji():
         return
     s = s.replace("#define LV_KB_BTN(width) LV_BUTTONMATRIX_CTRL_POPOVER | width\n",
                   "#define LV_KB_BTN(width) LV_BUTTONMATRIX_CTRL_POPOVER | width\n#define EMOJI_KEY " + cstr(KEY) + "\n", 1)
-    s = s.replace('LV_SYMBOL_LEFT, " ", LV_SYMBOL_RIGHT, LV_SYMBOL_OK, ""',
-                  'LV_SYMBOL_LEFT, " ", LV_SYMBOL_RIGHT, LV_SYMBOL_OK, EMOJI_KEY, ""', 2)
+    if compose:
+        s = s.replace("static void lv_keyboard_update_ctrl_map(lv_obj_t * obj);\n",
+                      "static void lv_keyboard_update_ctrl_map(lv_obj_t * obj);\n"
+                      "extern void emoji_format_key(int kind);\n"
+                      "extern void emoji_recent_note(const char * txt);\n", 1)
+    bottom = 'LV_SYMBOL_LEFT, " ", LV_SYMBOL_RIGHT, LV_SYMBOL_OK, ""'
+    bottom_new = ('"B/I", " ", LV_SYMBOL_BELL, LV_SYMBOL_OK, EMOJI_KEY, ""' if compose
+                  else 'LV_SYMBOL_LEFT, " ", LV_SYMBOL_RIGHT, LV_SYMBOL_OK, EMOJI_KEY, ""')
+    s = s.replace(bottom, bottom_new, 2)
     old_ctrl = "LV_BUTTONMATRIX_CTRL_CHECKED | 2, 6, LV_BUTTONMATRIX_CTRL_CHECKED | 2, LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2\n};"
     s = s.replace(old_ctrl, old_ctrl.replace("\n};", ", LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2\n};"), 2)
     emoji_map = ("static const char * const default_kb_map_emoji[] = {\"abc\", "
@@ -130,14 +142,25 @@ def patch_keyboard_emoji():
                   "    default_kb_map_spec,\n    default_kb_map_num,\n    default_kb_map_emoji,", 1)
     s = s.replace("    default_kb_ctrl_spec_map,\n    default_kb_ctrl_num_map,\n    default_kb_ctrl_lc_map,",
                   "    default_kb_ctrl_spec_map,\n    default_kb_ctrl_num_map,\n    default_kb_ctrl_emoji_map,", 1)
-    s = s.replace('    if(lv_strcmp(txt, "abc") == 0) {',
-                  "    if(lv_strcmp(txt, EMOJI_KEY) == 0 && keyboard->mode != LV_KEYBOARD_MODE_USER_1) {\n"
-                  "        keyboard->mode = LV_KEYBOARD_MODE_USER_1;\n"
-                  "        lv_buttonmatrix_set_map(obj, kb_map[LV_KEYBOARD_MODE_USER_1]);\n"
-                  "        lv_keyboard_update_ctrl_map(obj);\n"
-                  "        return;\n"
-                  "    }\n"
-                  '    if(lv_strcmp(txt, "abc") == 0) {', 1)
+    handler = ("    if(lv_strcmp(txt, EMOJI_KEY) == 0 && keyboard->mode != LV_KEYBOARD_MODE_USER_1) {\n"
+               "        keyboard->mode = LV_KEYBOARD_MODE_USER_1;\n"
+               "        lv_buttonmatrix_set_map(obj, kb_map[LV_KEYBOARD_MODE_USER_1]);\n"
+               "        lv_keyboard_update_ctrl_map(obj);\n"
+               "        return;\n"
+               "    }\n")
+    if compose:
+        handler += ("    if(lv_strcmp(txt, \"B/I\") == 0) {\n"
+                    "        emoji_format_key(-1);\n"
+                    "        return;\n"
+                    "    }\n"
+                    "    if(lv_strcmp(txt, LV_SYMBOL_BELL) == 0) {\n"
+                    "        emoji_format_key(5);\n"
+                    "        return;\n"
+                    "    }\n")
+    s = s.replace('    if(lv_strcmp(txt, "abc") == 0) {', handler + '    if(lv_strcmp(txt, "abc") == 0) {', 1)
+    if compose:
+        s = s.replace("        lv_textarea_add_text(keyboard->ta, txt);\n    }\n}",
+                      "        emoji_recent_note(txt);\n        lv_textarea_add_text(keyboard->ta, txt);\n    }\n}", 1)
     write(kb, s, crlf)
     print("Patched", kb)
 
@@ -160,13 +183,26 @@ def main():
              "        int32_t gapBelow = (int32_t)v - text_coords.y2;\n"
              "        if (gapBelow < 0)\n"
              "            gapBelow = 0;\n"
-             "        int32_t slide = (int32_t)kb_h - gapBelow + 2;\n"
+             "        int32_t slide = (int32_t)kb_h - gapBelow + 2" + (" + emoji_strip_height()" if "compose" in feat else "") + ";\n"
              "        if (slide < 0)\n"
              "            slide = 0;\n"
              "        lv_anim_set_values(&a1, panelY, kbdPanelBaseY - slide);\n", "replace")
 
     tft_decl = ""
     vc_decl = ""
+
+    # battery INA I2C address forced to a fixed value, pushed to the node when it differs
+    if ina_addr:
+        pw_old = "    db.config.power = cfg;" + chr(10) + "    db.config.has_power = true;" + chr(10)
+        pw_new = (
+            "    if (cfg.device_battery_ina_address != %s) {" + chr(10)
+            + "        meshtastic_Config_PowerConfig fixedPower = cfg;" + chr(10)
+            + "        fixedPower.device_battery_ina_address = %s;" + chr(10)
+            + "        db.config.power = fixedPower;" + chr(10)
+            + "        controller->sendConfig(std::move(fixedPower));" + chr(10)
+            + "    }" + chr(10)
+        ) % (ina_addr, ina_addr)
+        edit(tft, pw_old, pw_new)
 
     # colour emoji, emoji key and page on the keyboard, SD pack
     if "emoji" in feat:
@@ -176,7 +212,7 @@ def main():
         inc, _ = read(os.path.join(HERE, "emoji_color_builtin%s.inc" % full))
         write(os.path.join(dst, "emoji_color_builtin.inc"), inc.replace("static const uint8_t builtin_data[]", "alignas(4) static const uint8_t builtin_data[]"), False)
         patch_fonts()
-        patch_keyboard_emoji()
+        patch_keyboard_emoji("compose" in feat)
         edit(conf, "#define LV_USE_IMGFONT 0", "#define LV_USE_IMGFONT 1", "replace")
         edit(conf, "#define LV_USE_FS_MEMFS 0", "#define LV_USE_FS_MEMFS 1", "replace")
         edit(conf, "#define LV_FS_MEMFS_LETTER '" + chr(92) + "0'", "#define LV_FS_MEMFS_LETTER 'M'", "replace")
@@ -280,6 +316,27 @@ def main():
                    "    emoji_ctx_done();\n")
         edit(tft, add_old, add_new, "replace")
 
+    # recent emoji strip, format bar, alert bell, copy and paste, formatted bubbles, theme coloured keyboard
+    if "compose" in feat:
+        copy("emoji_compose.cpp.in", dst)
+        for style in ("bold", "italic"):
+            for size in (14,):
+                fname = "mui_font_%s_%d" % (style, size)
+                ftxt, _ = read(os.path.join(HERE, fname + ".c.in"))
+                if "emoji" in feat:
+                    ftxt = ftxt.replace(".fallback = NULL,", ".fallback = &ui_emoji_color_font,", 1)
+                    ftxt = ftxt.replace("#ifdef LV_LVGL_H_INCLUDE_SIMPLE",
+                                        "#include \"lvgl.h\"\nextern lv_font_t ui_emoji_color_font;\n#ifdef LV_LVGL_H_INCLUDE_SIMPLE", 1)
+                write(os.path.join(dst, fname + ".c"), ftxt, False)
+        edit(conf, "#define LV_USE_SPAN       0", "#define LV_USE_SPAN       1", "replace")
+        tft_decl += ('extern "C" void emoji_compose_init(lv_obj_t *, lv_obj_t *, lv_obj_t *, void (*)(lv_obj_t *));\n'
+                     'extern "C" int emoji_strip_height(void);\n')
+        edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n",
+             "    emoji_compose_init(objects.message_input_area, objects.main_screen, objects.keyboard, [](lv_obj_t *ta) {\n"
+             "        lv_obj_move_foreground(objects.keyboard);\n"
+             "        THIS->showKeyboard(ta);\n"
+             "    });\n", "before")
+
     # extra themes
     if "themes" in feat:
         copy("themes_extra.inc.in", os.path.join(UI, "source", "graphics", "TFT"), "themes_extra.inc")
@@ -293,12 +350,49 @@ def main():
         for d in ("ui_320x240", "ui_240x320"):
             edit(os.path.join(UI, "generated", d, "screens.c"), r'_("Dark\nLight")', r'_("Dark\nLight\nRed\nOLED\nOcean\nAmber\nPurple")', "replace")
 
+    if "compose" in feat:
+        themes_cpp2 = os.path.join(UI, "source", "graphics", "TFT", "Themes.cpp")
+        edit(themes_cpp2, "void Themes::set(enum Theme th)\n{",
+             'extern "C" void emoji_keyboard_theme(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\n', "before")
+        edit(themes_cpp2, "    apply_style_statistics_table_style_ITEMS_DEFAULT();\n}\n\nvoid Themes::initStyles(void)",
+             "    apply_style_statistics_table_style_ITEMS_DEFAULT();\n"
+             "    emoji_keyboard_theme(THEME(ePanelBg), THEME(eNodePanelBg), THEME(ePanelText), THEME(eTopPanelBg), THEME(ePanelPressedBg));\n"
+             "}\n\nvoid Themes::initStyles(void)", "replace")
+
     # advanced settings with the chat names switch and the MQTT form
     if "advanced" in feat:
         copy("emoji_advanced.cpp.in", dst)
         tft_decl += ('extern "C" bool emoji_long_names(void);\n'
                      'extern "C" void emoji_settings_init(lv_obj_t *, lv_obj_t *, lv_obj_t *, void *(*)(void), void (*)(void), '
-                     'void (*)(lv_obj_t *));\n')
+                     'void (*)(lv_obj_t *));\n'
+                     'extern "C" void emoji_settings_host(void *(*)(void), void *(*)(void), void *(*)(void), void *(*)(void), '
+                     'void (*)(void), void (*)(void), void (*)(void), void (*)(void));\n'
+                     'extern "C" void emoji_settings_host2(void *(*)(void), void (*)(void), int, void (*)(const char *));\n')
+        vc_decl += 'extern "C" void emoji_gps_record(const void *);\n'
+        edit(vc, '            // if "to" is our node then this is a reply to a requestPosition request\n',
+             "            if (p.from == myNodeNum)\n"
+             "                emoji_gps_record(&position);\n", "before")
+        edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n",
+             "    emoji_settings_host(\n"
+             "        []() -> void * { return &THIS->db.config.lora; }, []() -> void * { return &THIS->db.config.position; },\n"
+             "        []() -> void * { return &THIS->db.config.security; }, []() -> void * { return &THIS->db.config.power; },\n"
+             "        []() { THIS->controller->sendConfig(meshtastic_Config_LoRaConfig{THIS->db.config.lora}); },\n"
+             "        []() { THIS->controller->sendConfig(meshtastic_Config_PositionConfig{THIS->db.config.position}); },\n"
+             "        []() { THIS->controller->sendConfig(meshtastic_Config_SecurityConfig{THIS->db.config.security}); },\n"
+             "        []() { THIS->controller->sendConfig(meshtastic_Config_PowerConfig{THIS->db.config.power}); });\n"
+             "    emoji_settings_host2(\n"
+             "        []() -> void * { return &THIS->db.module_config.external_notification; },\n"
+             "        []() {\n"
+             "            THIS->controller->sendConfig(\n"
+             "                meshtastic_ModuleConfig_ExternalNotificationConfig{THIS->db.module_config.external_notification});\n"
+             "        },\n"
+             "        " + notify_pin + "," + chr(10) +
+             "        [](const char *ring) {" + chr(10) +
+             "            char buf[231];" + chr(10) +
+             "            strncpy(buf, ring, sizeof(buf) - 1);" + chr(10) +
+             "            buf[sizeof(buf) - 1] = 0;" + chr(10) +
+             "            THIS->controller->sendConfig(buf);" + chr(10) +
+             "        });" + chr(10))
         edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n",
              "    emoji_settings_init(\n"
              "        objects.basic_settings_language_button, objects.main_screen, objects.keyboard,\n"
@@ -330,9 +424,51 @@ def main():
              "    if ((effTimeout > 0 && lv_display_get_inactive_time(NULL) > effTimeout) || powerSaving ||\n", "replace")
         edit(tft, "    if (!restore) {\n        // display msg popup if not already viewing the messages\n",
              "    if (!restore) {\n"
-             "        if (!db.channel[ch].settings.module_settings.is_muted)\n"
+             "        if (!db.channel[ch].settings.module_settings.is_muted" + (" && !emoji_quiet_now()" if "advanced" in feat else "") + ")\n"
              "            displaydriver->wakeForMessage();\n"
              "        // display msg popup if not already viewing the messages\n", "replace")
+        if "advanced" in feat:
+            tft_decl += 'extern "C" bool emoji_quiet_now(void);\n'
+
+
+    # screensaver: dim page with clock and status, double tap to unlock
+    if "screensaver" in feat:
+        copy("emoji_screensaver.cpp.in", dst)
+        copy("mui_font_clock_64.c.in", dst)
+        tft_decl += ('extern "C" void emoji_ss_init(void (*)(uint32_t *));\n'
+                     'extern "C" void emoji_ss_metrics(uint32_t, float, float);\n'
+                     'extern "C" void emoji_ss_message(const char *, const char *);\n')
+        edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n",
+             "    emoji_ss_init([](uint32_t *d) {\n"
+             "        d[0] = THIS->nodesOnline;\n"
+             "        d[1] = THIS->nodeCount;\n"
+             "        d[2] = THIS->unreadMessages;\n"
+             "        d[3] = THIS->db.module_config.mqtt.enabled;\n"
+             "        d[4] = THIS->db.config.network.wifi_enabled;\n"
+             "    });\n", "before")
+        edit(tft, "        if (it->first == ownNode) {\n            sprintf(buf, _(\"Util %0.1f%%  Air %0.1f%%\"), chUtil, airUtil);\n",
+             "        if (it->first == ownNode) {\n"
+             "            emoji_ss_metrics(bat_level, chUtil, airUtil);\n"
+             "            sprintf(buf, _(\"Util %0.1f%%  Air %0.1f%%\"), chUtil, airUtil);\n", "replace")
+        edit(tft, "void TFTView_320x240::newMessage(uint32_t from, uint32_t to, uint8_t ch, const char *msg, uint32_t &msgTime, bool restore)\n{\n",
+             "    if (!restore) {\n"
+             "        auto itn = nodes.find(from);\n"
+             "        emoji_ss_message(itn != nodes.end() ? lv_label_get_text(itn->second->LV_OBJ_IDX(node_lbl_idx)) : \"\", msg);\n"
+             "    }\n")
+        tmo = "effTimeout" if "wake" in feat else "screenTimeout"
+        edit(drv, "template <class LGFX> void LGFXDriver<LGFX>::task_handler(void)\n{",
+             'extern "C" int emoji_ss_poll(uint32_t, uint32_t, bool, uint32_t, int *);\n', "before")
+        edit(drv, "    if ((%s > 0 && lv_display_get_inactive_time(NULL) > %s) || powerSaving ||\n" % (tmo, tmo),
+             "    int ssBl = -1;\n"
+             "    int ssStage = emoji_ss_poll(lv_display_get_inactive_time(NULL), %s, powerSaving, lastBrightness, &ssBl);\n"
+             "    if (ssStage == 3) {\n"
+             "        lgfx->setBrightness(lastBrightness);\n"
+             "        lv_display_trigger_activity(NULL);\n"
+             "    }\n"
+             "    if (ssStage == 1) {\n"
+             "        if (ssBl >= 0 && (int)lgfx->getBrightness() != ssBl)\n"
+             "            lgfx->setBrightness(ssBl);\n"
+             "    } else if ((%s > 0 && lv_display_get_inactive_time(NULL) > %s) || powerSaving ||\n" % (tmo, tmo, tmo), "replace")
 
     # declarations, one block per file
     if tft_decl:

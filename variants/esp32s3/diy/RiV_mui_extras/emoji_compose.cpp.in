@@ -1,0 +1,892 @@
+// Message compose extras: recent emoji strip above the keyboard, format keys with their popups (bold, italic, strike, code, link, alert
+// bell), a copy/cut/paste bar for the message box, formatted bubbles drawn with spans, red alert bubbles, and the keyboard colours that
+// follow the selected theme.
+#include "lvgl.h"
+#include <Preferences.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+extern "C" {
+extern const lv_font_t ui_font_montserrat_12;
+extern const lv_font_t ui_font_montserrat_14;
+extern const lv_font_t ui_font_montserrat_16;
+extern const lv_font_t ui_font_montserrat_20;
+extern const lv_font_t mui_font_bold_14;
+extern const lv_font_t mui_font_italic_14;
+}
+
+typedef void (*KbFn)(lv_obj_t *);
+
+static lv_obj_t *g_screen = nullptr;
+static lv_obj_t *g_kb = nullptr;
+static lv_obj_t *g_ta = nullptr;
+static KbFn g_showKb = nullptr;
+
+static const int STRIP_H = 26;
+static const char BEL = 0x07;
+
+// ---- clipboard, shared with the bubble menu ----
+
+static char g_clip[240];
+
+extern "C" void emoji_clip_set(const char *text)
+{
+    snprintf(g_clip, sizeof(g_clip), "%s", text ? text : "");
+}
+
+// ---- recent emoji ----
+
+static char g_rec[10][8];
+static lv_obj_t *g_strip = nullptr;
+static lv_obj_t *g_recLabels[10];
+
+static void rec_load(void)
+{
+    memset(g_rec, 0, sizeof(g_rec));
+    Preferences p;
+    p.begin("chatui", true);
+    if (p.getBytesLength("rec") == sizeof(g_rec))
+        p.getBytes("rec", g_rec, sizeof(g_rec));
+    else {
+        static const char *const defaults[10] = {"\xF0\x9F\x91\x8D", "\xE2\x9D\xA4", "\xF0\x9F\x98\x82", "\xF0\x9F\x99\x8F", "\xF0\x9F\x94\xA5",
+                                                 "\xF0\x9F\x98\x80", "\xE2\x9C\x85", "\xF0\x9F\x98\xA2", "\xF0\x9F\x8E\x89", "\xF0\x9F\x98\xAE"};
+        for (int i = 0; i < 10; i++)
+            snprintf(g_rec[i], sizeof(g_rec[i]), "%s", defaults[i]);
+    }
+    p.end();
+}
+
+static void rec_save(void)
+{
+    Preferences p;
+    p.begin("chatui", false);
+    p.putBytes("rec", g_rec, sizeof(g_rec));
+    p.end();
+}
+
+static void rec_refresh(void)
+{
+    for (int i = 0; i < 10; i++)
+        if (g_recLabels[i])
+            lv_label_set_text(g_recLabels[i], g_rec[i]);
+}
+
+// an emoji was used: it goes to the front
+extern "C" void emoji_recent_note(const char *txt)
+{
+    size_t n = strlen(txt);
+    if (n == 0 || n > 7 || (unsigned char)txt[0] < 0xE2)
+        return; // plain characters are not emoji
+    int at = 9;
+    for (int i = 0; i < 10; i++)
+        if (strcmp(g_rec[i], txt) == 0) {
+            at = i;
+            break;
+        }
+    for (int i = at; i > 0; i--)
+        memcpy(g_rec[i], g_rec[i - 1], 8);
+    memset(g_rec[0], 0, 8);
+    memcpy(g_rec[0], txt, n);
+    rec_refresh();
+    rec_save();
+}
+
+extern "C" int emoji_strip_height(void)
+{
+    return STRIP_H;
+}
+
+static void rec_pick_cb(lv_event_t *e)
+{
+    lv_obj_t *l = (lv_obj_t *)lv_event_get_target(e);
+    char txt[8];
+    snprintf(txt, sizeof(txt), "%s", lv_label_get_text(l));
+    if (g_ta)
+        lv_textarea_add_text(g_ta, txt);
+    emoji_recent_note(txt);
+}
+
+// ---- theme colours for the keyboard ----
+
+static uint32_t g_thBg = 0, g_thKey = 0, g_thText = 0, g_thSpecial = 0, g_thPressed = 0;
+static bool g_thValid = false;
+
+static void kb_apply_theme(void)
+{
+    if (!g_kb || !g_thValid)
+        return;
+    lv_obj_set_style_bg_color(g_kb, lv_color_hex(g_thBg), LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_kb, lv_color_hex(g_thText), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_kb, lv_color_hex(g_thKey), LV_PART_ITEMS);
+    lv_obj_set_style_text_color(g_kb, lv_color_hex(g_thText), LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(g_kb, lv_color_hex(g_thSpecial), (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
+    lv_obj_set_style_text_color(g_kb, lv_color_hex(g_thText), (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
+    lv_obj_set_style_bg_color(g_kb, lv_color_hex(g_thPressed), (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_PRESSED));
+    if (g_strip) {
+        lv_obj_set_style_bg_color(g_strip, lv_color_hex(g_thBg), 0);
+        for (int i = 0; i < 10; i++)
+            if (g_recLabels[i])
+                lv_obj_set_style_bg_color(g_recLabels[i], lv_color_hex(g_thKey), 0);
+    }
+}
+
+extern "C" void emoji_keyboard_theme(uint32_t bg, uint32_t key, uint32_t text, uint32_t special, uint32_t pressed)
+{
+    g_thBg = bg, g_thKey = key, g_thText = text, g_thSpecial = special, g_thPressed = pressed;
+    g_thValid = true;
+    kb_apply_theme();
+}
+
+// ---- format state: markers stay out of the text box and are added when the message is sent ----
+
+static const char *const FMT_MARK[4] = {"**", "*", "~~", "`"};
+static const char *const FMT_NAME[4] = {"Bold", "Italic", "Strike", "Code"};
+struct FmtRange {
+    int kind;
+    uint32_t start, end;
+};
+static FmtRange g_ranges[24];
+static int g_nRanges = 0;
+static bool g_active[4];
+static uint32_t g_activeStart[4];
+static char g_prev[260];
+static lv_obj_t *g_fbar = nullptr, *g_chips = nullptr;
+static lv_obj_t *g_fbarBtn[4];
+static bool g_barOpen = false;
+
+static void preview_update(void);
+extern "C" void emoji_preview_place(int32_t x, int32_t bottomY, bool show);
+
+static void fmt_clear(void)
+{
+    g_nRanges = 0;
+    for (int k = 0; k < 4; k++)
+        g_active[k] = false;
+}
+
+static void fmt_refresh_ui(void)
+{
+    bool any = false;
+    for (int k = 0; k < 4; k++) {
+        any = any || g_active[k];
+        if (g_fbarBtn[k])
+            lv_obj_set_style_bg_color(g_fbarBtn[k], lv_color_hex(g_active[k] ? 0x2F7D4F : 0x3D4A86), 0);
+    }
+    if (g_chips) {
+        char t[60];
+        t[0] = 0;
+        for (int k = 0; k < 4; k++)
+            if (g_active[k])
+                snprintf(t + strlen(t), sizeof(t) - strlen(t), "%s%s", t[0] ? "  " : "", FMT_NAME[k]);
+        lv_label_set_text(g_chips, t);
+        if (any)
+            lv_obj_remove_flag(g_chips, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_add_flag(g_chips, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void fmt_toggle(int k)
+{
+    uint32_t len = (uint32_t)strlen(lv_textarea_get_text(g_ta));
+    if (g_active[k]) {
+        g_active[k] = false;
+        if (len > g_activeStart[k] && g_nRanges < 24)
+            g_ranges[g_nRanges++] = {k, g_activeStart[k], len};
+    } else {
+        g_active[k] = true;
+        g_activeStart[k] = len;
+    }
+    fmt_refresh_ui();
+    preview_update();
+}
+
+// the text box changed: appending or deleting at the end keeps the formatting, anything else drops it
+static void ta_changed_cb(lv_event_t *e)
+{
+    const char *now = lv_textarea_get_text(g_ta);
+    size_t nl = strlen(now), pl = strlen(g_prev);
+    if (nl >= pl && strncmp(now, g_prev, pl) == 0) {
+        // appended
+    } else if (nl < pl && strncmp(now, g_prev, nl) == 0) {
+        int w = 0;
+        for (int i = 0; i < g_nRanges; i++) {
+            if (g_ranges[i].start >= nl)
+                continue;
+            if (g_ranges[i].end > nl)
+                g_ranges[i].end = (uint32_t)nl;
+            g_ranges[w++] = g_ranges[i];
+        }
+        g_nRanges = w;
+        for (int k = 0; k < 4; k++)
+            if (g_active[k] && g_activeStart[k] > nl)
+                g_activeStart[k] = (uint32_t)nl;
+    } else if (nl > 0 || pl > 0) {
+        fmt_clear();
+        fmt_refresh_ui();
+    }
+    snprintf(g_prev, sizeof(g_prev), "%s", now);
+    preview_update();
+}
+
+// text with the markers put around the formatted parts
+static size_t compose_marked(char *out, size_t outSize)
+{
+    const char *now = lv_textarea_get_text(g_ta);
+    uint32_t len = (uint32_t)strlen(now);
+    FmtRange all[28];
+    int n = 0;
+    for (int i = 0; i < g_nRanges; i++)
+        all[n++] = g_ranges[i];
+    for (int k = 0; k < 4; k++)
+        if (g_active[k] && len > g_activeStart[k])
+            all[n++] = {k, g_activeStart[k], len};
+    size_t o = 0;
+    for (uint32_t pos = 0; pos <= len && o < outSize - 8; pos++) {
+        for (int k = 3; k >= 0; k--)
+            for (int i = 0; i < n; i++)
+                if (all[i].kind == k && all[i].end == pos)
+                    o += snprintf(out + o, outSize - o, "%s", FMT_MARK[k]);
+        for (int k = 0; k < 4; k++)
+            for (int i = 0; i < n; i++)
+                if (all[i].kind == k && all[i].start == pos)
+                    o += snprintf(out + o, outSize - o, "%s", FMT_MARK[k]);
+        if (pos < len)
+            out[o++] = now[pos];
+    }
+    out[o < outSize ? o : outSize - 1] = 0;
+    return o;
+}
+
+static bool fmt_any(void)
+{
+    if (g_nRanges > 0)
+        return true;
+    for (int k = 0; k < 4; k++)
+        if (g_active[k])
+            return true;
+    return false;
+}
+
+// the message goes out: put the markers around the formatted parts
+static void ta_ready_cb(lv_event_t *e)
+{
+    const char *now = lv_textarea_get_text(g_ta);
+    if (fmt_any() && now[0] != BEL) {
+        char out[260];
+        compose_marked(out, sizeof(out));
+        lv_textarea_set_text(g_ta, out);
+    }
+    fmt_clear();
+    fmt_refresh_ui();
+    g_prev[0] = 0;
+    preview_update();
+}
+
+static void fbtn_cb(lv_event_t *e)
+{
+    fmt_toggle((int)(uintptr_t)lv_event_get_user_data(e));
+}
+
+// ---- alert popup ----
+
+static lv_obj_t *g_pop = nullptr, *g_popTitle = nullptr, *g_popTa = nullptr;
+static bool g_popOpen = false;
+
+static void pop_place(void)
+{
+    if (!g_kb || !g_pop)
+        return;
+    int32_t v = lv_display_get_vertical_resolution(NULL);
+    int32_t kbH = lv_obj_get_height(g_kb);
+    lv_obj_set_y(g_kb, v - kbH);
+    lv_obj_update_layout(g_pop);
+    lv_obj_set_y(g_pop, v - kbH - lv_obj_get_height(g_pop) - 6);
+}
+
+static void pop_show_kb(void)
+{
+    if (g_showKb)
+        g_showKb(g_popTa);
+    pop_place();
+}
+
+static void pop_close(bool restoreKb)
+{
+    if (g_pop)
+        lv_obj_add_flag(g_pop, LV_OBJ_FLAG_HIDDEN);
+    g_popOpen = false;
+    if (restoreKb && g_kb && g_ta) {
+        lv_keyboard_set_textarea(g_kb, g_ta);
+        int32_t v = lv_display_get_vertical_resolution(NULL);
+        lv_obj_set_y(g_kb, v - lv_obj_get_height(g_kb));
+    }
+}
+
+static void send_alert(const char *text)
+{
+    if (!g_ta)
+        return;
+    char saved[240];
+    snprintf(saved, sizeof(saved), "%s", lv_textarea_get_text(g_ta));
+    char msg[240];
+    msg[0] = BEL;
+    snprintf(msg + 1, sizeof(msg) - 1, "%s", text);
+    lv_textarea_set_text(g_ta, msg);
+    lv_obj_send_event(g_ta, LV_EVENT_READY, nullptr);
+    lv_textarea_set_text(g_ta, saved);
+}
+
+static void pop_confirm(void)
+{
+    if (!g_popTa || !g_popOpen)
+        return;
+    char text[160];
+    snprintf(text, sizeof(text), "%s", lv_textarea_get_text(g_popTa));
+    pop_close(true);
+    if (text[0])
+        send_alert(text);
+}
+
+static void pop_ok_cb(lv_event_t *e)
+{
+    pop_confirm();
+}
+
+static void pop_cancel_cb(lv_event_t *e)
+{
+    pop_close(true);
+}
+
+static void pop_ta_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        pop_show_kb();
+    } else if (code == LV_EVENT_READY) {
+        pop_confirm();
+    }
+}
+
+static lv_obj_t *pop_button(lv_obj_t *parent, const char *text, uint32_t bg, lv_event_cb_t cb, void *ud = nullptr)
+{
+    lv_obj_t *l = lv_label_create(parent);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_bg_color(l, lv_color_hex(bg), 0);
+    lv_obj_set_style_bg_opa(l, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(l, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_radius(l, 8, 0);
+    lv_obj_set_style_pad_hor(l, 12, 0);
+    lv_obj_set_style_pad_ver(l, 6, 0);
+    lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(l, cb, LV_EVENT_CLICKED, ud);
+    return l;
+}
+
+static void pop_build(void)
+{
+    g_pop = lv_obj_create(g_screen);
+    lv_obj_remove_style_all(g_pop);
+    lv_obj_set_size(g_pop, lv_pct(96), LV_SIZE_CONTENT);
+    lv_obj_align(g_pop, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_color(g_pop, lv_color_hex(0x2B3158), 0);
+    lv_obj_set_style_bg_opa(g_pop, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(g_pop, 10, 0);
+    lv_obj_set_style_pad_all(g_pop, 8, 0);
+    lv_obj_set_style_pad_row(g_pop, 8, 0);
+    lv_obj_set_flex_flow(g_pop, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(g_pop, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *row = lv_obj_create(g_pop);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    g_popTitle = lv_label_create(row);
+    lv_label_set_text(g_popTitle, "Alert text");
+    lv_obj_set_style_text_color(g_popTitle, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_flex_grow(g_popTitle, 1);
+    pop_button(row, "OK", 0x2F7D4F, pop_ok_cb);
+    pop_button(row, "X", 0x5A6078, pop_cancel_cb);
+    g_popTa = lv_textarea_create(g_pop);
+    lv_obj_set_width(g_popTa, lv_pct(100));
+    lv_textarea_set_one_line(g_popTa, true);
+    lv_textarea_set_max_length(g_popTa, 150);
+    lv_obj_set_style_bg_color(g_popTa, lv_color_hex(0xEEF0F6), 0);
+    lv_obj_set_style_text_color(g_popTa, lv_color_hex(0x1F2937), 0);
+    lv_obj_add_event_cb(g_popTa, pop_ta_cb, LV_EVENT_ALL, nullptr);
+    lv_obj_add_flag(g_pop, LV_OBJ_FLAG_HIDDEN);
+}
+
+// keyboard keys: -1 shows or hides the format bar, 5 is the alert bell
+extern "C" void emoji_format_key(int kind)
+{
+    if (!g_screen || !g_ta)
+        return;
+    if (kind == -1) {
+        g_barOpen = !g_barOpen;
+        if (g_fbar && !g_barOpen)
+            lv_obj_add_flag(g_fbar, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    if (!g_pop)
+        pop_build();
+    g_popOpen = true;
+    lv_textarea_set_text(g_popTa, "");
+    lv_obj_remove_flag(g_pop, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(g_pop);
+    pop_show_kb();
+}
+
+// ---- copy, cut and paste bar ----
+
+static lv_obj_t *g_clipBar = nullptr;
+static lv_timer_t *g_clipTimer = nullptr;
+
+static void clip_hide(void)
+{
+    if (g_clipBar)
+        lv_obj_add_flag(g_clipBar, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void clip_timer_cb(lv_timer_t *t)
+{
+    clip_hide();
+    lv_timer_pause(t);
+}
+
+static void clip_cb(lv_event_t *e)
+{
+    int kind = (int)(uintptr_t)lv_event_get_user_data(e);
+    if (!g_ta)
+        return;
+    if (kind == 0 || kind == 1) {
+        emoji_clip_set(lv_textarea_get_text(g_ta));
+        if (kind == 0)
+            lv_textarea_set_text(g_ta, "");
+    } else if (g_clip[0]) {
+        lv_textarea_add_text(g_ta, g_clip);
+    }
+    clip_hide();
+}
+
+extern "C" bool emoji_reply_active(void);
+
+static void ta_long_cb(lv_event_t *e)
+{
+    if (!g_clipBar)
+        return;
+    lv_obj_remove_flag(g_clipBar, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_align_to(g_clipBar, g_ta, LV_ALIGN_OUT_TOP_LEFT, 0, emoji_reply_active() ? -40 : -2);
+    lv_obj_move_foreground(g_clipBar);
+    if (!g_clipTimer)
+        g_clipTimer = lv_timer_create(clip_timer_cb, 5000, nullptr);
+    lv_timer_reset(g_clipTimer);
+    lv_timer_resume(g_clipTimer);
+}
+
+// ---- strip follows the keyboard ----
+
+static void follow_cb(lv_timer_t *t)
+{
+    if (!g_strip || !g_kb)
+        return;
+    int32_t v = lv_display_get_vertical_resolution(NULL);
+    bool kbOn = !lv_obj_has_flag(g_kb, LV_OBJ_FLAG_HIDDEN) && lv_keyboard_get_textarea(g_kb) == g_ta && lv_obj_get_y(g_kb) < v - 20;
+    bool show = kbOn && (!g_pop || lv_obj_has_flag(g_pop, LV_OBJ_FLAG_HIDDEN));
+    if (g_fbar && g_chips) {
+        bool chip = !lv_obj_has_flag(g_chips, LV_OBJ_FLAG_HIDDEN);
+        lv_area_t a;
+        lv_obj_get_coords(g_ta, &a);
+        int32_t top = a.y1 - 2;
+        if (!show) {
+            lv_obj_add_flag(g_fbar, LV_OBJ_FLAG_HIDDEN);
+        } else if (g_barOpen) {
+            lv_obj_remove_flag(g_fbar, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_pos(g_fbar, a.x1, top - lv_obj_get_height(g_fbar) - (chip ? 22 : 0));
+            lv_obj_move_foreground(g_fbar);
+        }
+        if (show && chip) {
+            lv_obj_set_pos(g_chips, a.x1 + 2, top - lv_obj_get_height(g_chips));
+            lv_obj_move_foreground(g_chips);
+        } else if (!show) {
+            lv_obj_add_flag(g_chips, LV_OBJ_FLAG_HIDDEN);
+        }
+        int32_t above = top - (chip ? 22 : 0) - (show && g_barOpen ? lv_obj_get_height(g_fbar) + 4 : 0);
+        emoji_preview_place(a.x1, above - 2, show);
+    }
+    if (show) {
+        lv_obj_remove_flag(g_strip, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_y(g_strip, lv_obj_get_y(g_kb) - STRIP_H);
+        lv_obj_move_foreground(g_strip);
+    } else {
+        lv_obj_add_flag(g_strip, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+extern "C" void emoji_compose_init(lv_obj_t *ta, lv_obj_t *screen, lv_obj_t *keyboard, void (*showKb)(lv_obj_t *))
+{
+    if (g_screen || !ta || !screen || !keyboard)
+        return;
+    g_screen = screen;
+    g_kb = keyboard;
+    g_ta = ta;
+    g_showKb = showKb;
+    rec_load();
+
+    g_strip = lv_obj_create(screen);
+    lv_obj_remove_style_all(g_strip);
+    lv_obj_set_size(g_strip, lv_pct(100), STRIP_H);
+    lv_obj_set_style_bg_color(g_strip, lv_color_hex(0x262A55), 0);
+    lv_obj_set_style_bg_opa(g_strip, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(g_strip, 2, 0);
+    lv_obj_set_style_pad_column(g_strip, 2, 0);
+    lv_obj_set_flex_flow(g_strip, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(g_strip, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(g_strip, LV_OBJ_FLAG_SCROLLABLE);
+    for (int i = 0; i < 10; i++) {
+        lv_obj_t *l = lv_label_create(g_strip);
+        g_recLabels[i] = l;
+        lv_obj_set_flex_grow(l, 1);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_bg_color(l, lv_color_hex(0x3D4A86), 0);
+        lv_obj_set_style_bg_opa(l, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(l, 5, 0);
+        lv_obj_set_style_pad_ver(l, 3, 0);
+        lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(l, rec_pick_cb, LV_EVENT_CLICKED, nullptr);
+    }
+    rec_refresh();
+    lv_obj_add_flag(g_strip, LV_OBJ_FLAG_HIDDEN);
+    lv_timer_create(follow_cb, 30, nullptr);
+
+    g_clipBar = lv_obj_create(screen);
+    lv_obj_remove_style_all(g_clipBar);
+    lv_obj_set_size(g_clipBar, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(g_clipBar, lv_color_hex(0x2B3158), 0);
+    lv_obj_set_style_bg_opa(g_clipBar, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(g_clipBar, 8, 0);
+    lv_obj_set_style_pad_all(g_clipBar, 3, 0);
+    lv_obj_set_style_pad_column(g_clipBar, 3, 0);
+    lv_obj_set_flex_flow(g_clipBar, LV_FLEX_FLOW_ROW);
+    lv_obj_remove_flag(g_clipBar, LV_OBJ_FLAG_SCROLLABLE);
+    static const char *const names[3] = {"Cut", "Copy", "Paste"};
+    for (int i = 0; i < 3; i++) {
+        pop_button(g_clipBar, names[i], 0x3D4A86, clip_cb, (void *)(uintptr_t)i);
+    }
+    lv_obj_add_flag(g_clipBar, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(ta, ta_long_cb, LV_EVENT_LONG_PRESSED, nullptr);
+    lv_obj_add_event_cb(ta, ta_changed_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_add_event_cb(ta, ta_ready_cb, LV_EVENT_READY, nullptr);
+
+    g_fbar = lv_obj_create(screen);
+    lv_obj_remove_style_all(g_fbar);
+    lv_obj_set_size(g_fbar, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(g_fbar, lv_color_hex(0x2B3158), 0);
+    lv_obj_set_style_bg_opa(g_fbar, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(g_fbar, 10, 0);
+    lv_obj_set_style_pad_all(g_fbar, 4, 0);
+    lv_obj_set_style_pad_column(g_fbar, 4, 0);
+    lv_obj_set_flex_flow(g_fbar, LV_FLEX_FLOW_ROW);
+    lv_obj_remove_flag(g_fbar, LV_OBJ_FLAG_SCROLLABLE);
+    static const char *const fl[4] = {"B", "I", "S", "</>"};
+    for (int k = 0; k < 4; k++) {
+        g_fbarBtn[k] = pop_button(g_fbar, fl[k], 0x3D4A86, fbtn_cb, (void *)(uintptr_t)k);
+        lv_obj_set_style_min_width(g_fbarBtn[k], 38, 0);
+        lv_obj_set_style_text_align(g_fbarBtn[k], LV_TEXT_ALIGN_CENTER, 0);
+    }
+    lv_obj_add_flag(g_fbar, LV_OBJ_FLAG_HIDDEN);
+
+    g_chips = lv_label_create(screen);
+    lv_obj_set_style_bg_color(g_chips, lv_color_hex(0x2F7D4F), 0);
+    lv_obj_set_style_bg_opa(g_chips, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(g_chips, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_radius(g_chips, 10, 0);
+    lv_obj_set_style_pad_hor(g_chips, 9, 0);
+    lv_obj_set_style_pad_ver(g_chips, 2, 0);
+    lv_label_set_text(g_chips, "");
+    lv_obj_add_flag(g_chips, LV_OBJ_FLAG_HIDDEN);
+
+    kb_apply_theme();
+}
+
+// ---- formatted and alert bubbles ----
+
+enum { F_BOLD = 1, F_ITALIC = 2, F_STRIKE = 4, F_CODE = 8 };
+
+struct Seg {
+    const char *p;
+    size_t n;
+    uint8_t flags;
+};
+
+static bool marker_at(const char *s, size_t i, const char *mk)
+{
+    return strncmp(s + i, mk, strlen(mk)) == 0;
+}
+
+// true when the marker at i opens a pair (a closing one follows) or closes the one that is open
+static bool toggle(const char *s, size_t i, const char *mk, uint8_t bit, uint8_t &cur)
+{
+    size_t ml = strlen(mk);
+    if (!marker_at(s, i, mk))
+        return false;
+    if (cur & bit) {
+        cur &= ~bit;
+        return true;
+    }
+    const char *after = s + i + ml;
+    if (*after == 0 || marker_at(s, i + ml, mk))
+        return false; // nothing between the markers
+    if (!strstr(after, mk))
+        return false;
+    cur |= bit;
+    return true;
+}
+
+static int parse_md(const char *s, Seg *out, int maxSegs)
+{
+    int n = 0;
+    uint8_t cur = 0;
+    size_t i = 0, start = 0;
+    while (s[i]) {
+        if (n >= maxSegs - 2)
+            break;
+        size_t before = i;
+        uint8_t prev = cur;
+        bool took = false;
+        size_t skip = 0;
+        if (s[i] == '*' && s[i + 1] == '*') {
+            took = toggle(s, i, "**", F_BOLD, cur);
+            skip = 2;
+        } else if (s[i] == '~' && s[i + 1] == '~') {
+            took = toggle(s, i, "~~", F_STRIKE, cur);
+            skip = 2;
+        } else if (s[i] == '`') {
+            took = toggle(s, i, "`", F_CODE, cur);
+            skip = 1;
+        } else if (s[i] == '*') {
+            took = toggle(s, i, "*", F_ITALIC, cur);
+            skip = 1;
+        }
+        if (took) {
+            if (before > start)
+                out[n++] = {s + start, before - start, prev};
+            i += skip;
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    if (s[start])
+        out[n++] = {s + start, strlen(s + start), cur};
+    return n;
+}
+
+static const lv_font_t *styled(const lv_font_t *f, bool bold)
+{
+    if (f == &ui_font_montserrat_14)
+        return bold ? &mui_font_bold_14 : &mui_font_italic_14;
+    return nullptr;
+}
+
+static const lv_font_t *bigger(const lv_font_t *f)
+{
+    if (f == &ui_font_montserrat_12)
+        return &ui_font_montserrat_14;
+    if (f == &ui_font_montserrat_14)
+        return &ui_font_montserrat_16;
+    if (f == &ui_font_montserrat_16)
+        return &ui_font_montserrat_20;
+    return f;
+}
+
+static void add_span(lv_obj_t *sg, const char *text, size_t n, lv_color_t base, const lv_font_t *font, uint8_t flags, bool alert)
+{
+    if (n == 0)
+        return;
+    char tmp[260];
+    if (n > sizeof(tmp) - 1)
+        n = sizeof(tmp) - 1;
+    memcpy(tmp, text, n);
+    tmp[n] = 0;
+    lv_span_t *sp = lv_spangroup_add_span(sg);
+    lv_span_set_text(sp, tmp);
+    lv_style_t *st = lv_span_get_style(sp);
+    lv_style_set_text_color(st, base);
+    lv_style_set_text_font(st, font);
+    if (alert) {
+        lv_style_set_text_color(st, lv_color_hex(0xFFFFFF));
+    }
+    if (flags & F_BOLD) {
+        const lv_font_t *bf = styled(font, true);
+        lv_style_set_text_font(st, bf ? bf : bigger(font));
+    }
+    if (flags & F_ITALIC) {
+        const lv_font_t *itf = styled(font, false);
+        if (itf && !(flags & F_BOLD))
+            lv_style_set_text_font(st, itf);
+        else if (!itf)
+            lv_style_set_text_color(st, alert ? lv_color_hex(0xFFD6D2) : lv_color_hex(0x9EC9FF));
+    }
+    if (flags & F_CODE)
+        lv_style_set_text_color(st, lv_color_hex(0xFFB86C));
+    if (flags & F_STRIKE)
+        lv_style_set_text_decor(st, LV_TEXT_DECOR_STRIKETHROUGH);
+}
+
+// Called for every bubble label. A bell character makes the bubble red and is hidden. Markdown markers in the message turn the bubble
+// text into styled spans, the label stays hidden with the plain text so the other bubble functions still read it. Returns the span
+// group when one was made.
+extern "C" lv_obj_t *emoji_format_bubble(lv_obj_t *label, bool sent)
+{
+    if (!label)
+        return nullptr;
+    char text[300];
+    snprintf(text, sizeof(text), "%s", lv_label_get_text(label));
+    char *nl = strchr(text, '\n');
+    char *body = nl ? nl + 1 : text;
+    bool alert = false;
+    for (char *c = body; *c; c++)
+        if (*c == BEL) {
+            alert = true;
+            memmove(c, c + 1, strlen(c));
+            c--;
+        }
+    Seg segs[24];
+    int nseg = parse_md(body, segs, 24);
+    bool formatted = false;
+    for (int i = 0; i < nseg; i++)
+        if (segs[i].flags)
+            formatted = true;
+    if (!alert && !formatted)
+        return nullptr;
+
+    // plain version for the label: markers removed, 
+    char plain[300];
+    size_t pn = 0;
+    plain[0] = 0;
+    if (nl) {
+        size_t hn = (size_t)(nl - text) + 1;
+        memcpy(plain, text, hn < sizeof(plain) ? hn : sizeof(plain) - 1);
+        pn = hn < sizeof(plain) ? hn : sizeof(plain) - 1;
+    }
+    if (alert)
+        pn += snprintf(plain + pn, sizeof(plain) - pn, LV_SYMBOL_BELL " ");
+    for (int i = 0; i < nseg && pn < sizeof(plain) - 2; i++) {
+        size_t n = segs[i].n < sizeof(plain) - 1 - pn ? segs[i].n : sizeof(plain) - 1 - pn;
+        memcpy(plain + pn, segs[i].p, n);
+        pn += n;
+    }
+    plain[pn] = 0;
+    lv_label_set_text(label, plain);
+    if (alert) {
+        lv_obj_set_style_bg_color(label, lv_color_hex(0xB3261E), 0);
+        lv_obj_set_style_bg_opa(label, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
+    }
+    if (!formatted)
+        return nullptr;
+
+    lv_obj_t *panel = lv_obj_get_parent(label);
+    lv_obj_t *sg = lv_spangroup_create(panel);
+    const lv_font_t *font = lv_obj_get_style_text_font(label, LV_PART_MAIN);
+    lv_color_t base = alert ? lv_color_hex(0xFFFFFF) : lv_obj_get_style_text_color(label, LV_PART_MAIN);
+    lv_spangroup_set_mode(sg, LV_SPAN_MODE_BREAK);
+    int32_t total = 0;
+    if (nl)
+        total += lv_text_get_width(text, (uint32_t)(nl - text), font, 0);
+    for (int i = 0; i < nseg; i++) {
+        char tmp[260];
+        size_t n = segs[i].n < sizeof(tmp) - 1 ? segs[i].n : sizeof(tmp) - 1;
+        memcpy(tmp, segs[i].p, n);
+        tmp[n] = 0;
+        const lv_font_t *sf = font;
+        if (segs[i].flags & F_BOLD)
+            sf = styled(font, true) ? styled(font, true) : bigger(font);
+        else if (segs[i].flags & F_ITALIC)
+            sf = styled(font, false) ? styled(font, false) : font;
+        total += lv_text_get_width(tmp, (uint32_t)n, sf, 0);
+    }
+    int32_t w = total + 14;
+    int32_t hdr = nl ? lv_text_get_width(text, (uint32_t)(nl - text), font, 0) + 14 : 0;
+    if (w < hdr)
+        w = hdr;
+    if (w > 210)
+        w = 210;
+    if (w < 40)
+        w = 40;
+    lv_obj_set_width(sg, w);
+    lv_obj_set_height(sg, LV_SIZE_CONTENT);
+    lv_obj_set_style_align(sg, lv_obj_get_style_align(label, LV_PART_MAIN), 0);
+    lv_obj_set_style_bg_color(sg, alert ? lv_color_hex(0xB3261E) : lv_obj_get_style_bg_color(label, LV_PART_MAIN), 0);
+    lv_obj_set_style_bg_opa(sg, lv_obj_get_style_bg_opa(label, LV_PART_MAIN), 0);
+    lv_obj_set_style_radius(sg, lv_obj_get_style_radius(label, LV_PART_MAIN), 0);
+    lv_obj_set_style_border_width(sg, lv_obj_get_style_border_width(label, LV_PART_MAIN), 0);
+    lv_obj_set_style_border_color(sg, lv_obj_get_style_border_color(label, LV_PART_MAIN), 0);
+    lv_obj_set_style_pad_left(sg, lv_obj_get_style_pad_left(label, LV_PART_MAIN), 0);
+    lv_obj_set_style_pad_right(sg, lv_obj_get_style_pad_right(label, LV_PART_MAIN), 0);
+    lv_obj_set_style_pad_top(sg, lv_obj_get_style_pad_top(label, LV_PART_MAIN), 0);
+    lv_obj_set_style_pad_bottom(sg, lv_obj_get_style_pad_bottom(label, LV_PART_MAIN), 0);
+    if (nl)
+        add_span(sg, text, (size_t)(nl - text) + 1, base, font, 0, alert);
+    if (alert)
+        add_span(sg, LV_SYMBOL_BELL " ", strlen(LV_SYMBOL_BELL " "), base, font, 0, true);
+    for (int i = 0; i < nseg; i++) {
+        add_span(sg, segs[i].p, segs[i].n, base, font, segs[i].flags, alert);
+    }
+    lv_spangroup_refresh(sg);
+    lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+    return sg;
+}
+
+// ---- preview bubble above the message box, only while a format is in use ----
+
+static lv_obj_t *g_prevBox = nullptr;
+static const lv_font_t *PREVIEW_FONT = &ui_font_montserrat_14;
+
+static void preview_update(void)
+{
+    if (g_prevBox) {
+        lv_obj_delete(g_prevBox);
+        g_prevBox = nullptr;
+    }
+    if (!g_screen || !g_ta || !fmt_any())
+        return;
+    const char *plain = lv_textarea_get_text(g_ta);
+    if (plain[0] == 0)
+        return;
+    char marked[260];
+    compose_marked(marked, sizeof(marked));
+    Seg segs[24];
+    int nseg = parse_md(marked, segs, 24);
+    g_prevBox = lv_spangroup_create(g_screen);
+    lv_spangroup_set_mode(g_prevBox, LV_SPAN_MODE_BREAK);
+    lv_obj_set_width(g_prevBox, LV_SIZE_CONTENT);
+    lv_obj_set_height(g_prevBox, LV_SIZE_CONTENT);
+    lv_obj_set_style_max_width(g_prevBox, 250, 0);
+    lv_obj_set_style_bg_color(g_prevBox, lv_color_hex(g_thValid ? g_thKey : 0x3D4A86), 0);
+    lv_obj_set_style_bg_opa(g_prevBox, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(g_prevBox, 8, 0);
+    lv_obj_set_style_pad_all(g_prevBox, 6, 0);
+    lv_obj_remove_flag(g_prevBox, LV_OBJ_FLAG_CLICKABLE);
+    lv_color_t base = lv_color_hex(g_thValid ? g_thText : 0xFFFFFF);
+    for (int i = 0; i < nseg; i++)
+        add_span(g_prevBox, segs[i].p, segs[i].n, base, PREVIEW_FONT, segs[i].flags, false);
+    lv_spangroup_refresh(g_prevBox);
+    lv_obj_add_flag(g_prevBox, LV_OBJ_FLAG_HIDDEN); // follow_cb places it
+}
+
+extern "C" void emoji_preview_place(int32_t x, int32_t bottomY, bool show)
+{
+    if (!g_prevBox)
+        return;
+    if (!show) {
+        lv_obj_add_flag(g_prevBox, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_remove_flag(g_prevBox, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_pos(g_prevBox, x, bottomY - lv_obj_get_height(g_prevBox));
+    lv_obj_move_foreground(g_prevBox);
+}

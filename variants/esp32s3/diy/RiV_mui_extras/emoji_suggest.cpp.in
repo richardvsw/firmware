@@ -9,6 +9,7 @@
 
 static const int MAX_SUGGESTIONS = 8;
 extern "C" bool emoji_reply_active(void);
+extern "C" void emoji_recent_note(const char *txt) __attribute__((weak));
 static lv_obj_t *g_strip = nullptr;
 static lv_obj_t *g_ta = nullptr;
 static bool g_picking = false;
@@ -101,6 +102,8 @@ static void pick_cb(lv_event_t *e)
     for (int k = 0; k < tokenLen; k++)
         lv_textarea_delete_char(g_ta);
     lv_textarea_add_text(g_ta, utf8);
+    if (emoji_recent_note)
+        emoji_recent_note(utf8);
     g_picking = false;
     hide_strip();
 }
