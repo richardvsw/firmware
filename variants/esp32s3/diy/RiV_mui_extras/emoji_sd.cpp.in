@@ -1,0 +1,48 @@
+// Loads the emoji packs from the SD card root: /emoji_color.bin (colour 18x18 images) and /emoji.bin (monochrome LVGL font)
+#include "lvgl.h"
+#include <SdFat.h>
+#include <esp_heap_caps.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+extern "C" lv_font_t ui_emoji_font;
+extern "C" bool emoji_color_load_pack(const uint8_t *buf, uint32_t size);
+extern SdFs SDFs;
+
+static uint8_t *read_file(const char *path, uint32_t *size_out)
+{
+    FsFile f = SDFs.open(path, O_RDONLY);
+    if (!f)
+        return nullptr;
+    uint32_t size = f.size();
+    uint8_t *buf = size ? (uint8_t *)heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : nullptr;
+    if (buf && f.read(buf, size) != (int)size) {
+        free(buf);
+        buf = nullptr;
+    }
+    f.close();
+    *size_out = size;
+    return buf;
+}
+
+extern "C" void emoji_load_from_sd(void)
+{
+    static bool loaded = false;
+    if (loaded)
+        return;
+    loaded = true;
+
+    uint32_t size = 0;
+    uint8_t *color = read_file("/emoji_color.bin", &size);
+    if (color && !emoji_color_load_pack(color, size))
+        free(color);
+
+    uint8_t *mono = read_file("/emoji.bin", &size);
+    if (mono) {
+        lv_font_t *font = lv_binfont_create_from_buffer(mono, size);
+        if (font)
+            ui_emoji_font.fallback = font;
+        else
+            free(mono);
+    }
+}

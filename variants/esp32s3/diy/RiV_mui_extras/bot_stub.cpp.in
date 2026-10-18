@@ -1,0 +1,6 @@
+#include "lvgl.h"
+
+extern "C" bool emoji_bot_container(lv_obj_t *container)
+{
+    return false;
+}
