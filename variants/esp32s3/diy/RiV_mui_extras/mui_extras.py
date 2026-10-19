@@ -15,7 +15,7 @@ LIB = env.subst("$PROJECT_DIR/.pio/libdeps/${PIOENV}")
 UI = os.path.join(LIB, "meshtastic-device-ui")
 LV = os.path.join(LIB, "lvgl")
 
-ALL = "keyboard emoji chat themes advanced wake compose screensaver"  # meshbot is switched on per env
+ALL = "keyboard emoji chat themes advanced wake compose screensaver stickman"  # meshbot is switched on per env
 feat = set(str(env.GetProjectOption("custom_riv_mui_features", ALL)).replace(",", " ").split())
 emoji_set = str(env.GetProjectOption("custom_riv_mui_emoji", "full")).strip()
 ina_addr = str(env.GetProjectOption("custom_riv_mui_ina_address", "")).strip()
@@ -481,6 +481,15 @@ def main():
     if "screensaver" in feat:
         copy("emoji_screensaver.cpp.in", dst)
         copy("mui_font_clock_64.c.in", dst)
+        inc = os.path.join(dst, "emoji_stickman.inc")
+        if "stickman" in feat:
+            copy("emoji_stickman.cpp.in", dst, "emoji_stickman.inc")
+        elif os.path.exists(inc):
+            os.remove(inc)
+        # the TJPGD wrapper only accepts JFIF files from memory; EXIF files (phones, most downloads) start FF D8 FF E1
+        edit(os.path.join(LV, "src", "libs", "tjpgd", "lv_tjpgd.c"),
+             "    const uint8_t jpg_signature[] = {0xFF, 0xD8, 0xFF,  0xE0,  0x00,  0x10, 0x4A,  0x46, 0x49, 0x46};\n",
+             "    const uint8_t jpg_signature[] = {0xFF, 0xD8, 0xFF};\n", "replace")
         tft_decl += ('extern "C" void emoji_ss_init(void (*)(uint32_t *));\n'
                      'extern "C" void emoji_ss_metrics(uint32_t, float, float);\n'
                      'extern "C" void emoji_ss_message(const char *, const char *);\n')

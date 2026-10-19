@@ -1,5 +1,5 @@
 // Screensaver: after the screen timeout the screen dims and a clock and status page shows on the top layer. Touches on it are
-// swallowed, a double tap (or a single tap, as set) unlocks. After a further time the backlight goes off as usual, one tap then
+// swallowed, a single tap (or a long press, as set) unlocks. After a further time the backlight goes off as usual, one tap then
 // shows the dimmed screensaver again.
 #include "lvgl.h"
 #include <Arduino.h>
@@ -15,6 +15,11 @@
 #ifdef HAS_SDCARD
 #include <SdFat.h>
 extern SdFs SDFs;
+#endif
+#if __has_include("emoji_stickman.inc")
+#define RIV_STICKMAN 1
+static void sm_message(const char *from, const char *text);
+static void sm_hide(void);
 #endif
 extern "C" bool emoji_sd_ready(void) __attribute__((weak));
 extern "C" void emoji_crumb(const char *s) __attribute__((weak));
@@ -32,9 +37,9 @@ extern const lv_font_t mui_font_clock_64;
 
 // config keys: 0 on, 1 dim level index, 2 off after index (5 s, 10 s, 30 s, 1 min, 2 min, never), 3 tap mode, 4 battery, 5 nodes, 6 unread, 7 last message, 8 gps, 9 channel use,
 // 10 link status, 11 node footer, 12 status LED mode (0 left to the notification module, 1 always on, 2 gps fix, 3 unread,
-// 4 low battery, 5 charging), 13 look (0 clock page, 1 image and clock, 2 image only), 14 clock style (0 digital, 1 analog, 2 both),
+// 4 low battery, 5 charging), 13 look (0 clock page, 1 image and clock, 2 image only, 3 stickman arena), 14 clock style (0 digital, 1 analog, 2 both),
 // 15 seconds hand, 16 slideshow from /screensaver/N.png instead of /screensaver.png
-static int g_cfg[17] = {0, 1, 2, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+static int g_cfg[17] = {0, 1, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 static bool g_cfgLoaded = false;
 static char g_imgPath[96] = ""; // empty: the first PNG in /screensaver
 static char g_imgMsg[64] = ""; // why no image is shown, drawn on the screensaver
@@ -186,6 +191,9 @@ extern "C" void emoji_ss_message(const char *from, const char *text)
         if (*c == '\n' || *c == 0x07)
             *c = ' ';
     g_boostUntil = millis() + 3000;
+#ifdef RIV_STICKMAN
+    sm_message(g_lastFrom, g_lastText);
+#endif
     refresh();
 }
 
@@ -205,7 +213,8 @@ static lv_point_precise_t g_tickPts[12][2], g_handPts[3][2];
 static lv_obj_t *g_clock, *g_date, *g_battery, *g_nodes, *g_unread, *g_last, *g_gps, *g_chan, *g_chanBar, *g_link, *g_foot;
 static bool g_active = false;
 static bool g_dismiss = false;
-static uint32_t g_lastTap = 0;
+static uint32_t g_shownAt = 0;
+static bool g_wasOff = false; // the backlight was off, the next press only wakes the screensaver
 static lv_timer_t *g_timer = nullptr;
 
 static void ov_click_cb(lv_event_t *e)
@@ -223,14 +232,28 @@ static void poll_taps(void)
     for (lv_indev_t *in = lv_indev_get_next(NULL); in; in = lv_indev_get_next(in))
         if (lv_indev_get_state(in) == LV_INDEV_STATE_PRESSED) // touch, joystick or encoder button
             pressed = true;
-    int unlock = emoji_ss_cfg_get(3); // 0 double tap, 1 single tap, 2 long press
+    static bool swallow = false;
+    if (swallow) { // the press that woke the screen stays out of the unlock logic until the finger is up
+        if (!pressed)
+            swallow = false;
+        prevPressed = pressed;
+        return;
+    }
+    if (pressed && !prevPressed && g_wasOff) {
+        g_wasOff = false;
+        swallow = true;
+        prevPressed = pressed;
+        return;
+    }
+    int unlock = emoji_ss_cfg_get(3); // 2 long press, anything else single tap (0 was the removed double tap)
     if (pressed && !prevPressed) {
         uint32_t now = lv_tick_get();
         g_tapCount++;
         pressStart = now;
-        if (unlock == 1 || (unlock == 0 && g_lastTap && now - g_lastTap < 500))
+        // a preview closes on any single tap, but not on the finger that is still down from the Preview button
+        bool settled = now - g_shownAt > 700;
+        if ((g_preview && settled) || unlock != 2)
             g_dismiss = true;
-        g_lastTap = now;
     }
     if (pressed && unlock == 2 && lv_tick_get() - pressStart >= 800)
         g_dismiss = true; // held for 0.8 s
@@ -250,6 +273,10 @@ static lv_obj_t *mk_label(const lv_font_t *font, uint32_t color)
     }
     return l;
 }
+
+#ifdef RIV_STICKMAN
+#include "emoji_stickman.inc"
+#endif
 
 static void build(void)
 {
@@ -311,6 +338,8 @@ static void build(void)
     lv_obj_set_style_border_width(g_analog, 3, 0);
     lv_obj_set_style_border_color(g_analog, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_border_opa(g_analog, (lv_opa_t)200, 0);
+    lv_obj_set_style_bg_color(g_analog, lv_color_hex(0x000000), 0); // dark backing so the hands read over a picture
+    lv_obj_set_style_bg_opa(g_analog, (lv_opa_t)170, 0);
     for (int i = 0; i < 12; i++) {
         float a = (float)i * 3.14159265f / 6.0f;
         float r1 = ((i % 3 == 0) ? 74.0f : 83.0f) * g_sc, r2 = 90.0f * g_sc;
@@ -334,6 +363,11 @@ static void build(void)
         lv_obj_set_style_line_rounded(g_hand[i], true, 0);
     }
     g_clock = mk_label(&mui_font_clock_64, 0xFFFFFF);
+    lv_obj_set_style_bg_color(g_clock, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(g_clock, (lv_opa_t)140, 0);
+    lv_obj_set_style_radius(g_clock, 10, 0);
+    lv_obj_set_style_pad_hor(g_clock, 10, 0);
+    lv_obj_set_style_pad_ver(g_clock, 2, 0);
     g_lp = g_info;
     g_date = mk_label(&ui_font_montserrat_14, 0xCCCCCC);
     g_battery = mk_label(&ui_font_montserrat_20, 0xFFFFFF);
@@ -360,6 +394,9 @@ static void build(void)
     g_tapNote = mk_label(&ui_font_montserrat_14, 0x666666);
     lv_obj_set_width(g_imgNote, g_land ? lv_pct(100) : 280);
     lv_label_set_long_mode(g_imgNote, LV_LABEL_LONG_WRAP);
+#ifdef RIV_STICKMAN
+    sm_create();
+#endif
     lv_obj_add_flag(g_ov, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -418,7 +455,7 @@ static void refresh(void)
         lv_line_set_points(g_hand[i], g_handPts[i], 2);
     }
     show_if(g_hand[2], g_cfg[15]);
-    show_if(g_band, g_imgBuf && look == 1);
+    show_if(g_band, g_imgBuf && (look == 1 || look == 3));
     show_if(g_img, g_imgBuf != nullptr);
     show_if(g_imgNote, look != 0 && g_imgMsg[0]);
     {
@@ -431,6 +468,9 @@ static void refresh(void)
         lv_obj_t *all[] = {g_date, g_battery, g_nodes, g_unread, g_last, g_gps, g_chan, g_chanBar, g_link, g_foot};
         for (lv_obj_t *o : all)
             lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+#ifdef RIV_STICKMAN
+        sm_refresh(d[0], d[1]);
+#endif
         return;
     }
     show_if(g_battery, g_cfg[4]);
@@ -470,6 +510,9 @@ static void refresh(void)
     uint32_t up = millis() / 1000;
     snprintf(buf, sizeof(buf), "up %uh %02um", (unsigned)(up / 3600), (unsigned)((up / 60) % 60));
     lv_label_set_text(g_foot, buf);
+#ifdef RIV_STICKMAN
+    sm_refresh(d[0], d[1]);
+#endif
 }
 
 static void timer_cb(lv_timer_t *t)
@@ -517,6 +560,82 @@ static uint8_t *read_sd(const char *path, uint32_t *size_out)
     *size_out = 0;
     return nullptr;
 #endif
+}
+
+// A JPEG is decoded once into an RGB565 buffer with the TJPGD library, so no image decoder has to run while drawing
+#include "src/libs/tjpgd/tjpgd.h"
+struct JpgCtx {
+    const uint8_t *p;
+    uint32_t pos, n;
+    uint16_t *out;
+    int w, h;
+};
+static size_t jpg_in(JDEC *jd, uint8_t *buf, size_t nd)
+{
+    JpgCtx *c = (JpgCtx *)jd->device;
+    if (c->pos + nd > c->n)
+        nd = c->n - c->pos;
+    if (buf)
+        memcpy(buf, c->p + c->pos, nd);
+    c->pos += nd;
+    return nd;
+}
+static int jpg_out(JDEC *jd, void *bm, JRECT *r)
+{
+    JpgCtx *c = (JpgCtx *)jd->device;
+    const uint8_t *s = (const uint8_t *)bm;
+    for (int y = r->top; y <= r->bottom; y++)
+        for (int x = r->left; x <= r->right; x++) {
+            if (x < c->w && y < c->h)
+                c->out[y * c->w + x] = (uint16_t)(((s[0] & 0xF8) << 8) | ((s[1] & 0xFC) << 3) | (s[2] >> 3));
+            s += 3;
+        }
+    return 1;
+}
+static uint8_t *jpeg_to_565(const uint8_t *b, uint32_t n, int w, int h)
+{
+    uint8_t *out = (uint8_t *)heap_caps_malloc((size_t)w * h * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t *pool = (uint8_t *)malloc(4096);
+    JDEC *jd = (JDEC *)malloc(sizeof(JDEC));
+    bool ok = out && pool && jd;
+    if (ok) {
+        JpgCtx c = {b, 0, n, (uint16_t *)out, w, h};
+        memset(out, 0, (size_t)w * h * 2);
+        ok = jd_prepare(jd, jpg_in, pool, 4096, &c) == JDR_OK && jd_decomp(jd, jpg_out, 0) == JDR_OK;
+    }
+    free(pool);
+    free(jd);
+    if (!ok && out) {
+        free(out);
+        out = nullptr;
+    }
+    return out;
+}
+
+// width and height of a baseline JPEG from its SOF marker; false for progressive or broken files
+static bool jpeg_size(const uint8_t *b, uint32_t n, int *w, int *h)
+{
+    uint32_t i = 2;
+    while (i + 9 < n) {
+        if (b[i] != 0xFF) {
+            i++;
+            continue;
+        }
+        uint8_t m = b[i + 1];
+        if (m == 0xFF) {
+            i++;
+            continue;
+        }
+        if (m == 0xC2 || m == 0xC6 || m == 0xCA || m == 0xCE)
+            return false; // progressive
+        if (m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC) {
+            *h = (b[i + 5] << 8) | b[i + 6];
+            *w = (b[i + 7] << 8) | b[i + 8];
+            return *w > 0 && *h > 0;
+        }
+        i += 2 + ((b[i + 2] << 8) | b[i + 3]);
+    }
+    return false;
 }
 
 static void image_free(void)
@@ -589,6 +708,31 @@ static void image_load(void)
     g_imgDsc.header.cf = LV_COLOR_FORMAT_RAW;
     g_imgDsc.data = buf;
     g_imgDsc.data_size = size;
+    if (size > 4 && buf[0] == 0xFF && buf[1] == 0xD8) {
+        // the JPEG decoder takes the size from the descriptor, PNG reads its own header
+        int jw = 0, jh = 0;
+        if (!jpeg_size(buf, (uint32_t)size, &jw, &jh)) {
+            snprintf(g_imgMsg, sizeof(g_imgMsg), "progressive or broken JPEG, save it as a baseline JPEG or PNG");
+            image_free();
+            return;
+        }
+        uint8_t *rgb = jpeg_to_565(buf, (uint32_t)size, jw, jh);
+        if (!rgb) {
+            snprintf(g_imgMsg, sizeof(g_imgMsg), "cannot decode this JPEG, save it as a baseline JPEG or PNG");
+            image_free();
+            return;
+        }
+        free(buf);
+        buf = rgb;
+        g_imgBuf = rgb;
+        size = (uint32_t)jw * (uint32_t)jh * 2;
+        g_imgDsc.header.cf = LV_COLOR_FORMAT_RGB565;
+        g_imgDsc.header.w = jw;
+        g_imgDsc.header.h = jh;
+        g_imgDsc.header.stride = jw * 2;
+        g_imgDsc.data = rgb;
+        g_imgDsc.data_size = size;
+    }
     lv_image_header_t hdr;
     memset(&hdr, 0, sizeof(hdr));
     if (lv_image_decoder_get_info(&g_imgDsc, &hdr) != LV_RESULT_OK || hdr.w <= 0 || hdr.h <= 0) {
@@ -650,6 +794,7 @@ static void ss_show(void)
     if (!g_timer)
         g_timer = lv_timer_create(timer_cb, 1000, nullptr);
     g_dismiss = false;
+    g_shownAt = lv_tick_get();
     g_active = true;
     lv_obj_remove_flag(g_ov, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(g_ov);
@@ -663,6 +808,10 @@ static void ss_hide(void)
         group_release();
     g_active = false;
     g_preview = false;
+    g_wasOff = false;
+#ifdef RIV_STICKMAN
+    sm_hide();
+#endif
     if (g_ov)
         lv_obj_add_flag(g_ov, LV_OBJ_FLAG_HIDDEN);
     image_free();
@@ -695,8 +844,10 @@ extern "C" int emoji_ss_poll(uint32_t inactiveMs, uint32_t timeoutMs, bool power
     }
     static const uint32_t OFF_MS[6] = {5000, 10000, 30000, 60000, 120000, 0xFFFFFFFF};
     uint32_t off = OFF_MS[(g_cfg[2] >= 0 && g_cfg[2] < 6) ? g_cfg[2] : 2];
-    if (off != 0xFFFFFFFF && inactiveMs > timeoutMs + off)
+    if (off != 0xFFFFFFFF && inactiveMs > timeoutMs + off) {
+        g_wasOff = true;
         return 2;
+    }
     static const uint32_t PCT[3] = {10, 25, 50};
     uint32_t bl = lastBl * PCT[(g_cfg[1] >= 0 && g_cfg[1] < 3) ? g_cfg[1] : 1] / 100;
     // never so dark that the page cannot be read, even when the normal brightness is set low

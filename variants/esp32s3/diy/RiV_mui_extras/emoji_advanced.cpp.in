@@ -855,7 +855,7 @@ static void ss_save_cb(lv_event_t *e)
             emoji_ss_cfg_set(k, lv_obj_has_state(g_ssSw[k], LV_STATE_CHECKED) ? 1 : 0);
     emoji_ss_cfg_set(1, lv_dropdown_get_selected(g_ssDim));
     emoji_ss_cfg_set(2, lv_dropdown_get_selected(g_ssOff));
-    emoji_ss_cfg_set(3, lv_dropdown_get_selected(g_ssTap));
+    emoji_ss_cfg_set(3, lv_dropdown_get_selected(g_ssTap) == 0 ? 1 : 2); // 1 single tap, 2 long press
     emoji_ss_cfg_set(13, lv_dropdown_get_selected(g_ssLook));
     emoji_ss_cfg_set(14, lv_dropdown_get_selected(g_ssClock));
     emoji_ss_cfg_set(15, lv_obj_has_state(g_ssSecs, LV_STATE_CHECKED) ? 1 : 0);
@@ -875,14 +875,14 @@ static void ss_open_cb(lv_event_t *e)
         g_ssSw[0] = make_switch_row(content, names[0]);
         g_ssDim = make_dropdown(content, "Dim level (of the normal brightness, at least 40 of 255)", "10%\n25%\n50%");
         g_ssOff = make_dropdown(content, "Backlight off after the dim time", "5 seconds\n10 seconds\n30 seconds\n1 minute\n2 minutes\nNever");
-        g_ssTap = make_dropdown(content, "Unlock", "Double tap\nSingle tap\nLong press (0.8 s)");
+        g_ssTap = make_dropdown(content, "Unlock", "Single tap\nLong press (0.8 s)");
         g_ssImgBtn = make_label_button(content, "Image: first one in /screensaver", COL_BTN, pick_open_cb);
         lv_obj_set_width(g_ssImgBtn, lv_pct(100));
         lv_obj_set_width(lv_obj_get_child(g_ssImgBtn, 0), lv_pct(100));
         lv_label_set_long_mode(lv_obj_get_child(g_ssImgBtn, 0), LV_LABEL_LONG_DOT);
         lv_obj_t *prev = make_label_button(content, "Preview now", 0x2F7D4F, preview_cb);
         lv_obj_set_width(prev, lv_pct(100));
-        g_ssLook = make_dropdown(content, "Style (images come from the SD card)", "Clock page\nImage and clock\nImage only");
+        g_ssLook = make_dropdown(content, "Style (images come from the SD card)", "Clock page\nImage and clock\nImage only\nStickman arena (plugged in)");
         g_ssSlide = make_dropdown(content, "Image", "Selected image only\nSlideshow of all pictures in /screensaver");
         g_ssClock = make_dropdown(content, "Clock", "Digital\nAnalog\nAnalog and digital");
         g_ssSecs = make_switch_row(content, "Seconds hand");
@@ -900,7 +900,7 @@ static void ss_open_cb(lv_event_t *e)
             set_switch(g_ssSw[k], emoji_ss_cfg_get(k) != 0);
     lv_dropdown_set_selected(g_ssDim, emoji_ss_cfg_get(1));
     lv_dropdown_set_selected(g_ssOff, emoji_ss_cfg_get(2));
-    lv_dropdown_set_selected(g_ssTap, emoji_ss_cfg_get(3));
+    lv_dropdown_set_selected(g_ssTap, emoji_ss_cfg_get(3) == 2 ? 1 : 0);
     lv_dropdown_set_selected(g_ssLook, emoji_ss_cfg_get(13));
     if (emoji_ss_img_get) {
         char cur[96];
@@ -1157,6 +1157,593 @@ static void nt_test_cb(lv_event_t *e)
         digitalWrite(g_extPin, LOW);
     }
 }
+// ---- ringtone files on the SD card (/rtttl) and the composer ----
+static int g_rtTarget = 0; // 0 the Ringtone field, 1 the composer
+static lv_obj_t *g_rtPickPanel = nullptr, *g_rtPickList = nullptr;
+static char g_rtNames[40][44];
+static int g_rtCount = 0;
+static void rt_status(const char *t);
+
+static bool rt_name_ok(const char *nm)
+{
+    size_t l = strlen(nm);
+    return (l > 4 && strcasecmp(nm + l - 4, ".txt") == 0) || (l > 6 && strcasecmp(nm + l - 6, ".rtttl") == 0);
+}
+// the tune title (text before the first colon) as a safe file name
+static void rt_title(const char *text, char *out, size_t n)
+{
+    size_t o = 0;
+    for (const char *p = text; *p && *p != ':' && o + 1 < n && o < 20; p++)
+        if ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || *p == '_' || *p == '-')
+            out[o++] = *p;
+    out[o] = 0;
+    if (o == 0)
+        snprintf(out, n, "tune");
+}
+#ifdef HAS_SDCARD
+static bool rt_sd_ok(void)
+{
+    return emoji_sd_ready && emoji_sd_ready();
+}
+static bool rt_save_file(const char *text, char *nameOut, size_t n)
+{
+    if (!rt_sd_ok())
+        return false;
+    if (!SDFs.exists("/rtttl"))
+        SDFs.mkdir("/rtttl");
+    char t[24], path[64];
+    rt_title(text, t, sizeof(t));
+    snprintf(path, sizeof(path), "/rtttl/%s.txt", t);
+    FsFile f = SDFs.open(path, O_WRONLY | O_CREAT | O_TRUNC);
+    if (!f)
+        return false;
+    size_t len = strlen(text);
+    bool ok = f.write((const uint8_t *)text, len) == len;
+    f.close();
+    snprintf(nameOut, n, "%s.txt", t);
+    return ok;
+}
+static bool rt_read_file(const char *name, char *out, size_t n)
+{
+    if (!rt_sd_ok())
+        return false;
+    char path[64];
+    snprintf(path, sizeof(path), "/rtttl/%s", name);
+    FsFile f = SDFs.open(path, O_RDONLY);
+    if (!f)
+        return false;
+    int got = f.read((uint8_t *)out, n - 1);
+    f.close();
+    if (got <= 0)
+        return false;
+    out[got] = 0;
+    for (char *c = out; *c; c++)
+        if (*c == '\r' || *c == '\n') { // one tune per file, the first line
+            *c = 0;
+            break;
+        }
+    return out[0] != 0;
+}
+#endif
+
+// ---- composer state ----
+struct CpNote {
+    int8_t semi; // 0..11, -1 for a rest
+    uint8_t dur;
+    uint8_t oct;
+    bool dot;
+};
+static CpNote g_cpN[60];
+static int g_cpCount = 0;
+static int g_cpDur = 8, g_cpOct = 5, g_cpBpm = 140;
+static bool g_cpDot = false, g_cpBusy = false;
+static char g_cpName[16] = "tune";
+static lv_obj_t *g_cpPanel = nullptr, *g_cpNameTa = nullptr, *g_cpTextTa = nullptr, *g_cpInfo = nullptr, *g_cpStatus = nullptr;
+static lv_obj_t *g_cpDurBtn[6], *g_cpDotBtn = nullptr, *g_cpOctBtn = nullptr, *g_cpBpmBtn = nullptr;
+static const int CP_DUR[6] = {1, 2, 4, 8, 16, 32};
+static const char *const CP_NOTE[12] = {"c", "c#", "d", "d#", "e", "f", "f#", "g", "g#", "a", "a#", "b"};
+
+static void cp_build(char *out, size_t n)
+{
+    int o = snprintf(out, n, "%s:d=4,o=5,b=%d:", g_cpName, g_cpBpm);
+    for (int i = 0; i < g_cpCount && o + 12 < (int)n; i++) {
+        const CpNote &c = g_cpN[i];
+        if (i)
+            out[o++] = ',';
+        if (c.dur != 4)
+            o += snprintf(out + o, n - o, "%d", c.dur);
+        if (c.semi < 0)
+            out[o++] = 'p';
+        else
+            o += snprintf(out + o, n - o, "%s", CP_NOTE[c.semi]);
+        if (c.dot)
+            out[o++] = '.';
+        if (c.semi >= 0 && c.oct != 5)
+            o += snprintf(out + o, n - o, "%d", c.oct);
+    }
+    out[o] = 0;
+}
+static void cp_labels(void)
+{
+    for (int i = 0; i < 6; i++)
+        lv_obj_set_style_bg_color(g_cpDurBtn[i], lv_color_hex(CP_DUR[i] == g_cpDur ? 0x2F7D4F : COL_BTN), 0);
+    lv_obj_set_style_bg_color(g_cpDotBtn, lv_color_hex(g_cpDot ? 0x2F7D4F : COL_BTN), 0);
+    char b[24];
+    snprintf(b, sizeof(b), "oct %d", g_cpOct);
+    lv_label_set_text(lv_obj_get_child(g_cpOctBtn, 0), b);
+    snprintf(b, sizeof(b), "%d bpm", g_cpBpm);
+    lv_label_set_text(lv_obj_get_child(g_cpBpmBtn, 0), b);
+}
+static void cp_refresh(void)
+{
+    char t[300];
+    cp_build(t, sizeof(t));
+    g_cpBusy = true;
+    lv_textarea_set_text(g_cpTextTa, t);
+    g_cpBusy = false;
+    char b[64];
+    snprintf(b, sizeof(b), "%d notes, %d / 230 characters", g_cpCount, (int)strlen(t));
+    lv_label_set_text(g_cpInfo, b);
+    lv_obj_set_style_text_color(g_cpInfo, lv_color_hex(strlen(t) > 230 ? 0xF2A0A0 : 0xB8BEE6), 0);
+    cp_labels();
+}
+// read an RTTTL line back into the composer
+static bool cp_parse(const char *s)
+{
+    const char *p = strchr(s, ':');
+    if (!p)
+        return false;
+    size_t nl = (size_t)(p - s);
+    int d = 4, o = 5, b = 140;
+    char name[16];
+    size_t k = 0;
+    for (size_t i = 0; i < nl && k + 1 < sizeof(name); i++)
+        if (s[i] != ' ')
+            name[k++] = s[i];
+    name[k] = 0;
+    p++;
+    while (*p && *p != ':') {
+        char key = *p++;
+        if (*p == '=')
+            p++;
+        int v = 0;
+        while (*p >= '0' && *p <= '9')
+            v = v * 10 + (*p++ - '0');
+        if (key == 'd')
+            d = v;
+        else if (key == 'o')
+            o = v;
+        else if (key == 'b')
+            b = v;
+        if (*p == ',')
+            p++;
+    }
+    if (*p == ':')
+        p++;
+    CpNote tmp[60];
+    int n = 0;
+    while (*p && n < 60) {
+        while (*p == ' ' || *p == ',')
+            p++;
+        if (!*p)
+            break;
+        int dur = 0;
+        while (*p >= '0' && *p <= '9')
+            dur = dur * 10 + (*p++ - '0');
+        if (dur == 0)
+            dur = d;
+        int semi = -2;
+        switch (*p) {
+        case 'c': case 'C': semi = 0; break;
+        case 'd': case 'D': semi = 2; break;
+        case 'e': case 'E': semi = 4; break;
+        case 'f': case 'F': semi = 5; break;
+        case 'g': case 'G': semi = 7; break;
+        case 'a': case 'A': semi = 9; break;
+        case 'b': case 'B': semi = 11; break;
+        case 'p': case 'P': semi = -1; break;
+        default: break;
+        }
+        if (semi == -2) { // not a note, skip to the next comma
+            while (*p && *p != ',')
+                p++;
+            continue;
+        }
+        p++;
+        if (*p == '#' && semi >= 0) {
+            semi++;
+            p++;
+        }
+        bool dot = false;
+        if (*p == '.') {
+            dot = true;
+            p++;
+        }
+        int oct = o;
+        if (*p >= '0' && *p <= '9')
+            oct = *p++ - '0';
+        if (*p == '.') {
+            dot = true;
+            p++;
+        }
+        if (oct < 3)
+            oct = 3;
+        if (oct > 7)
+            oct = 7;
+        tmp[n].semi = (int8_t)(semi > 11 ? 11 : semi);
+        tmp[n].dur = (uint8_t)(dur < 1 ? 4 : (dur > 32 ? 32 : dur));
+        tmp[n].oct = (uint8_t)oct;
+        tmp[n].dot = dot;
+        n++;
+        while (*p && *p != ',')
+            p++;
+    }
+    memcpy(g_cpN, tmp, sizeof(CpNote) * n);
+    g_cpCount = n;
+    g_cpBpm = b < 40 ? 40 : (b > 300 ? 300 : b);
+    snprintf(g_cpName, sizeof(g_cpName), "%s", name[0] ? name : "tune");
+    return true;
+}
+static void cp_say(const char *t)
+{
+    lv_label_set_text(g_cpStatus, t);
+}
+static void cp_back_cb(lv_event_t *e)
+{
+    close_panel(g_cpPanel);
+}
+static void cp_key_cb(lv_event_t *e)
+{
+    int semi = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+    if (g_cpCount >= 60)
+        return;
+    g_cpN[g_cpCount].semi = (int8_t)semi;
+    g_cpN[g_cpCount].dur = (uint8_t)g_cpDur;
+    g_cpN[g_cpCount].oct = (uint8_t)g_cpOct;
+    g_cpN[g_cpCount].dot = g_cpDot;
+    g_cpCount++;
+    if (semi >= 0 && g_extPin >= 0) { // a short preview of the key on the buzzer
+        char one[40];
+        snprintf(one, sizeof(one), "k:d=%d,o=%d,b=%d:%s%s", g_cpDur, g_cpOct, g_cpBpm < 140 ? 140 : g_cpBpm, CP_NOTE[semi], g_cpDot ? "." : "");
+        pinMode(g_extPin, OUTPUT);
+        rtttl_play(one, g_extPin);
+        digitalWrite(g_extPin, LOW);
+    }
+    cp_refresh();
+}
+static void cp_dur_cb(lv_event_t *e)
+{
+    g_cpDur = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+    cp_labels();
+}
+static void cp_dot_cb(lv_event_t *e)
+{
+    g_cpDot = !g_cpDot;
+    cp_labels();
+}
+static void cp_oct_cb(lv_event_t *e)
+{
+    int d = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+    g_cpOct += d;
+    if (g_cpOct < 4)
+        g_cpOct = 4;
+    if (g_cpOct > 7)
+        g_cpOct = 7;
+    cp_labels();
+}
+static void cp_bpm_cb(lv_event_t *e)
+{
+    int d = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+    g_cpBpm += d;
+    if (g_cpBpm < 40)
+        g_cpBpm = 40;
+    if (g_cpBpm > 300)
+        g_cpBpm = 300;
+    cp_refresh();
+}
+static void cp_del_cb(lv_event_t *e)
+{
+    if (g_cpCount > 0)
+        g_cpCount--;
+    cp_refresh();
+}
+static void cp_clear_cb(lv_event_t *e)
+{
+    g_cpCount = 0;
+    cp_refresh();
+}
+static void cp_play_cb(lv_event_t *e)
+{
+    if (g_extPin < 0 || g_cpCount == 0)
+        return;
+    char t[300];
+    cp_build(t, sizeof(t));
+    pinMode(g_extPin, OUTPUT);
+    rtttl_play(t, g_extPin);
+    digitalWrite(g_extPin, LOW);
+}
+static void cp_name_cb(lv_event_t *e)
+{
+    if (g_cpBusy)
+        return;
+    char t[24];
+    rt_title(lv_textarea_get_text(g_cpNameTa), t, sizeof(t));
+    snprintf(g_cpName, sizeof(g_cpName), "%.12s", t);
+    char txt[300];
+    cp_build(txt, sizeof(txt));
+    g_cpBusy = true;
+    lv_textarea_set_text(g_cpTextTa, txt);
+    g_cpBusy = false;
+}
+static void cp_text_cb(lv_event_t *e)
+{
+    if (g_cpBusy)
+        return;
+    if (cp_parse(lv_textarea_get_text(g_cpTextTa))) {
+        char b[64];
+        snprintf(b, sizeof(b), "%d notes", g_cpCount);
+        lv_label_set_text(g_cpInfo, b);
+        cp_labels();
+    }
+}
+static void cp_save_cb(lv_event_t *e)
+{
+    char t[300], nm[40], msg[80];
+    cp_build(t, sizeof(t));
+    if (g_cpCount == 0) {
+        cp_say("Nothing to save yet");
+        return;
+    }
+    if (strlen(t) > 230) {
+        cp_say("Too long, 230 characters at most");
+        return;
+    }
+#ifdef HAS_SDCARD
+    if (!rt_sd_ok()) {
+        cp_say("No SD card found");
+        return;
+    }
+    if (rt_save_file(t, nm, sizeof(nm))) {
+        snprintf(msg, sizeof(msg), "Saved /rtttl/%s", nm);
+        cp_say(msg);
+    } else
+        cp_say("Could not write the file");
+#else
+    cp_say("This build has no SD card support");
+#endif
+}
+static void rt_pick_open(int target);
+static void cp_load_cb(lv_event_t *e)
+{
+    rt_pick_open(1);
+}
+static void cp_use_cb(lv_event_t *e)
+{
+    char t[300];
+    cp_build(t, sizeof(t));
+    if (g_cpCount == 0 || strlen(t) > 230) {
+        cp_say(g_cpCount == 0 ? "Nothing to use yet" : "Too long, 230 characters at most");
+        return;
+    }
+    lv_textarea_set_text(g_ntRingTa, t);
+    rt_status("Tune copied to the Ringtone field, press Save to keep it");
+    close_panel(g_cpPanel);
+}
+
+static lv_obj_t *rt_row(lv_obj_t *content)
+{
+    lv_obj_t *r = lv_obj_create(content);
+    lv_obj_remove_style_all(r);
+    lv_obj_set_size(r, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_column(r, 4, 0);
+    lv_obj_set_style_pad_row(r, 4, 0);
+    lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE);
+    return r;
+}
+static lv_obj_t *cp_btn(lv_obj_t *row, const char *text, uint32_t col, lv_event_cb_t cb, intptr_t ud)
+{
+    lv_obj_t *b = make_label_button(row, text, col, cb);
+    lv_obj_set_style_pad_hor(b, 7, 0);
+    lv_obj_set_style_pad_ver(b, 7, 0);
+    lv_obj_set_user_data(b, (void *)ud);
+    return b;
+}
+static void cp_open_cb(lv_event_t *e)
+{
+    if (!g_cpPanel) {
+        lv_obj_t *content;
+        g_cpPanel = make_panel("Ringtone composer", cp_back_cb, &content);
+        g_cpNameTa = make_field(content, "Name", 12, false);
+        lv_obj_add_event_cb(g_cpNameTa, cp_name_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_t *r = rt_row(content);
+        cp_btn(r, "- 10", COL_BTN, cp_bpm_cb, -10);
+        g_cpBpmBtn = cp_btn(r, "140 bpm", 0x3A4468, cp_bpm_cb, 0);
+        cp_btn(r, "+ 10", COL_BTN, cp_bpm_cb, 10);
+        r = rt_row(content);
+        for (int i = 0; i < 6; i++) {
+            char l[8];
+            snprintf(l, sizeof(l), "1/%d", CP_DUR[i]);
+            g_cpDurBtn[i] = cp_btn(r, l, COL_BTN, cp_dur_cb, CP_DUR[i]);
+        }
+        r = rt_row(content);
+        g_cpDotBtn = cp_btn(r, "dotted", COL_BTN, cp_dot_cb, 0);
+        cp_btn(r, "oct -", COL_BTN, cp_oct_cb, -1);
+        g_cpOctBtn = cp_btn(r, "oct 5", 0x3A4468, cp_oct_cb, 0);
+        cp_btn(r, "oct +", COL_BTN, cp_oct_cb, 1);
+        cp_btn(r, "rest", COL_BTN, cp_key_cb, -1);
+        r = rt_row(content);
+        static const char *const white[7] = {"C", "D", "E", "F", "G", "A", "B"};
+        static const int whiteSemi[7] = {0, 2, 4, 5, 7, 9, 11};
+        for (int i = 0; i < 7; i++)
+            cp_btn(r, white[i], 0x5A6078, cp_key_cb, whiteSemi[i]);
+        r = rt_row(content);
+        static const char *const black[5] = {"C#", "D#", "F#", "G#", "A#"};
+        static const int blackSemi[5] = {1, 3, 6, 8, 10};
+        for (int i = 0; i < 5; i++)
+            cp_btn(r, black[i], 0x2A3050, cp_key_cb, blackSemi[i]);
+        g_cpTextTa = make_field(content, "Ringtone (RTTTL), you can edit it here", 230, false);
+        lv_obj_add_event_cb(g_cpTextTa, cp_text_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+        g_cpInfo = lv_label_create(content);
+        lv_label_set_text(g_cpInfo, "");
+        lv_obj_set_style_text_color(g_cpInfo, lv_color_hex(0xB8BEE6), 0);
+        r = rt_row(content);
+        cp_btn(r, "Del", 0x8A2F36, cp_del_cb, 0);
+        cp_btn(r, "Clear", 0x8A2F36, cp_clear_cb, 0);
+        cp_btn(r, "Play", 0x2F7D4F, cp_play_cb, 0);
+        r = rt_row(content);
+        cp_btn(r, "Save to SD", COL_BTN, cp_save_cb, 0);
+        cp_btn(r, "Load from SD", COL_BTN, cp_load_cb, 0);
+        cp_btn(r, "Use", 0x2F7D4F, cp_use_cb, 0);
+        g_cpStatus = make_status(content);
+        lv_obj_t *pad = lv_obj_create(content);
+        lv_obj_remove_style_all(pad);
+        lv_obj_set_size(pad, 10, 150);
+    }
+    if (!cp_parse(lv_textarea_get_text(g_ntRingTa))) {
+        g_cpCount = 0;
+        snprintf(g_cpName, sizeof(g_cpName), "tune");
+    }
+    g_cpBusy = true;
+    lv_textarea_set_text(g_cpNameTa, g_cpName);
+    g_cpBusy = false;
+    lv_label_set_text(g_cpStatus, "");
+    cp_refresh();
+    open_panel(g_cpPanel);
+}
+
+// ---- list of the files in /rtttl ----
+static void rt_pick_back_cb(lv_event_t *e)
+{
+    close_panel(g_rtPickPanel);
+}
+static void rt_pick_entry_cb(lv_event_t *e)
+{
+    int idx = (int)(uintptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+    if (idx < 0 || idx >= g_rtCount)
+        return;
+#ifdef HAS_SDCARD
+    char t[300];
+    if (!rt_read_file(g_rtNames[idx], t, sizeof(t))) {
+        if (g_rtTarget == 1)
+            cp_say("Could not read that file");
+        else
+            rt_status("Could not read that file");
+        close_panel(g_rtPickPanel);
+        return;
+    }
+    t[230] = 0; // the node takes 230 characters at most
+    if (g_rtTarget == 1) {
+        if (cp_parse(t)) {
+            g_cpBusy = true;
+            lv_textarea_set_text(g_cpNameTa, g_cpName);
+            g_cpBusy = false;
+            cp_refresh();
+            cp_say("Loaded");
+        } else
+            cp_say("That file is not an RTTTL tune");
+    } else {
+        lv_textarea_set_text(g_ntRingTa, t);
+        rt_status("Loaded, press Test output to hear it and Save to keep it");
+    }
+#endif
+    close_panel(g_rtPickPanel);
+}
+static void rt_pick_fill(void)
+{
+    lv_obj_clean(g_rtPickList);
+    g_rtCount = 0;
+    lv_obj_t *h = lv_label_create(g_rtPickList);
+    lv_label_set_long_mode(h, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(h, lv_pct(100));
+    lv_obj_set_style_text_color(h, lv_color_hex(0xB8BEE6), 0);
+    lv_label_set_text(h, "Text files in the /rtttl folder of the SD card, one RTTTL tune on the first line of each");
+#ifdef HAS_SDCARD
+    if (!rt_sd_ok()) {
+        lv_obj_t *m = lv_label_create(g_rtPickList);
+        lv_label_set_text(m, "No SD card found. Insert one and restart.");
+        lv_obj_set_style_text_color(m, lv_color_hex(0xF2A0A0), 0);
+        return;
+    }
+    if (!SDFs.exists("/rtttl"))
+        SDFs.mkdir("/rtttl");
+    FsFile d = SDFs.open("/rtttl");
+    if (!d || !d.isDir()) {
+        lv_obj_t *m = lv_label_create(g_rtPickList);
+        lv_label_set_text(m, "Cannot open /rtttl");
+        return;
+    }
+    FsFile f;
+    while (g_rtCount < 40 && f.openNext(&d, O_RDONLY)) {
+        char nm[44];
+        f.getName(nm, sizeof(nm));
+        bool dir = f.isDir();
+        f.close();
+        if (dir || nm[0] == '.' || !rt_name_ok(nm))
+            continue;
+        snprintf(g_rtNames[g_rtCount], sizeof(g_rtNames[0]), "%s", nm);
+        char label[60];
+        snprintf(label, sizeof(label), LV_SYMBOL_AUDIO " %s", nm);
+        lv_obj_t *b = make_label_button(g_rtPickList, label, 0x2F7D4F, rt_pick_entry_cb);
+        lv_obj_set_width(b, lv_pct(100));
+        lv_obj_set_width(lv_obj_get_child(b, 0), lv_pct(100));
+        lv_label_set_long_mode(lv_obj_get_child(b, 0), LV_LABEL_LONG_DOT);
+        lv_obj_set_user_data(b, (void *)(uintptr_t)g_rtCount);
+        g_rtCount++;
+    }
+    d.close();
+    if (g_rtCount == 0) {
+        lv_obj_t *m = lv_label_create(g_rtPickList);
+        lv_label_set_text(m, "No tunes yet. Save one from here, or copy .txt files into /rtttl on the SD card.");
+    }
+#else
+    lv_obj_t *m = lv_label_create(g_rtPickList);
+    lv_label_set_text(m, "This build has no SD card support.");
+#endif
+}
+static void rt_pick_open(int target)
+{
+    g_rtTarget = target;
+    if (!g_rtPickPanel) {
+        lv_obj_t *content;
+        g_rtPickPanel = make_panel("Load ringtone", rt_pick_back_cb, &content);
+        g_rtPickList = content;
+    }
+    rt_pick_fill();
+    open_panel(g_rtPickPanel);
+}
+static void rt_load_cb(lv_event_t *e)
+{
+    rt_pick_open(0);
+}
+static void rt_status(const char *t)
+{
+    if (g_ntStatus)
+        lv_label_set_text(g_ntStatus, t);
+}
+static void rt_save_cb(lv_event_t *e)
+{
+    const char *t = lv_textarea_get_text(g_ntRingTa);
+    if (!t[0]) {
+        rt_status("Nothing to save, the Ringtone field is empty");
+        return;
+    }
+#ifdef HAS_SDCARD
+    char nm[40], msg[80];
+    if (!rt_sd_ok()) {
+        rt_status("No SD card found");
+        return;
+    }
+    if (rt_save_file(t, nm, sizeof(nm))) {
+        snprintf(msg, sizeof(msg), "Saved /rtttl/%s", nm);
+        rt_status(msg);
+    } else
+        rt_status("Could not write the file");
+#else
+    rt_status("This build has no SD card support");
+#endif
+}
+
 static void nt_open_cb(lv_event_t *e)
 {
     if (!g_ntPanel) {
@@ -1169,6 +1756,12 @@ static void nt_open_cb(lv_event_t *e)
         g_ntRingDd = make_dropdown(content, "Buzzer ringtone", "Beep\nAlert\nChime\nSiren\nKnock\nPing\nDoorbell\nSOS\nRising\nFalling\nArpeggio\nCuckoo\nOde to Joy\nTwinkle\nFur Elise\nJingle Bells\nCustom");
         lv_obj_add_event_cb(g_ntRingDd, nt_ring_cb, LV_EVENT_VALUE_CHANGED, nullptr);
         g_ntRingTa = make_field(content, "Ringtone (RTTTL, 230 characters at most)", 230, false);
+        {
+            lv_obj_t *rr = rt_row(content);
+            cp_btn(rr, "Load", COL_BTN, rt_load_cb, 0);
+            cp_btn(rr, "Save", COL_BTN, rt_save_cb, 0);
+            cp_btn(rr, "Composer", 0x2F7D4F, cp_open_cb, 0);
+        }
         {
             Preferences rp;
             rp.begin("chatui", true);
