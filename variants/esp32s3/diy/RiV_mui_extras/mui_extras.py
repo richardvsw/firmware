@@ -65,6 +65,10 @@ def edit(path, anchor, add, mode="after"):
     if add in s:
         return
     if anchor not in s:
+        # a later patch may have rewritten the text of this one, then its first real line is still there
+        marks = [ln for ln in add.split("\n") if len(ln.strip()) > 12]
+        if marks and marks[0] in s:
+            return
         print("MUI-EXTRAS WARNING: anchor not found in %s: %r" % (os.path.basename(path), anchor[:80]))
         MISSES.append(os.path.basename(path) + ": " + anchor[:60])
         return
@@ -189,7 +193,12 @@ def main():
     drv = os.path.join(UI, "include", "graphics", "driver", "LGFXDriver.h")
     drvbase = os.path.join(UI, "include", "graphics", "driver", "DisplayDriver.h")
     conf = os.path.join(UI, "include", "lv_conf.h")
-    SD_INC = '#include "graphics/common/SdCard.h"\n'
+    # anchors that moved between library versions: use the first form that exists
+    tft_text = read(tft)[0] if os.path.exists(tft) else ""
+    SD_INC = next((a for a in ('#include "util/ILog.h"\n', '#include "graphics/common/SdCard.h"\n', '#include "ui.h"\n') if a in tft_text),
+                  '#include "util/ILog.h"\n')
+    drv_text = read(drv)[0] if os.path.exists(drv) else ""
+    INACT = "lv_display_get_default()" if "lv_display_get_inactive_time(lv_display_get_default()) > screenTimeout" in drv_text else "NULL"
     VC_FN = "void ViewController::sendTextMessage("
 
     # keyboard height and the gap it leaves above the message box
@@ -454,7 +463,7 @@ def main():
              "        }\n"
              "    }\n")
         edit(drv, "    bool forcedWakeup;\n", "    uint32_t msgWakeAt = 0;\n")
-        edit(drv, "    if ((screenTimeout > 0 && lv_display_get_inactive_time(NULL) > screenTimeout) || powerSaving ||\n",
+        edit(drv, "    if ((screenTimeout > 0 && lv_display_get_inactive_time(%s) > screenTimeout) || powerSaving ||\n" % INACT,
              "    if (msgWakeAt && lv_display_get_inactive_time(NULL) + 1000 < millis() - msgWakeAt)\n"
              "        msgWakeAt = 0; // something touched the screen after the wake, back to the normal timeout\n"
              "    uint32_t effTimeout = (msgWakeAt && screenTimeout > 8000) ? 8000 : screenTimeout;\n"
@@ -495,7 +504,8 @@ def main():
         tmo = "effTimeout" if "wake" in feat else "screenTimeout"
         edit(drv, "template <class LGFX> void LGFXDriver<LGFX>::task_handler(void)\n{",
              'extern "C" int emoji_ss_poll(uint32_t, uint32_t, bool, uint32_t, int *);\n', "before")
-        edit(drv, "    if ((%s > 0 && lv_display_get_inactive_time(NULL) > %s) || powerSaving ||\n" % (tmo, tmo),
+        ia = "NULL" if "wake" in feat else INACT
+        edit(drv, "    if ((%s > 0 && lv_display_get_inactive_time(%s) > %s) || powerSaving ||\n" % (tmo, ia, tmo),
              "    int ssBl = -1;\n"
              "    int ssStage = emoji_ss_poll(lv_display_get_inactive_time(NULL), %s, powerSaving, lastBrightness, &ssBl);\n"
              "    if (ssStage == 3) {\n"
