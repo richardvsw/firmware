@@ -1218,6 +1218,8 @@ static void nt_open_cb(lv_event_t *e)
 }
 extern "C" void emoji_settings_host2(void *(*ext)(void), void (*sendExt)(void), int pin, void (*sendRing)(const char *))
 {
+    if (pin < 0)
+        return; // no LED or buzzer on this board, the panel stays hidden
     g_sendRing = sendRing;
     g_extCfg = ext;
     g_sendExt = sendExt;

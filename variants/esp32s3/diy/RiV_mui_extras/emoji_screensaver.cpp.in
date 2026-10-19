@@ -194,6 +194,7 @@ extern "C" void emoji_ss_message(const char *from, const char *text)
 static lv_obj_t *g_ov = nullptr;
 static lv_obj_t *g_top = nullptr, *g_info = nullptr, *g_lp = nullptr;
 static bool g_land = false;
+static bool g_small = false;
 static float g_sc = 1.0f;
 static lv_obj_t *g_img = nullptr, *g_band = nullptr, *g_analog = nullptr, *g_imgNote = nullptr, *g_tapNote = nullptr;
 static uint8_t *g_imgBuf = nullptr;
@@ -279,9 +280,12 @@ static void build(void)
     lv_obj_add_flag(g_band, LV_OBJ_FLAG_HIDDEN);
     int hres = lv_display_get_horizontal_resolution(NULL), vres = lv_display_get_vertical_resolution(NULL);
     g_land = hres > vres;
-    int ad = g_land ? (vres - 80 < 150 ? vres - 80 : 150) : 190;
-    if (ad < 100)
-        ad = 100;
+    g_small = !g_land && vres < 330; // 240 x 240 and the like: smaller clock, tighter spacing
+    int ad = g_land ? (vres - 80 < 150 ? vres - 80 : 150) : (vres - 140 < 190 ? vres - 140 : 190);
+    if (ad < 80)
+        ad = 80;
+    lv_obj_set_style_pad_row(g_ov, g_small ? 4 : 8, 0);
+    lv_obj_set_style_pad_all(g_ov, g_small ? 4 : 12, 0);
     g_sc = (float)ad / 190.0f;
     float cc = 92.0f * g_sc;
     g_top = lv_obj_create(g_ov);
@@ -290,14 +294,14 @@ static void build(void)
     lv_obj_remove_flag(g_top, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     lv_obj_set_flex_flow(g_top, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(g_top, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(g_top, 6, 0);
+    lv_obj_set_style_pad_row(g_top, g_small ? 3 : 6, 0);
     g_info = lv_obj_create(g_ov);
     lv_obj_remove_style_all(g_info);
     lv_obj_set_size(g_info, g_land ? 150 : LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_remove_flag(g_info, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     lv_obj_set_flex_flow(g_info, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(g_info, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(g_info, 6, 0);
+    lv_obj_set_style_pad_row(g_info, g_small ? 3 : 6, 0);
     g_lp = g_top;
     g_analog = lv_obj_create(g_top);
     lv_obj_remove_style_all(g_analog);
