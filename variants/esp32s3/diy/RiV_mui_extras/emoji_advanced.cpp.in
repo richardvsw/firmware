@@ -11,6 +11,12 @@
 #include <SdFat.h>
 #endif
 #include <Wire.h>
+#include <LittleFS.h>
+#include <set>
+#include "util/ISpiLock.h"
+#ifdef HAS_SDCARD
+#include "filesystem/SdCard.h"
+#endif
 #include <math.h>
 #include <esp_attr.h>
 #include <esp_system.h>
@@ -63,6 +69,7 @@ static KbFn g_showKb = nullptr;
 
 static lv_obj_t *g_advPanel = nullptr;
 static lv_obj_t *g_namesLabel = nullptr;
+extern "C" int emoji_sd_status(char *out, int n) __attribute__((weak));
 static lv_obj_t *g_mqttPanel = nullptr;
 static lv_obj_t *g_mqttStatus = nullptr;
 static lv_obj_t *g_swEnabled = nullptr, *g_swEnc = nullptr, *g_swTls = nullptr;
@@ -756,6 +763,7 @@ static void pick_back_cb(lv_event_t *e)
 {
     close_panel(g_pickPanel);
 }
+static lv_obj_t *g_ssSlidePtr = nullptr;
 static void ss_img_label(const char *name)
 {
     if (!g_ssImgBtn)
@@ -771,6 +779,11 @@ static void pick_entry_cb(lv_event_t *e)
         return;
     if (emoji_ss_img_set)
         emoji_ss_img_set(g_pickNames[idx]);
+    // picking one picture means one picture, the slideshow is only ever the whole folder
+    if (emoji_ss_cfg_set)
+        emoji_ss_cfg_set(16, 0);
+    if (g_ssSlidePtr)
+        lv_dropdown_set_selected(g_ssSlidePtr, 0);
     ss_img_label(g_pickNames[idx]);
     close_panel(g_pickPanel);
 }
@@ -790,6 +803,7 @@ static void pick_fill(void)
         lv_obj_set_style_text_color(m, lv_color_hex(0xF2A0A0), 0);
         return;
     }
+    ISpiLock::Guard bus; // the SD card shares its SPI bus with the screen and the radio, take the host's lock like the display library does
     if (!SDFs.exists("/screensaver"))
         SDFs.mkdir("/screensaver");
     FsFile d = SDFs.open("/screensaver");
@@ -841,7 +855,8 @@ static void preview_cb(lv_event_t *e)
     if (emoji_ss_preview)
         emoji_ss_preview();
 }
-static lv_obj_t *g_ssPanel = nullptr, *g_ssStatus, *g_ssSw[12], *g_ssDim, *g_ssOff, *g_ssTap, *g_ssLook, *g_ssClock, *g_ssSecs, *g_ssSlide;
+static lv_obj_t *g_ssPanel = nullptr, *g_ssStatus, *g_ssSw[12], *g_ssDim, *g_ssOff, *g_ssTap, *g_ssLook, *g_ssClock, *g_ssSecs, *g_ssSlide,
+                *g_ssSlideT;
 static void ss_back_cb(lv_event_t *e)
 {
     close_panel(g_ssPanel);
@@ -860,6 +875,7 @@ static void ss_save_cb(lv_event_t *e)
     emoji_ss_cfg_set(14, lv_dropdown_get_selected(g_ssClock));
     emoji_ss_cfg_set(15, lv_obj_has_state(g_ssSecs, LV_STATE_CHECKED) ? 1 : 0);
     emoji_ss_cfg_set(16, lv_dropdown_get_selected(g_ssSlide));
+    emoji_ss_cfg_set(17, lv_dropdown_get_selected(g_ssSlideT));
     lv_label_set_text(g_ssStatus, "Saved");
 }
 static void ss_open_cb(lv_event_t *e)
@@ -884,6 +900,8 @@ static void ss_open_cb(lv_event_t *e)
         lv_obj_set_width(prev, lv_pct(100));
         g_ssLook = make_dropdown(content, "Style (images come from the SD card)", "Clock page\nImage and clock\nImage only\nStickman arena (plugged in)");
         g_ssSlide = make_dropdown(content, "Image", "Selected image only\nSlideshow of all pictures in /screensaver");
+        g_ssSlidePtr = g_ssSlide;
+        g_ssSlideT = make_dropdown(content, "Slideshow: change picture every", "5 seconds\n10 seconds\n30 seconds\n1 minute");
         g_ssClock = make_dropdown(content, "Clock", "Digital\nAnalog\nAnalog and digital");
         g_ssSecs = make_switch_row(content, "Seconds hand");
         for (int k = 4; k < 12; k++)
@@ -908,6 +926,7 @@ static void ss_open_cb(lv_event_t *e)
         ss_img_label(cur);
     }
     lv_dropdown_set_selected(g_ssSlide, emoji_ss_cfg_get(16));
+    lv_dropdown_set_selected(g_ssSlideT, emoji_ss_cfg_get(17));
     lv_dropdown_set_selected(g_ssClock, emoji_ss_cfg_get(14));
     set_switch(g_ssSecs, emoji_ss_cfg_get(15) != 0);
     crumb("ss_open fields filled");
@@ -1189,6 +1208,7 @@ static bool rt_save_file(const char *text, char *nameOut, size_t n)
 {
     if (!rt_sd_ok())
         return false;
+    ISpiLock::Guard bus; // the SD card shares its SPI bus with the screen and the radio, take the host's lock like the display library does
     if (!SDFs.exists("/rtttl"))
         SDFs.mkdir("/rtttl");
     char t[24], path[64];
@@ -1207,6 +1227,7 @@ static bool rt_read_file(const char *name, char *out, size_t n)
 {
     if (!rt_sd_ok())
         return false;
+    ISpiLock::Guard bus; // the SD card shares its SPI bus with the screen and the radio, take the host's lock like the display library does
     char path[64];
     snprintf(path, sizeof(path), "/rtttl/%s", name);
     FsFile f = SDFs.open(path, O_RDONLY);
@@ -1240,6 +1261,9 @@ static bool g_cpDot = false, g_cpBusy = false;
 static char g_cpName[16] = "tune";
 static lv_obj_t *g_cpPanel = nullptr, *g_cpNameTa = nullptr, *g_cpTextTa = nullptr, *g_cpInfo = nullptr, *g_cpStatus = nullptr;
 static lv_obj_t *g_cpDurBtn[6], *g_cpDotBtn = nullptr, *g_cpOctBtn = nullptr, *g_cpBpmBtn = nullptr;
+static lv_obj_t *g_cpSeq = nullptr, *g_cpChip[60];
+static int g_cpSel = -1;
+static void cp_seq_rebuild(void);
 static const int CP_DUR[6] = {1, 2, 4, 8, 16, 32};
 static const char *const CP_NOTE[12] = {"c", "c#", "d", "d#", "e", "f", "f#", "g", "g#", "a", "a#", "b"};
 
@@ -1271,7 +1295,7 @@ static void cp_labels(void)
     char b[24];
     snprintf(b, sizeof(b), "oct %d", g_cpOct);
     lv_label_set_text(lv_obj_get_child(g_cpOctBtn, 0), b);
-    snprintf(b, sizeof(b), "%d bpm", g_cpBpm);
+    snprintf(b, sizeof(b), "%d +", g_cpBpm);
     lv_label_set_text(lv_obj_get_child(g_cpBpmBtn, 0), b);
 }
 static void cp_refresh(void)
@@ -1286,6 +1310,7 @@ static void cp_refresh(void)
     lv_label_set_text(g_cpInfo, b);
     lv_obj_set_style_text_color(g_cpInfo, lv_color_hex(strlen(t) > 230 ? 0xF2A0A0 : 0xB8BEE6), 0);
     cp_labels();
+    cp_seq_rebuild();
 }
 // read an RTTTL line back into the composer
 static bool cp_parse(const char *s)
@@ -1443,8 +1468,12 @@ static void cp_bpm_cb(lv_event_t *e)
 }
 static void cp_del_cb(lv_event_t *e)
 {
-    if (g_cpCount > 0)
+    if (g_cpSel >= 0 && g_cpSel < g_cpCount) { // the selected note, else the last one
+        memmove(&g_cpN[g_cpSel], &g_cpN[g_cpSel + 1], sizeof(CpNote) * (g_cpCount - g_cpSel - 1));
         g_cpCount--;
+    } else if (g_cpCount > 0)
+        g_cpCount--;
+    g_cpSel = -1;
     cp_refresh();
 }
 static void cp_clear_cb(lv_event_t *e)
@@ -1549,52 +1578,185 @@ static lv_obj_t *cp_btn(lv_obj_t *row, const char *text, uint32_t col, lv_event_
     lv_obj_set_user_data(b, (void *)ud);
     return b;
 }
+// a row whose buttons share the width equally, nothing wraps
+static lv_obj_t *cp_eq_row(lv_obj_t *content)
+{
+    lv_obj_t *r = lv_obj_create(content);
+    lv_obj_remove_style_all(r);
+    lv_obj_set_size(r, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(r, 4, 0);
+    lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE);
+    return r;
+}
+static lv_obj_t *cp_btn_eq(lv_obj_t *row, const char *text, uint32_t col, lv_event_cb_t cb, intptr_t ud)
+{
+    lv_obj_t *b = make_label_button(row, text, col, cb);
+    lv_obj_set_style_pad_hor(b, 2, 0);
+    lv_obj_set_style_pad_ver(b, 9, 0);
+    lv_obj_set_width(b, 1);
+    lv_obj_set_flex_grow(b, 1);
+    lv_obj_set_user_data(b, (void *)ud);
+    lv_obj_center(lv_obj_get_child(b, 0));
+    return b;
+}
+static void cp_chip_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+    g_cpSel = (g_cpSel == idx) ? -1 : idx;
+    for (int i = 0; i < g_cpCount; i++)
+        lv_obj_set_style_bg_color(g_cpChip[i], lv_color_hex(i == g_cpSel ? 0x4A73D6 : 0x2A3B66), 0);
+}
+// the notes as chips, tap one to select it for Del
+static void cp_seq_rebuild(void)
+{
+    if (!g_cpSeq)
+        return;
+    g_cpSel = -1;
+    lv_obj_clean(g_cpSeq);
+    if (g_cpCount == 0) {
+        lv_obj_t *l = lv_label_create(g_cpSeq);
+        lv_label_set_text(l, "no notes yet, tap a key");
+        lv_obj_set_style_text_color(l, lv_color_hex(0x7F89B5), 0);
+        return;
+    }
+    for (int i = 0; i < g_cpCount; i++) {
+        char t[20];
+        const CpNote &c = g_cpN[i];
+        if (c.semi < 0)
+            snprintf(t, sizeof(t), "rest 1/%d%s", c.dur, c.dot ? "." : "");
+        else {
+            snprintf(t, sizeof(t), "%s%d 1/%d%s", CP_NOTE[c.semi], c.oct, c.dur, c.dot ? "." : "");
+            if (t[0] >= 'a' && t[0] <= 'z')
+                t[0] -= 32;
+        }
+        lv_obj_t *b = make_label_button(g_cpSeq, t, 0x2A3B66, cp_chip_cb);
+        lv_obj_set_style_pad_hor(b, 6, 0);
+        lv_obj_set_style_pad_ver(b, 3, 0);
+        lv_obj_set_user_data(b, (void *)(intptr_t)i);
+        g_cpChip[i] = b;
+    }
+    lv_group_t *g = lv_group_get_default();
+    if (g)
+        panel_group_add(g_cpSeq, g); // the new chips get the focus outline for the joystick
+}
+// one octave of a piano: white keys side by side, the black keys on top of them
+static void cp_piano(lv_obj_t *content)
+{
+    lv_obj_t *piano = lv_obj_create(content);
+    lv_obj_remove_style_all(piano);
+    lv_obj_set_size(piano, lv_pct(100), 92);
+    lv_obj_remove_flag(piano, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_update_layout(piano);
+    int pw = lv_obj_get_width(piano);
+    if (pw < 100)
+        pw = lv_display_get_horizontal_resolution(NULL) - 16;
+    int kw = pw / 7;
+    static const char *const wn[7] = {"C", "D", "E", "F", "G", "A", "B"};
+    static const int ws[7] = {0, 2, 4, 5, 7, 9, 11};
+    for (int i = 0; i < 7; i++) {
+        lv_obj_t *k = lv_button_create(piano);
+        lv_obj_set_size(k, kw - 2, 90);
+        lv_obj_set_pos(k, i * kw, 0);
+        lv_obj_set_style_bg_color(k, lv_color_hex(0xE8EEF9), 0);
+        lv_obj_set_style_bg_color(k, lv_color_hex(0x9FD3FF), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(k, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(k, 6, 0);
+        lv_obj_set_style_pad_all(k, 0, 0);
+        lv_obj_set_style_shadow_width(k, 0, 0);
+        lv_obj_t *l = lv_label_create(k);
+        lv_label_set_text(l, wn[i]);
+        lv_obj_set_style_text_color(l, lv_color_hex(0x222222), 0);
+        lv_obj_align(l, LV_ALIGN_BOTTOM_MID, 0, -4);
+        lv_obj_set_user_data(k, (void *)(intptr_t)ws[i]);
+        lv_obj_add_event_cb(k, cp_key_cb, LV_EVENT_CLICKED, nullptr);
+    }
+    static const char *const bn[5] = {"C#", "D#", "F#", "G#", "A#"};
+    static const int bs[5] = {1, 3, 6, 8, 10};
+    static const int bpos[5] = {1, 2, 4, 5, 6}; // between white key bpos-1 and bpos
+    int bw = kw * 6 / 10;
+    for (int i = 0; i < 5; i++) {
+        lv_obj_t *k = lv_button_create(piano);
+        lv_obj_set_size(k, bw, 56);
+        lv_obj_set_pos(k, bpos[i] * kw - bw / 2, 0);
+        lv_obj_set_style_bg_color(k, lv_color_hex(0x101830), 0);
+        lv_obj_set_style_bg_color(k, lv_color_hex(0x4A73D6), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(k, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(k, 1, 0);
+        lv_obj_set_style_border_color(k, lv_color_hex(0x3A4A74), 0);
+        lv_obj_set_style_radius(k, 4, 0);
+        lv_obj_set_style_pad_all(k, 0, 0);
+        lv_obj_set_style_shadow_width(k, 0, 0);
+        lv_obj_t *l = lv_label_create(k);
+        lv_label_set_text(l, bn[i]);
+        lv_obj_set_style_text_color(l, lv_color_hex(0xCFD8F0), 0);
+        lv_obj_set_style_text_font(l, &ui_font_montserrat_12, 0);
+        lv_obj_align(l, LV_ALIGN_BOTTOM_MID, 0, -3);
+        lv_obj_set_user_data(k, (void *)(intptr_t)bs[i]);
+        lv_obj_add_event_cb(k, cp_key_cb, LV_EVENT_CLICKED, nullptr);
+    }
+}
 static void cp_open_cb(lv_event_t *e)
 {
     if (!g_cpPanel) {
         lv_obj_t *content;
         g_cpPanel = make_panel("Ringtone composer", cp_back_cb, &content);
-        g_cpNameTa = make_field(content, "Name", 12, false);
+        // name and tempo
+        lv_obj_t *r = cp_eq_row(content);
+        g_cpNameTa = lv_textarea_create(r);
+        lv_textarea_set_one_line(g_cpNameTa, true);
+        lv_textarea_set_max_length(g_cpNameTa, 12);
+        lv_textarea_set_placeholder_text(g_cpNameTa, "Name");
+        lv_obj_set_width(g_cpNameTa, 1);
+        lv_obj_set_flex_grow(g_cpNameTa, 3);
+        lv_obj_set_style_bg_color(g_cpNameTa, lv_color_hex(COL_FIELD), 0);
+        lv_obj_set_style_text_color(g_cpNameTa, lv_color_hex(0x1F2937), 0);
+        lv_obj_add_event_cb(g_cpNameTa, ta_click_cb, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(g_cpNameTa, cp_name_cb, LV_EVENT_VALUE_CHANGED, nullptr);
-        lv_obj_t *r = rt_row(content);
-        cp_btn(r, "- 10", COL_BTN, cp_bpm_cb, -10);
-        g_cpBpmBtn = cp_btn(r, "140 bpm", 0x3A4468, cp_bpm_cb, 0);
-        cp_btn(r, "+ 10", COL_BTN, cp_bpm_cb, 10);
-        r = rt_row(content);
+        cp_btn_eq(r, "- bpm", COL_BTN, cp_bpm_cb, -10);
+        g_cpBpmBtn = cp_btn_eq(r, "140 +", COL_BTN, cp_bpm_cb, 10);
+        // note length
+        r = cp_eq_row(content);
         for (int i = 0; i < 6; i++) {
             char l[8];
             snprintf(l, sizeof(l), "1/%d", CP_DUR[i]);
-            g_cpDurBtn[i] = cp_btn(r, l, COL_BTN, cp_dur_cb, CP_DUR[i]);
+            g_cpDurBtn[i] = cp_btn_eq(r, l, COL_BTN, cp_dur_cb, CP_DUR[i]);
         }
-        r = rt_row(content);
-        g_cpDotBtn = cp_btn(r, "dotted", COL_BTN, cp_dot_cb, 0);
-        cp_btn(r, "oct -", COL_BTN, cp_oct_cb, -1);
-        g_cpOctBtn = cp_btn(r, "oct 5", 0x3A4468, cp_oct_cb, 0);
-        cp_btn(r, "oct +", COL_BTN, cp_oct_cb, 1);
-        cp_btn(r, "rest", COL_BTN, cp_key_cb, -1);
-        r = rt_row(content);
-        static const char *const white[7] = {"C", "D", "E", "F", "G", "A", "B"};
-        static const int whiteSemi[7] = {0, 2, 4, 5, 7, 9, 11};
-        for (int i = 0; i < 7; i++)
-            cp_btn(r, white[i], 0x5A6078, cp_key_cb, whiteSemi[i]);
-        r = rt_row(content);
-        static const char *const black[5] = {"C#", "D#", "F#", "G#", "A#"};
-        static const int blackSemi[5] = {1, 3, 6, 8, 10};
-        for (int i = 0; i < 5; i++)
-            cp_btn(r, black[i], 0x2A3050, cp_key_cb, blackSemi[i]);
+        // dotted, octave, rest
+        r = cp_eq_row(content);
+        g_cpDotBtn = cp_btn_eq(r, "dotted", COL_BTN, cp_dot_cb, 0);
+        cp_btn_eq(r, "oct -", COL_BTN, cp_oct_cb, -1);
+        g_cpOctBtn = cp_btn_eq(r, "oct 5", 0x3A4468, cp_oct_cb, 0);
+        cp_btn_eq(r, "oct +", COL_BTN, cp_oct_cb, 1);
+        cp_btn_eq(r, "rest", COL_BTN, cp_key_cb, -1);
+        // the piano
+        cp_piano(content);
+        // the notes
+        g_cpSeq = lv_obj_create(content);
+        lv_obj_remove_style_all(g_cpSeq);
+        lv_obj_set_size(g_cpSeq, lv_pct(100), 64);
+        lv_obj_set_style_bg_color(g_cpSeq, lv_color_hex(0x101830), 0);
+        lv_obj_set_style_bg_opa(g_cpSeq, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(g_cpSeq, 8, 0);
+        lv_obj_set_style_pad_all(g_cpSeq, 5, 0);
+        lv_obj_set_style_pad_column(g_cpSeq, 4, 0);
+        lv_obj_set_style_pad_row(g_cpSeq, 4, 0);
+        lv_obj_set_flex_flow(g_cpSeq, LV_FLEX_FLOW_ROW_WRAP);
+        lv_obj_set_scroll_dir(g_cpSeq, LV_DIR_VER);
+        r = cp_eq_row(content);
+        cp_btn_eq(r, "Del", 0x8A2F36, cp_del_cb, 0);
+        cp_btn_eq(r, "Clear", 0x8A2F36, cp_clear_cb, 0);
+        cp_btn_eq(r, "Play", 0x2F7D4F, cp_play_cb, 0);
+        // the RTTTL text
         g_cpTextTa = make_field(content, "Ringtone (RTTTL), you can edit it here", 230, false);
         lv_obj_add_event_cb(g_cpTextTa, cp_text_cb, LV_EVENT_VALUE_CHANGED, nullptr);
         g_cpInfo = lv_label_create(content);
         lv_label_set_text(g_cpInfo, "");
         lv_obj_set_style_text_color(g_cpInfo, lv_color_hex(0xB8BEE6), 0);
-        r = rt_row(content);
-        cp_btn(r, "Del", 0x8A2F36, cp_del_cb, 0);
-        cp_btn(r, "Clear", 0x8A2F36, cp_clear_cb, 0);
-        cp_btn(r, "Play", 0x2F7D4F, cp_play_cb, 0);
-        r = rt_row(content);
-        cp_btn(r, "Save to SD", COL_BTN, cp_save_cb, 0);
-        cp_btn(r, "Load from SD", COL_BTN, cp_load_cb, 0);
-        cp_btn(r, "Use", 0x2F7D4F, cp_use_cb, 0);
+        r = cp_eq_row(content);
+        cp_btn_eq(r, "Save to SD", COL_BTN, cp_save_cb, 0);
+        cp_btn_eq(r, "Load from SD", COL_BTN, cp_load_cb, 0);
+        cp_btn_eq(r, "Use", 0x2F7D4F, cp_use_cb, 0);
         g_cpStatus = make_status(content);
         lv_obj_t *pad = lv_obj_create(content);
         lv_obj_remove_style_all(pad);
@@ -1665,6 +1827,7 @@ static void rt_pick_fill(void)
         lv_obj_set_style_text_color(m, lv_color_hex(0xF2A0A0), 0);
         return;
     }
+    ISpiLock::Guard bus; // the SD card shares its SPI bus with the screen and the radio, take the host's lock like the display library does
     if (!SDFs.exists("/rtttl"))
         SDFs.mkdir("/rtttl");
     FsFile d = SDFs.open("/rtttl");
@@ -1899,6 +2062,189 @@ static void adv_back_cb(lv_event_t *e)
     close_panel(g_advPanel);
 }
 
+// ---- Nodes: how many nodes are saved, remove the ones not heard for a while, and what the node stores ----
+static uint32_t (*g_nodesFn)(uint32_t, bool, uint32_t *) = nullptr;
+static std::set<uint32_t> g_nodeProt;
+extern "C" void emoji_nodes_host(uint32_t (*fn)(uint32_t, bool, uint32_t *))
+{
+    g_nodesFn = fn;
+}
+// favorites and ignored nodes are remembered from the node list the node sends, they are never removed from here
+extern "C" void emoji_node_flags(uint32_t num, bool fav, bool ign)
+{
+    if (fav || ign)
+        g_nodeProt.insert(num);
+    else
+        g_nodeProt.erase(num);
+}
+extern "C" bool emoji_node_protected(uint32_t num)
+{
+    return g_nodeProt.count(num) != 0;
+}
+
+static lv_obj_t *g_ndPanel = nullptr, *g_ndInfo = nullptr, *g_ndDd = nullptr, *g_ndPrev = nullptr, *g_ndBtn = nullptr, *g_ndStatus = nullptr,
+                *g_ndStore = nullptr;
+static bool g_ndArmed = false;
+static uint32_t g_ndStale = 0;
+static const uint32_t ND_DAYS[5] = {1, 3, 7, 14, 30};
+
+static void nd_size(char *out, size_t n, uint64_t b)
+{
+    if (b < 1024)
+        snprintf(out, n, "%u B", (unsigned)b);
+    else if (b < 1024ull * 1024)
+        snprintf(out, n, "%.1f KB", (double)b / 1024.0);
+    else if (b < 1024ull * 1024 * 1024)
+        snprintf(out, n, "%.1f MB", (double)b / (1024.0 * 1024.0));
+    else
+        snprintf(out, n, "%.1f GB", (double)b / (1024.0 * 1024.0 * 1024.0));
+}
+static uint32_t nd_file(const char *path)
+{
+    File f = LittleFS.open(path, "r");
+    if (!f)
+        return 0;
+    uint32_t s = (uint32_t)f.size();
+    f.close();
+    return s;
+}
+static void nd_storage_text(char *out, size_t n)
+{
+    char a[24], b[24], c[24];
+    int o = 0;
+    nd_size(a, sizeof(a), nd_file("/prefs/nodes.proto"));
+    o += snprintf(out + o, n - o, "Node list: %s\n", a);
+    uint32_t cfg = nd_file("/prefs/config.proto") + nd_file("/prefs/module.proto") + nd_file("/prefs/channels.proto") + nd_file("/prefs/device.proto");
+    nd_size(a, sizeof(a), cfg);
+    o += snprintf(out + o, n - o, "Settings files: %s\n", a);
+    nd_size(a, sizeof(a), nd_file("/prefs/uiconfig.proto"));
+    o += snprintf(out + o, n - o, "Screen settings: %s\n", a);
+    uint32_t files = 0, bytes = 0;
+    File d = LittleFS.open("/messages");
+    if (d && d.isDirectory()) {
+        File e = d.openNextFile();
+        while (e) {
+            files++;
+            bytes += (uint32_t)e.size();
+            e.close();
+            e = d.openNextFile();
+        }
+        d.close();
+    }
+    nd_size(a, sizeof(a), bytes);
+    o += snprintf(out + o, n - o, "Chat log: %s in %u files (100 KB, 25 files at most, the oldest go first)\n", a, (unsigned)files);
+    nd_size(a, sizeof(a), LittleFS.usedBytes());
+    nd_size(b, sizeof(b), LittleFS.totalBytes());
+    o += snprintf(out + o, n - o, "Internal storage: %s of %s used", a, b);
+    if (emoji_sd_status) {
+        char pk[160];
+        emoji_sd_status(pk, sizeof(pk));
+        o += snprintf(out + o, n - o, "\n%s", pk);
+    } else
+        o += snprintf(out + o, n - o, "\nSD emoji pack: this build has no SD pack, the emoji are built in");
+#ifdef HAS_SDCARD
+    if (sdCard && sdCard->cardSize() > 1) {
+        nd_size(a, sizeof(a), sdCard->usedBytes());
+        nd_size(c, sizeof(c), sdCard->cardSize());
+        o += snprintf(out + o, n - o, "\nSD card: %s of %s used", a, c);
+    }
+#endif
+}
+static void nd_refresh(void)
+{
+    char t[720];
+    uint32_t st[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    uint32_t days = ND_DAYS[lv_dropdown_get_selected(g_ndDd) < 5 ? lv_dropdown_get_selected(g_ndDd) : 2];
+    g_ndStale = g_nodesFn ? g_nodesFn(days, false, st) : 0;
+    if (g_nodesFn) {
+        snprintf(t, sizeof(t), "Saved: %u of %u nodes\nHeard: last hour %u, last day %u, last week %u", (unsigned)st[0], (unsigned)st[4],
+                 (unsigned)st[1], (unsigned)st[2], (unsigned)st[3]);
+        lv_label_set_text(g_ndInfo, t);
+        if (g_ndStale)
+            snprintf(t, sizeof(t), "%u node%s would be removed. Favorites, ignored nodes, nodes with a chat and your own node stay.", (unsigned)g_ndStale,
+                     g_ndStale == 1 ? "" : "s");
+        else
+            snprintf(t, sizeof(t), "Nothing to remove at this age.");
+        lv_label_set_text(g_ndPrev, t);
+    } else {
+        lv_label_set_text(g_ndInfo, "The node list is not available in this build.");
+        lv_label_set_text(g_ndPrev, "");
+    }
+    g_ndArmed = false;
+    lv_label_set_text(lv_obj_get_child(g_ndBtn, 0), "Remove old nodes");
+    nd_storage_text(t, sizeof(t));
+    lv_label_set_text(g_ndStore, t);
+}
+static void nd_back_cb(lv_event_t *e)
+{
+    close_panel(g_ndPanel);
+}
+static void nd_dd_cb(lv_event_t *e)
+{
+    lv_label_set_text(g_ndStatus, "");
+    nd_refresh();
+}
+static void nd_remove_cb(lv_event_t *e)
+{
+    if (!g_nodesFn)
+        return;
+    if (g_ndStale == 0) {
+        lv_label_set_text(g_ndStatus, "Nothing to remove");
+        return;
+    }
+    if (!g_ndArmed) {
+        g_ndArmed = true;
+        char t[48];
+        snprintf(t, sizeof(t), "Tap again to remove %u nodes", (unsigned)g_ndStale);
+        lv_label_set_text(lv_obj_get_child(g_ndBtn, 0), t);
+        lv_label_set_text(g_ndStatus, "");
+        return;
+    }
+    uint32_t st[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    uint32_t days = ND_DAYS[lv_dropdown_get_selected(g_ndDd) < 5 ? lv_dropdown_get_selected(g_ndDd) : 2];
+    uint32_t n = g_nodesFn(days, true, st);
+    nd_refresh();
+    uint32_t after[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    g_nodesFn(days, false, after);
+    char t[80];
+    snprintf(t, sizeof(t), "Removed %u node%s, %u left", (unsigned)n, n == 1 ? "" : "s", (unsigned)after[0]);
+    lv_label_set_text(g_ndStatus, t);
+}
+static void nd_open_cb(lv_event_t *e)
+{
+    if (!g_ndPanel) {
+        lv_obj_t *content;
+        g_ndPanel = make_panel("Nodes", nd_back_cb, &content);
+        g_ndInfo = lv_label_create(content);
+        lv_label_set_long_mode(g_ndInfo, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(g_ndInfo, lv_pct(100));
+        lv_obj_set_style_text_color(g_ndInfo, lv_color_hex(0xFFFFFF), 0);
+        g_ndDd = make_dropdown(content, "Remove nodes not heard for", "1 day\n3 days\n7 days\n14 days\n30 days");
+        lv_dropdown_set_selected(g_ndDd, 2);
+        lv_obj_add_event_cb(g_ndDd, nd_dd_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+        g_ndPrev = lv_label_create(content);
+        lv_label_set_long_mode(g_ndPrev, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(g_ndPrev, lv_pct(100));
+        lv_obj_set_style_text_color(g_ndPrev, lv_color_hex(0xF2A0A0), 0);
+        g_ndBtn = make_label_button(content, "Remove old nodes", 0x8A2F36, nd_remove_cb);
+        lv_obj_set_width(g_ndBtn, lv_pct(100));
+        g_ndStatus = make_status(content);
+        lv_obj_t *h = lv_label_create(content);
+        lv_label_set_text(h, "Storage");
+        lv_obj_set_style_text_color(h, lv_color_hex(0xB8BEE6), 0);
+        g_ndStore = lv_label_create(content);
+        lv_label_set_long_mode(g_ndStore, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(g_ndStore, lv_pct(100));
+        lv_obj_set_style_text_color(g_ndStore, lv_color_hex(0x9FD3FF), 0);
+        lv_obj_t *pad = lv_obj_create(content);
+        lv_obj_remove_style_all(pad);
+        lv_obj_set_size(pad, 10, 120);
+    }
+    lv_label_set_text(g_ndStatus, "");
+    nd_refresh();
+    open_panel(g_ndPanel);
+}
+
 static void build_adv_panel(void)
 {
     lv_obj_t *content;
@@ -1920,6 +2266,8 @@ static void build_adv_panel(void)
     g_namesLabel = names;
     names_text();
     make_nav(content, "MQTT  >", mqtt_open_cb);
+    if (g_nodesFn)
+        make_nav(content, "Nodes  >", nd_open_cb);
     if (g_loraCfg) {
         make_nav(content, "LoRa extras  >", lora_open_cb);
         make_nav(content, "Position  >", pos_open_cb);

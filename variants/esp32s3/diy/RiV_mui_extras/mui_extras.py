@@ -29,6 +29,61 @@ ROW2 = ["\U0001F44D", "\U0001F44E", "\U0001F44B", "\U0001F64F", "\U0001F44C", "\
 ROW3 = ["\U0001F525", "\u2B50", "\u2705", "\u274C", "\u26A0", "\u2753", "\U0001F4CD", "\U0001F50B", "\U0001F4E1", "\U0001F697", "\U0001F3E0", "\u26F0"]
 
 MISSES = []
+
+NODES_LAMBDA = """    emoji_nodes_host([](uint32_t days, bool doRemove, uint32_t *st) -> uint32_t {
+        time_t now = THIS->actTime;
+        if (now < 1700000000)
+            time(&now);
+        uint32_t limit = days * 86400u, h1 = 0, h24 = 0, h7 = 0;
+        std::vector<uint32_t> victims;
+        for (auto &kv : THIS->nodes) {
+            uint32_t num = kv.first;
+            uint32_t lh = (unsigned long)kv.second->LV_OBJ_IDX(node_lh_idx)->user_data;
+            uint32_t age = (lh && now > (time_t)lh) ? (uint32_t)(now - lh) : 0;
+            if (lh) {
+                if (age <= 3600)
+                    h1++;
+                if (age <= 86400)
+                    h24++;
+                if (age <= 7 * 86400)
+                    h7++;
+            }
+            bool old = lh == 0 || age >= limit;
+            if (old && num != THIS->ownNode && !emoji_node_protected(num) && THIS->chats.find(num) == THIS->chats.end() &&
+                THIS->messages.find(num) == THIS->messages.end())
+                victims.push_back(num);
+        }
+        if (st) {
+            st[0] = THIS->nodeCount;
+            st[1] = h1;
+            st[2] = h24;
+            st[3] = h7;
+            st[4] = MAX_NUM_NODES_VIEW;
+        }
+        if (doRemove) {
+            for (uint32_t num : victims) {
+                auto it = THIS->nodes.find(num);
+                if (it == THIS->nodes.end())
+                    continue;
+                lv_obj_t *p = it->second;
+                uint32_t lh = (unsigned long)p->LV_OBJ_IDX(node_lh_idx)->user_data;
+                if (lh > 0 && now >= (time_t)lh && (now - lh <= THIS->secs_until_offline) && THIS->nodesOnline > 0)
+                    THIS->nodesOnline--;
+                lv_obj_delete(p);
+                THIS->removeFromMap(num);
+                THIS->nodes.erase(num);
+                if (THIS->nodeCount > 1)
+                    THIS->nodeCount--;
+                THIS->controller->sendAdminMessage(
+                    meshtastic_AdminMessage{.which_payload_variant = meshtastic_AdminMessage_remove_by_nodenum_tag, .remove_by_nodenum = num},
+                    THIS->ownNode);
+            }
+            THIS->nodesChanged = true;
+        }
+        return (uint32_t)victims.size();
+    });
+"""
+
 WRAP_MARK = "/*Initialize a public general font descriptor*/"
 
 
@@ -415,6 +470,16 @@ def main():
                      'void (*)(void), void (*)(void), void (*)(void), void (*)(void));\n'
                      'extern "C" void emoji_settings_host2(void *(*)(void), void (*)(void), int, void (*)(const char *));\n')
         vc_decl += 'extern "C" void emoji_gps_record(const void *);\n'
+        # renaming the node shows "Rebooting ..." but nothing asks the node to reboot, so the screen would wait for ever
+        edit(tft, '                THIS->controller->sendConfig(user, THIS->ownNode);\n                THIS->notifyReboot(true);\n',
+             '                THIS->controller->sendConfig(user, THIS->ownNode);\n                THIS->controller->requestReboot(3, THIS->ownNode);\n                THIS->notifyReboot(true);\n', "replace")
+        vc_decl += 'extern "C" void emoji_node_flags(uint32_t, bool, bool);\n'
+        tft_decl += ('extern "C" void emoji_nodes_host(uint32_t (*)(uint32_t, bool, uint32_t *));\n'
+                     'extern "C" bool emoji_node_protected(uint32_t);\n'
+                     '#include <vector>\n')
+        edit(vc, '                const meshtastic_NodeInfo &node = from.node_info;\n',
+             '                emoji_node_flags(node.num, node.is_favorite, node.is_ignored);\n', "after")
+        edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n", NODES_LAMBDA, "before")
         edit(vc, '            // if "to" is our node then this is a reply to a requestPosition request\n',
              "            if (p.from == myNodeNum)\n"
              "                emoji_gps_record(&position);\n", "before")
@@ -521,10 +586,35 @@ def main():
              "        lgfx->setBrightness(lastBrightness);\n"
              "        lv_display_trigger_activity(NULL);\n"
              "    }\n"
-             "    if (ssStage == 1) {\n"
+             "    if (ssStage == 1 && !powerSaving) { // while the panel sleeps, the driver wake code must still run\n"
              "        if (ssBl >= 0 && (int)lgfx->getBrightness() != ssBl)\n"
              "            lgfx->setBrightness(ssBl);\n"
              "    } else if ((%s > 0 && lv_display_get_inactive_time(NULL) > %s) || powerSaving ||\n" % (tmo, tmo, tmo), "replace")
+
+    # a panel that glitches when put to sleep (green screen and noise after waking) can stay awake and only lose its backlight:
+    # add -D RIV_NO_PANEL_SLEEP=1 to the env, the default keeps the stock sleep and wake
+    s_drv, c_drv = read(drv)
+    if "RIV_NO_PANEL_SLEEP" not in s_drv:
+        for call in ("lgfx->sleep();", "lgfx->powerSaveOn();", "lgfx->powerSaveOff();", "lgfx->wakeup();"):
+            s_drv = s_drv.replace(call, "if (!RIV_NO_PANEL_SLEEP) " + call)
+        s_drv = "#ifndef RIV_NO_PANEL_SLEEP\n#define RIV_NO_PANEL_SLEEP 0\n#endif\n" + s_drv
+        write(drv, s_drv, c_drv)
+
+    # The node list keeps raw pointers into the input group's linked list (to order the buttons) and moves list entries with them for
+    # every packet. Removing objects from the group (Advanced menu, screensaver) frees those entries, so the next packet from a node writes
+    # through a stale pointer: the node panics (StoreProhibited) a few seconds or minutes later. Look the entries up each time instead.
+    if "advanced" in feat or "screensaver" in feat:
+        tft_decl += "static void *emojiLLFind(lv_ll_t *ll, void *obj) { for (void *n = _lv_ll_get_head(ll); n; n = _lv_ll_get_next(ll, n)) if (*(void **)n == obj) return n; return nullptr; }\n"
+        edit(tft, "            void *after = children[i + 1]->LV_OBJ_IDX(node_btn_idx)->user_data;\n            _lv_ll_move_before(lv_group_ll, nodeButton->user_data, after);\n",
+             "            void *after = emojiLLFind(lv_group_ll, children[i + 1]->LV_OBJ_IDX(node_btn_idx));\n"
+             "            void *mine = emojiLLFind(lv_group_ll, nodeButton);\n"
+             "            if (after && mine)\n"
+             "                _lv_ll_move_before(lv_group_ll, mine, after);\n", "replace")
+        edit(tft, "            void *act = it->second->LV_OBJ_IDX(node_btn_idx)->user_data;\n            if (lv_group_ll && act)\n                _lv_ll_move_before(lv_group_ll, act, _lv_ll_get_next(lv_group_ll, topNodeLL));\n",
+             "            void *act = emojiLLFind(lv_group_ll, it->second->LV_OBJ_IDX(node_btn_idx));\n"
+             "            void *top = emojiLLFind(lv_group_ll, objects.node_button);\n"
+             "            if (lv_group_ll && act && top)\n"
+             "                _lv_ll_move_before(lv_group_ll, act, _lv_ll_get_next(lv_group_ll, top));\n", "replace")
 
     # declarations, one block per file
     if tft_decl:

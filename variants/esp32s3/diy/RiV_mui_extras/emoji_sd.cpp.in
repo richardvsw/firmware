@@ -2,7 +2,9 @@
 #include "lvgl.h"
 #include <esp_heap_caps.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include "util/ISpiLock.h"
 
 extern "C" lv_font_t ui_emoji_font;
 extern "C" bool emoji_color_load_pack(const uint8_t *buf, uint32_t size);
@@ -13,6 +15,7 @@ extern SdFs SDFs;
 
 static uint8_t *read_file(const char *path, uint32_t *size_out)
 {
+    ISpiLock::Guard bus; // the SD card shares its SPI bus with the screen and the radio, take the host's lock like the display library does
     FsFile f = SDFs.open(path, O_RDONLY);
     if (!f)
         return nullptr;
@@ -29,6 +32,36 @@ static uint8_t *read_file(const char *path, uint32_t *size_out)
 #endif
 
 static bool g_sdReady = false;
+static int g_colorSt = 0, g_monoSt = 0; // 0 not tried, 1 loaded, 2 file not found, 3 file is not a valid pack
+static uint32_t g_colorKB = 0, g_monoKB = 0;
+// one line for Advanced settings: did the emoji packs on the SD card load
+extern "C" int emoji_sd_status(char *out, int n)
+{
+#ifdef HAS_SDCARD
+    if (!g_sdReady) {
+        snprintf(out, n, "SD emoji pack: SD card not ready");
+        return 0;
+    }
+    if (g_colorSt == 2 && g_monoSt == 2) {
+        snprintf(out, n, "SD emoji pack: not found, using the built-in emoji (put emoji_color.bin and emoji.bin in the SD root)");
+        return 0;
+    }
+    char c[40], m[40];
+    if (g_colorSt == 1)
+        snprintf(c, sizeof(c), "colour loaded, %u KB", (unsigned)g_colorKB);
+    else
+        snprintf(c, sizeof(c), "colour %s", g_colorSt == 3 ? "file invalid" : "not found");
+    if (g_monoSt == 1)
+        snprintf(m, sizeof(m), "mono loaded, %u KB", (unsigned)g_monoKB);
+    else
+        snprintf(m, sizeof(m), "mono %s", g_monoSt == 3 ? "file invalid" : "not found");
+    snprintf(out, n, "SD emoji pack: %s, %s", c, m);
+    return (g_colorSt == 1 || g_monoSt == 1) && g_colorSt != 3 && g_monoSt != 3 ? 1 : 0;
+#else
+    snprintf(out, n, "SD emoji pack: no SD card support in this build");
+    return 0;
+#endif
+}
 extern "C" bool emoji_sd_ready(void)
 {
     return g_sdReady;
@@ -45,16 +78,29 @@ extern "C" void emoji_load_from_sd(void)
 
     uint32_t size = 0;
     uint8_t *color = read_file("/emoji_color.bin", &size);
-    if (color && !emoji_color_load_pack(color, size))
+    if (!color)
+        g_colorSt = 2;
+    else if (emoji_color_load_pack(color, size)) {
+        g_colorSt = 1;
+        g_colorKB = size / 1024;
+    } else {
         free(color);
+        g_colorSt = 3;
+    }
 
     uint8_t *mono = read_file("/emoji.bin", &size);
-    if (mono) {
+    if (!mono)
+        g_monoSt = 2;
+    else {
         lv_font_t *font = lv_binfont_create_from_buffer(mono, size);
-        if (font)
+        if (font) {
             ui_emoji_font.fallback = font;
-        else
+            g_monoSt = 1;
+            g_monoKB = size / 1024;
+        } else {
             free(mono);
+            g_monoSt = 3;
+        }
     }
 #endif
 }
