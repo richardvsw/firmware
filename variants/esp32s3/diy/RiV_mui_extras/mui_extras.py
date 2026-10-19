@@ -28,6 +28,7 @@ ROW1 = ["\U0001F600", "\U0001F602", "\U0001F642", "\U0001F609", "\U0001F60D", "\
 ROW2 = ["\U0001F44D", "\U0001F44E", "\U0001F44B", "\U0001F64F", "\U0001F44C", "\u270C", "\U0001F4AA", "\u2764", "\U0001F389", "\U0001F37A", "\u2615"]
 ROW3 = ["\U0001F525", "\u2B50", "\u2705", "\u274C", "\u26A0", "\u2753", "\U0001F4CD", "\U0001F50B", "\U0001F4E1", "\U0001F697", "\U0001F3E0", "\u26F0"]
 
+MISSES = []
 WRAP_MARK = "/*Initialize a public general font descriptor*/"
 
 
@@ -57,9 +58,15 @@ def write(p, s, crlf):
 def edit(path, anchor, add, mode="after"):
     # insert text after/before an anchor, or replace it; skipped when the added text is already there
     if not os.path.exists(path):
+        print("MUI-EXTRAS WARNING: file not found:", path)
+        MISSES.append(path)
         return
     s, crlf = read(path)
-    if add in s or anchor not in s:
+    if add in s:
+        return
+    if anchor not in s:
+        print("MUI-EXTRAS WARNING: anchor not found in %s: %r" % (os.path.basename(path), anchor[:80]))
+        MISSES.append(os.path.basename(path) + ": " + anchor[:60])
         return
     new = {"after": anchor + add, "before": add + anchor, "replace": add}[mode]
     write(path, s.replace(anchor, new, 1), crlf)
@@ -511,3 +518,11 @@ def main():
 
 if os.path.isdir(UI) and os.path.isdir(LV):
     main()
+
+if os.path.isdir(UI) and os.path.isdir(LV):
+    if MISSES:
+        print("MUI-EXTRAS: %d patch anchor(s) NOT found in this library version, those features are missing or broken:" % len(MISSES))
+        for m in MISSES:
+            print("   -", m)
+    else:
+        print("MUI-EXTRAS: all patch anchors found")
