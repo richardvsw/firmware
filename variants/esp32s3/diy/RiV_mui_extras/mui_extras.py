@@ -1,3 +1,4 @@
+import filecmp
 import os
 import shutil
 
@@ -14,7 +15,7 @@ LIB = env.subst("$PROJECT_DIR/.pio/libdeps/${PIOENV}")
 UI = os.path.join(LIB, "meshtastic-device-ui")
 LV = os.path.join(LIB, "lvgl")
 
-ALL = "keyboard emoji chat themes advanced wake compose screensaver"
+ALL = "keyboard emoji chat themes advanced wake compose screensaver"  # meshbot is switched on per env
 feat = set(str(env.GetProjectOption("custom_riv_mui_features", ALL)).replace(",", " ").split())
 emoji_set = str(env.GetProjectOption("custom_riv_mui_emoji", "full")).strip()
 ina_addr = str(env.GetProjectOption("custom_riv_mui_ina_address", "")).strip()
@@ -44,8 +45,13 @@ def read(p):
 
 
 def write(p, s, crlf):
-    with open(p, "w", encoding="utf-8", newline="") as f:
-        f.write(s.replace("\n", "\r\n") if crlf else s)
+    data = (s.replace("\n", "\r\n") if crlf else s).encode("utf-8")
+    if os.path.exists(p):
+        with open(p, "rb") as f:
+            if f.read() == data:
+                return  # unchanged, keep the timestamp so the build does not recompile it
+    with open(p, "wb") as f:
+        f.write(data)
 
 
 def edit(path, anchor, add, mode="after"):
@@ -61,7 +67,11 @@ def edit(path, anchor, add, mode="after"):
 
 
 def copy(name, dst_dir, dst_name=None):
-    shutil.copyfile(os.path.join(HERE, name), os.path.join(dst_dir, dst_name or (name[:-3] if name.endswith(".in") else name)))
+    src = os.path.join(HERE, name)
+    dst = os.path.join(dst_dir, dst_name or (name[:-3] if name.endswith(".in") else name))
+    if os.path.exists(dst) and filecmp.cmp(src, dst, shallow=False):
+        return  # unchanged, keep the timestamp
+    shutil.copyfile(src, dst)
 
 
 def font_files():
@@ -228,7 +238,20 @@ def main():
         copy("emoji_names.inc", dst)
     if "chat" in feat:
         copy("emoji_bubbles.cpp.in", dst)
-        copy("bot_stub.cpp.in", dst, "emoji_bot_stub.cpp")
+        if "meshbot" in feat:
+            # B-48 / RiV-meshBot chat: white background with the bot logo and solid bubbles
+            copy("meshbot_bg.cpp.in", dst)
+            copy("meshbot_logo.inc", dst)
+            tft_decl += ('extern "C" void emoji_chat_style(lv_obj_t *, const char *, const char *);\n'
+                         'extern "C" void emoji_bubble_style(lv_obj_t *, lv_obj_t *, bool);\n')
+            shown = ("    lv_obj_t *p = nodes[nodeNum];\n    if (p) {\n"
+                     "        lv_label_set_text(objects.top_messages_node_label, lv_label_get_text(p->LV_OBJ_IDX(node_lbl_idx)));\n")
+            edit(tft, shown, "        emoji_chat_style(activeMsgContainer, lv_label_get_text(p->LV_OBJ_IDX(node_lbs_idx)),\n"
+                             "                         lv_label_get_text(p->LV_OBJ_IDX(node_lbl_idx)));\n")
+            group = "    lv_label_set_text(objects.top_group_chat_label, lv_label_get_text(channel[ch]));\n"
+            edit(tft, group, "    emoji_chat_style(nullptr, nullptr, nullptr);\n")
+        else:
+            copy("bot_stub.cpp.in", dst, "emoji_bot_stub.cpp")
         tft_decl += ('extern "C" void emoji_suggest_init(lv_obj_t *);\n'
                      'extern "C" bool emoji_long_names(void);\n'
                      'extern "C" void emoji_bubble_register(lv_obj_t *, uint32_t);\n'
@@ -248,8 +271,15 @@ def main():
         edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n",
              "    emoji_suggest_init(objects.message_input_area);\n")
         # chat bubbles register for reactions
-        edit(tft, "    add_style_chat_message_style(textLabel);\n", "    emoji_bubble_register(textLabel, requestId);\n")
-        edit(tft, "    add_style_new_message_style(msgLabel);\n", "    emoji_bubble_register(msgLabel, 0);\n")
+        sent_anchor = "    add_style_chat_message_style(textLabel);\n"
+        recv_anchor = "    add_style_new_message_style(msgLabel);\n"
+        if "meshbot" in feat:
+            edit(tft, sent_anchor, "    emoji_bubble_style(textLabel, container, true);\n")
+            edit(tft, recv_anchor, "    emoji_bubble_style(msgLabel, container, false);\n")
+            sent_anchor = "    emoji_bubble_style(textLabel, container, true);\n"
+            recv_anchor = "    emoji_bubble_style(msgLabel, container, false);\n"
+        edit(tft, sent_anchor, "    emoji_bubble_register(textLabel, requestId);\n")
+        edit(tft, recv_anchor, "    emoji_bubble_register(msgLabel, 0);\n")
         # group bubbles show the long name when the setting is on
         names_old = ("            char *userData = (char *)&(nodes[from]->LV_OBJ_IDX(node_lbs_idx)->user_data);\n"
                      "            while (pos < 4 && userData[pos] != 0) {\n"

@@ -12,6 +12,8 @@
 #endif
 #include <Wire.h>
 #include <math.h>
+#include <esp_attr.h>
+#include <esp_system.h>
 #include <time.h>
 #include <stdio.h>
 #include <string.h>
@@ -20,6 +22,34 @@
 extern "C" bool emoji_long_names(void);
 extern "C" bool emoji_long_names_toggle(void);
 extern "C" void add_style_settings_button_style(lv_obj_t *obj);
+
+// breadcrumbs that survive a crash or watchdog reset, shown at the top of the Advanced list after the next start
+RTC_NOINIT_ATTR static char g_crumb[48];
+RTC_NOINIT_ATTR static uint32_t g_crumbMagic;
+extern "C" void emoji_crumb(const char *s)
+{
+    strncpy(g_crumb, s, sizeof(g_crumb) - 1);
+    g_crumb[sizeof(g_crumb) - 1] = 0;
+    g_crumbMagic = 0xC0FFEE42;
+}
+static void crumb(const char *s)
+{
+    emoji_crumb(s);
+}
+static const char *reset_name(void)
+{
+    switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "power on";
+    case ESP_RST_SW: return "software restart";
+    case ESP_RST_PANIC: return "CRASH (panic)";
+    case ESP_RST_INT_WDT: return "CRASH (interrupt watchdog)";
+    case ESP_RST_TASK_WDT: return "CRASH (task watchdog)";
+    case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_BROWNOUT: return "BROWNOUT (power dip)";
+    case ESP_RST_DEEPSLEEP: return "deep sleep wake";
+    default: return "other";
+    }
+}
 
 typedef void *(*MqttCfgFn)(void);
 typedef void (*VoidFn)(void);
@@ -49,47 +79,125 @@ static void hide_kb(void)
         lv_obj_add_flag(g_kb, LV_OBJ_FLAG_HIDDEN);
 }
 
-// ---- joystick group management for panels ----
+// ---- joystick and encoder navigation for the panels ----
+// Only real controls take part (buttons, switches, text boxes, drop downs). While a panel is open the controls of the screens below
+// are taken out of the input group and put back when the last panel closes, so the cursor can only be on something that is on screen.
+// The focused control is drawn with a bright outline, so the cursor position is always visible.
 static lv_obj_t *g_panelStack[8];
-static int       g_panelDepth = 0;
+static int g_panelDepth = 0;
+static lv_obj_t *g_savedGrp[200];
+static int g_savedN = 0;
+static lv_obj_t *g_savedFocus = nullptr;
+static lv_style_t g_hl;
+static bool g_hlInit = false;
+
+static void hl_init(void)
+{
+    if (g_hlInit)
+        return;
+    g_hlInit = true;
+    lv_style_init(&g_hl);
+    lv_style_set_outline_width(&g_hl, 3);
+    lv_style_set_outline_color(&g_hl, lv_color_hex(0xFFD54A));
+    lv_style_set_outline_opa(&g_hl, LV_OPA_COVER);
+    lv_style_set_outline_pad(&g_hl, 2);
+}
+
+static bool focusable(lv_obj_t *o)
+{
+    return lv_obj_check_type(o, &lv_button_class) || lv_obj_check_type(o, &lv_switch_class) || lv_obj_check_type(o, &lv_textarea_class) ||
+           lv_obj_check_type(o, &lv_dropdown_class);
+}
 
 static void panel_group_add(lv_obj_t *obj, lv_group_t *g)
 {
-    if (lv_obj_has_flag(obj, LV_OBJ_FLAG_CLICKABLE)
-        || lv_obj_check_type(obj, &lv_switch_class)
-        || lv_obj_check_type(obj, &lv_textarea_class)
-        || lv_obj_check_type(obj, &lv_dropdown_class))
+    if (focusable(obj)) {
         lv_group_add_obj(g, obj);
+        lv_obj_remove_style(obj, &g_hl, LV_STATE_FOCUSED);
+        lv_obj_add_style(obj, &g_hl, LV_STATE_FOCUSED);
+    }
     for (uint32_t i = 0; i < lv_obj_get_child_count(obj); i++)
         panel_group_add(lv_obj_get_child(obj, i), g);
 }
 
 static void panel_group_remove(lv_obj_t *obj)
 {
-    lv_group_remove_obj(obj);
+    if (focusable(obj)) {
+        lv_group_remove_obj(obj);
+        lv_obj_remove_style(obj, &g_hl, LV_STATE_FOCUSED);
+    }
     for (uint32_t i = 0; i < lv_obj_get_child_count(obj); i++)
         panel_group_remove(lv_obj_get_child(obj, i));
+}
+
+static lv_obj_t *first_focusable(lv_obj_t *o)
+{
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN))
+        return nullptr;
+    if (focusable(o))
+        return o;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) {
+        lv_obj_t *r = first_focusable(lv_obj_get_child(o, i));
+        if (r)
+            return r;
+    }
+    return nullptr;
 }
 
 static void panel_focus_first(lv_obj_t *p)
 {
     lv_group_t *g = lv_group_get_default();
-    if (!g) return;
-    // content is second child of the panel (bar=0, content=1)
+    if (!g)
+        return;
+    // the content is the second child of a panel (bar first), fall back to the back button
     lv_obj_t *content = lv_obj_get_child_count(p) > 1 ? lv_obj_get_child(p, 1) : p;
-    if (lv_obj_get_child_count(content) > 0)
-        lv_group_focus_obj(lv_obj_get_child(content, 0));
+    lv_obj_t *f = first_focusable(content);
+    if (!f)
+        f = first_focusable(p);
+    if (f)
+        lv_group_focus_obj(f);
     lv_group_set_editing(g, false);
+}
+
+// take the controls of the screens below out of the group
+static void group_isolate(lv_group_t *g)
+{
+    g_savedN = 0;
+    g_savedFocus = lv_group_get_focused(g);
+    uint32_t n = lv_group_get_obj_count(g);
+    if (n > 200)
+        n = 200;
+    for (uint32_t i = 0; i < n; i++)
+        g_savedGrp[g_savedN++] = lv_group_get_obj_by_index(g, i);
+    for (int i = 0; i < g_savedN; i++)
+        lv_group_remove_obj(g_savedGrp[i]);
+}
+
+static void group_restore(lv_group_t *g)
+{
+    for (int i = 0; i < g_savedN; i++)
+        if (lv_obj_is_valid(g_savedGrp[i]))
+            lv_group_add_obj(g, g_savedGrp[i]);
+    g_savedN = 0;
+    if (g_savedFocus && lv_obj_is_valid(g_savedFocus))
+        lv_group_focus_obj(g_savedFocus);
+    g_savedFocus = nullptr;
 }
 
 static void open_panel(lv_obj_t *p)
 {
     lv_obj_remove_flag(p, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(p);
+    hl_init();
     lv_group_t *g = lv_group_get_default();
     if (g) {
+        if (g_panelDepth == 0)
+            group_isolate(g);
+        else
+            panel_group_remove(g_panelStack[g_panelDepth - 1]); // the panel below stays visible but is not navigable
         panel_group_add(p, g);
-        if (g_panelDepth < 8) g_panelStack[g_panelDepth++] = p;
+        if (g_panelDepth < 8)
+            g_panelStack[g_panelDepth++] = p;
         panel_focus_first(p);
     }
 }
@@ -100,26 +208,33 @@ static void close_panel(lv_obj_t *p)
     lv_group_t *g = lv_group_get_default();
     if (g) {
         panel_group_remove(p);
-        if (g_panelDepth > 0 && g_panelStack[g_panelDepth - 1] == p) g_panelDepth--;
-        if (g_panelDepth > 0) panel_focus_first(g_panelStack[g_panelDepth - 1]);
+        if (g_panelDepth > 0 && g_panelStack[g_panelDepth - 1] == p)
+            g_panelDepth--;
+        if (g_panelDepth > 0) {
+            panel_group_add(g_panelStack[g_panelDepth - 1], g);
+            panel_focus_first(g_panelStack[g_panelDepth - 1]);
+        } else {
+            group_restore(g);
+        }
     }
     lv_obj_add_flag(p, LV_OBJ_FLAG_HIDDEN);
 }
 
+// returns the lv_button; child 0 is the lv_label (use lv_obj_get_child(btn,0) to set text)
 static lv_obj_t *make_label_button(lv_obj_t *parent, const char *text, uint32_t bg, lv_event_cb_t cb)
 {
-    lv_obj_t *l = lv_label_create(parent);
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_set_style_bg_color(b, lv_color_hex(bg), 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(b, 8, 0);
+    lv_obj_set_style_pad_hor(b, 14, 0);
+    lv_obj_set_style_pad_ver(b, 9, 0);
+    lv_obj_t *l = lv_label_create(b);
     lv_label_set_text(l, text);
-    lv_obj_set_style_bg_color(l, lv_color_hex(bg), 0);
-    lv_obj_set_style_bg_opa(l, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(l, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_radius(l, 8, 0);
-    lv_obj_set_style_pad_hor(l, 14, 0);
-    lv_obj_set_style_pad_ver(l, 9, 0);
-    lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_text_color(b, lv_color_hex(0xFFFFFF), 0);
     if (cb)
-        lv_obj_add_event_cb(l, cb, LV_EVENT_CLICKED, nullptr);
-    return l;
+        lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+    return b;
 }
 
 // full screen panel with a title bar, a back button and a scrolling column for the content
@@ -214,7 +329,7 @@ static void show_pass_cb(lv_event_t *e)
     lv_obj_t *l = (lv_obj_t *)lv_event_get_target(e);
     bool hidden = lv_textarea_get_password_mode(g_taPass);
     lv_textarea_set_password_mode(g_taPass, !hidden);
-    lv_label_set_text(l, hidden ? "Hide password" : "Show password");
+    lv_label_set_text(lv_obj_get_child(l, 0), hidden ? "Hide password" : "Show password");
 }
 
 static void mqtt_load(void)
@@ -496,14 +611,14 @@ static bool g_regenArmed = false;
 static void sec_back_cb(lv_event_t *e)
 {
     g_regenArmed = false;
-    lv_label_set_text(g_regenBtn, "Regenerate private key");
+    lv_label_set_text(lv_obj_get_child(g_regenBtn, 0), "Regenerate private key");
     close_panel(g_secPanel);
 }
 static void regen_cb(lv_event_t *e)
 {
     if (!g_regenArmed) {
         g_regenArmed = true;
-        lv_label_set_text(g_regenBtn, "Tap again to confirm");
+        lv_label_set_text(lv_obj_get_child(g_regenBtn, 0), "Tap again to confirm");
         lv_label_set_text(g_secStatus, "New identity key, the node restarts. Nodes that cached the old key must see your nodeinfo again before direct messages work.");
         return;
     }
@@ -516,7 +631,7 @@ static void regen_cb(lv_event_t *e)
     c->private_key.size = 32;
     c->public_key.size = 0;
     g_sendSec();
-    lv_label_set_text(g_regenBtn, "Regenerate private key");
+    lv_label_set_text(lv_obj_get_child(g_regenBtn, 0), "Regenerate private key");
     lv_label_set_text(g_secStatus, "Sent, the node restarts");
 }
 static void sec_open_cb(lv_event_t *e)
@@ -625,7 +740,15 @@ extern "C" void emoji_ss_img_get(char *out, size_t size) __attribute__((weak));
 extern "C" void emoji_ss_img_set(const char *path) __attribute__((weak));
 extern "C" void emoji_ss_preview(void) __attribute__((weak));
 
-// image picker: the PNG files in the /screensaver folder of the SD card
+// image picker: the PNG and JPEG files in the /screensaver folder of the SD card
+static bool img_name(const char *nm)
+{
+    size_t l = strlen(nm);
+    if (l > 4 && (strcasecmp(nm + l - 4, ".png") == 0 || strcasecmp(nm + l - 4, ".jpg") == 0))
+        return true;
+    return l > 5 && strcasecmp(nm + l - 5, ".jpeg") == 0;
+}
+
 static lv_obj_t *g_pickPanel = nullptr, *g_pickList = nullptr, *g_ssImgBtn = nullptr;
 static char g_pickNames[60][44];
 static int g_pickCount = 0;
@@ -639,7 +762,7 @@ static void ss_img_label(const char *name)
         return;
     char label[100];
     snprintf(label, sizeof(label), "Image: %s", name[0] ? name : "first one in /screensaver");
-    lv_label_set_text(g_ssImgBtn, label);
+    lv_label_set_text(lv_obj_get_child(g_ssImgBtn, 0), label);
 }
 static void pick_entry_cb(lv_event_t *e)
 {
@@ -659,7 +782,7 @@ static void pick_fill(void)
     lv_label_set_long_mode(h, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(h, lv_pct(100));
     lv_obj_set_style_text_color(h, lv_color_hex(0xB8BEE6), 0);
-    lv_label_set_text(h, "PNG files in the /screensaver folder of the SD card, 320 x 480 pixels");
+    lv_label_set_text(h, "PNG or JPEG files in the /screensaver folder of the SD card, 320 x 480 pixels");
 #ifdef HAS_SDCARD
     if (!emoji_sd_ready || !emoji_sd_ready()) {
         lv_obj_t *m = lv_label_create(g_pickList);
@@ -681,22 +804,22 @@ static void pick_fill(void)
         e.getName(nm, sizeof(nm));
         bool dir = e.isDir();
         e.close();
-        size_t l = strlen(nm);
-        if (dir || nm[0] == '.' || l <= 4 || strcasecmp(nm + l - 4, ".png") != 0)
+        if (dir || nm[0] == '.' || !img_name(nm))
             continue;
         snprintf(g_pickNames[g_pickCount], sizeof(g_pickNames[0]), "%s", nm);
         char label[60];
         snprintf(label, sizeof(label), LV_SYMBOL_IMAGE " %s", nm);
         lv_obj_t *b = make_label_button(g_pickList, label, 0x2F7D4F, pick_entry_cb);
         lv_obj_set_width(b, lv_pct(100));
-        lv_label_set_long_mode(b, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(lv_obj_get_child(b, 0), lv_pct(100));
+        lv_label_set_long_mode(lv_obj_get_child(b, 0), LV_LABEL_LONG_DOT);
         lv_obj_set_user_data(b, (void *)(uintptr_t)g_pickCount);
         g_pickCount++;
     }
     d.close();
     if (g_pickCount == 0) {
         lv_obj_t *m = lv_label_create(g_pickList);
-        lv_label_set_text(m, "No PNG files yet. Copy some into /screensaver on the SD card.");
+        lv_label_set_text(m, "No pictures yet. Copy PNG or JPEG files into /screensaver on the SD card.");
     }
 #else
     lv_obj_t *m = lv_label_create(g_pickList);
@@ -743,6 +866,7 @@ static void ss_open_cb(lv_event_t *e)
 {
     if (!emoji_ss_cfg_get)
         return;
+    crumb("ss_open start");
     if (!g_ssPanel) {
         lv_obj_t *content;
         g_ssPanel = make_panel("Screensaver", ss_back_cb, &content);
@@ -751,14 +875,15 @@ static void ss_open_cb(lv_event_t *e)
         g_ssSw[0] = make_switch_row(content, names[0]);
         g_ssDim = make_dropdown(content, "Dim level (of the normal brightness, at least 40 of 255)", "10%\n25%\n50%");
         g_ssOff = make_dropdown(content, "Backlight off after the dim time", "5 seconds\n10 seconds\n30 seconds\n1 minute\n2 minutes\nNever");
-        g_ssTap = make_dropdown(content, "Unlock", "Double tap\nSingle tap");
+        g_ssTap = make_dropdown(content, "Unlock", "Double tap\nSingle tap\nLong press (0.8 s)");
         g_ssImgBtn = make_label_button(content, "Image: first one in /screensaver", COL_BTN, pick_open_cb);
         lv_obj_set_width(g_ssImgBtn, lv_pct(100));
-        lv_label_set_long_mode(g_ssImgBtn, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(lv_obj_get_child(g_ssImgBtn, 0), lv_pct(100));
+        lv_label_set_long_mode(lv_obj_get_child(g_ssImgBtn, 0), LV_LABEL_LONG_DOT);
         lv_obj_t *prev = make_label_button(content, "Preview now", 0x2F7D4F, preview_cb);
         lv_obj_set_width(prev, lv_pct(100));
         g_ssLook = make_dropdown(content, "Style (images come from the SD card)", "Clock page\nImage and clock\nImage only");
-        g_ssSlide = make_dropdown(content, "Image", "Selected image only\nSlideshow of all PNGs in /screensaver");
+        g_ssSlide = make_dropdown(content, "Image", "Selected image only\nSlideshow of all pictures in /screensaver");
         g_ssClock = make_dropdown(content, "Clock", "Digital\nAnalog\nAnalog and digital");
         g_ssSecs = make_switch_row(content, "Seconds hand");
         for (int k = 4; k < 12; k++)
@@ -769,6 +894,7 @@ static void ss_open_cb(lv_event_t *e)
         lv_obj_remove_style_all(pad);
         lv_obj_set_size(pad, 10, 20);
     }
+    crumb("ss_open panel built");
     for (int k = 0; k < 12; k++)
         if (g_ssSw[k])
             set_switch(g_ssSw[k], emoji_ss_cfg_get(k) != 0);
@@ -784,8 +910,10 @@ static void ss_open_cb(lv_event_t *e)
     lv_dropdown_set_selected(g_ssSlide, emoji_ss_cfg_get(16));
     lv_dropdown_set_selected(g_ssClock, emoji_ss_cfg_get(14));
     set_switch(g_ssSecs, emoji_ss_cfg_get(15) != 0);
+    crumb("ss_open fields filled");
     lv_label_set_text(g_ssStatus, "The dim time is the normal screen timeout in Settings");
     open_panel(g_ssPanel);
+    crumb("ss_open done");
 }
 
 // RTTTL ringtone: presets, a small player for the test button
@@ -1162,7 +1290,7 @@ extern "C" void emoji_settings_host(void *(*lora)(void), void *(*pos)(void), voi
 static void names_text(void)
 {
     if (g_namesLabel)
-        lv_label_set_text(g_namesLabel, emoji_long_names() ? "Chat names: long" : "Chat names: short");
+        lv_label_set_text(lv_obj_get_child(g_namesLabel, 0), emoji_long_names() ? "Chat names: long" : "Chat names: short");
 }
 
 static void names_cb(lv_event_t *e)
@@ -1180,6 +1308,18 @@ static void build_adv_panel(void)
 {
     lv_obj_t *content;
     g_advPanel = make_panel("Advanced settings", adv_back_cb, &content);
+    {
+        char rt[130];
+        if (esp_reset_reason() != ESP_RST_POWERON && g_crumbMagic == 0xC0FFEE42)
+            snprintf(rt, sizeof(rt), "Last reset: %s. Last step: %s", reset_name(), g_crumb);
+        else
+            snprintf(rt, sizeof(rt), "Last reset: %s", reset_name());
+        lv_obj_t *rl = lv_label_create(content);
+        lv_label_set_long_mode(rl, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(rl, lv_pct(100));
+        lv_obj_set_style_text_color(rl, lv_color_hex(0x8E95BF), 0);
+        lv_label_set_text(rl, rt);
+    }
     lv_obj_t *names = make_label_button(content, "", COL_BTN, names_cb);
     lv_obj_set_width(names, lv_pct(100));
     g_namesLabel = names;
@@ -1234,5 +1374,12 @@ extern "C" void emoji_settings_init(lv_obj_t *anchor, lv_obj_t *screen, lv_obj_t
     lv_obj_set_style_align(label, LV_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_label_set_text(label, "Advanced settings");
     lv_obj_add_event_cb(btn, adv_open_cb, LV_EVENT_CLICKED, nullptr);
+    hl_init();
+    lv_obj_add_style(btn, &g_hl, LV_STATE_FOCUSED);
+    {
+        lv_group_t *grp = lv_group_get_default();
+        if (grp)
+            lv_group_add_obj(grp, btn);
+    }
     lv_obj_move_to_index(btn, lv_obj_get_index(anchor) + 1);
 }

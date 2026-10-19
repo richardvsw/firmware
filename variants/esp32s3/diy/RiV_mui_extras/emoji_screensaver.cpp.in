@@ -17,6 +17,12 @@
 extern SdFs SDFs;
 #endif
 extern "C" bool emoji_sd_ready(void) __attribute__((weak));
+extern "C" void emoji_crumb(const char *s) __attribute__((weak));
+#define CRUMB(s) \
+    do { \
+        if (emoji_crumb) \
+            emoji_crumb(s); \
+    } while (0)
 
 extern "C" {
 extern const lv_font_t ui_font_montserrat_14;
@@ -31,6 +37,7 @@ extern const lv_font_t mui_font_clock_64;
 static int g_cfg[17] = {0, 1, 2, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 static bool g_cfgLoaded = false;
 static char g_imgPath[96] = ""; // empty: the first PNG in /screensaver
+static char g_imgMsg[64] = ""; // why no image is shown, drawn on the screensaver
 static bool g_preview = false;
 
 static void cfg_load(void)
@@ -185,7 +192,10 @@ extern "C" void emoji_ss_message(const char *from, const char *text)
 // ---- overlay ----
 
 static lv_obj_t *g_ov = nullptr;
-static lv_obj_t *g_img = nullptr, *g_band = nullptr, *g_analog = nullptr;
+static lv_obj_t *g_top = nullptr, *g_info = nullptr, *g_lp = nullptr;
+static bool g_land = false;
+static float g_sc = 1.0f;
+static lv_obj_t *g_img = nullptr, *g_band = nullptr, *g_analog = nullptr, *g_imgNote = nullptr, *g_tapNote = nullptr;
 static uint8_t *g_imgBuf = nullptr;
 static lv_image_dsc_t g_imgDsc;
 static int g_slideNext = 1;
@@ -199,19 +209,44 @@ static lv_timer_t *g_timer = nullptr;
 
 static void ov_click_cb(lv_event_t *e)
 {
-    uint32_t now = lv_tick_get();
-    if (emoji_ss_cfg_get(3) == 1 || now - g_lastTap < 350)
-        g_dismiss = true;
-    g_lastTap = now;
+    // touches end here so they never reach the screen below, unlocking is decided from the touch state in the poll
+}
+
+// taps are counted from the touch state of the pointer devices, so unlocking does not depend on how LVGL routes click events
+static uint32_t g_tapCount = 0;
+static void poll_taps(void)
+{
+    static bool prevPressed = false;
+    static uint32_t pressStart = 0;
+    bool pressed = false;
+    for (lv_indev_t *in = lv_indev_get_next(NULL); in; in = lv_indev_get_next(in))
+        if (lv_indev_get_state(in) == LV_INDEV_STATE_PRESSED) // touch, joystick or encoder button
+            pressed = true;
+    int unlock = emoji_ss_cfg_get(3); // 0 double tap, 1 single tap, 2 long press
+    if (pressed && !prevPressed) {
+        uint32_t now = lv_tick_get();
+        g_tapCount++;
+        pressStart = now;
+        if (unlock == 1 || (unlock == 0 && g_lastTap && now - g_lastTap < 500))
+            g_dismiss = true;
+        g_lastTap = now;
+    }
+    if (pressed && unlock == 2 && lv_tick_get() - pressStart >= 800)
+        g_dismiss = true; // held for 0.8 s
+    prevPressed = pressed;
 }
 
 static lv_obj_t *mk_label(const lv_font_t *font, uint32_t color)
 {
-    lv_obj_t *l = lv_label_create(g_ov);
+    lv_obj_t *l = lv_label_create(g_lp ? g_lp : g_ov);
     lv_obj_set_style_text_font(l, font, 0);
     lv_obj_set_style_text_color(l, lv_color_hex(color), 0);
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(l, "");
+    if (g_land && g_lp == g_info) {
+        lv_obj_set_width(l, lv_pct(100));
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    }
     return l;
 }
 
@@ -242,9 +277,31 @@ static void build(void)
     lv_obj_set_style_bg_opa(g_band, (lv_opa_t)90, 0);
     lv_obj_remove_flag(g_band, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(g_band, LV_OBJ_FLAG_HIDDEN);
-    g_analog = lv_obj_create(g_ov);
+    int hres = lv_display_get_horizontal_resolution(NULL), vres = lv_display_get_vertical_resolution(NULL);
+    g_land = hres > vres;
+    int ad = g_land ? (vres - 80 < 150 ? vres - 80 : 150) : 190;
+    if (ad < 100)
+        ad = 100;
+    g_sc = (float)ad / 190.0f;
+    float cc = 92.0f * g_sc;
+    g_top = lv_obj_create(g_ov);
+    lv_obj_remove_style_all(g_top);
+    lv_obj_set_size(g_top, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_remove_flag(g_top, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_set_flex_flow(g_top, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(g_top, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(g_top, 6, 0);
+    g_info = lv_obj_create(g_ov);
+    lv_obj_remove_style_all(g_info);
+    lv_obj_set_size(g_info, g_land ? 150 : LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_remove_flag(g_info, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_set_flex_flow(g_info, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(g_info, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(g_info, 6, 0);
+    g_lp = g_top;
+    g_analog = lv_obj_create(g_top);
     lv_obj_remove_style_all(g_analog);
-    lv_obj_set_size(g_analog, 190, 190);
+    lv_obj_set_size(g_analog, ad, ad);
     lv_obj_remove_flag(g_analog, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     lv_obj_set_style_radius(g_analog, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_border_width(g_analog, 3, 0);
@@ -252,9 +309,9 @@ static void build(void)
     lv_obj_set_style_border_opa(g_analog, (lv_opa_t)200, 0);
     for (int i = 0; i < 12; i++) {
         float a = (float)i * 3.14159265f / 6.0f;
-        float r1 = (i % 3 == 0) ? 74.0f : 83.0f, r2 = 90.0f;
-        g_tickPts[i][0] = {(lv_value_precise_t)(92 + sinf(a) * r1), (lv_value_precise_t)(92 - cosf(a) * r1)};
-        g_tickPts[i][1] = {(lv_value_precise_t)(92 + sinf(a) * r2), (lv_value_precise_t)(92 - cosf(a) * r2)};
+        float r1 = ((i % 3 == 0) ? 74.0f : 83.0f) * g_sc, r2 = 90.0f * g_sc;
+        g_tickPts[i][0] = {(lv_value_precise_t)(cc + sinf(a) * r1), (lv_value_precise_t)(cc - cosf(a) * r1)};
+        g_tickPts[i][1] = {(lv_value_precise_t)(cc + sinf(a) * r2), (lv_value_precise_t)(cc - cosf(a) * r2)};
         g_tick[i] = lv_line_create(g_analog);
         lv_line_set_points(g_tick[i], g_tickPts[i], 2);
         lv_obj_set_style_line_width(g_tick[i], (i % 3 == 0) ? 4 : 2, 0);
@@ -264,8 +321,8 @@ static void build(void)
     static const uint32_t handColor[3] = {0xFFFFFF, 0xFFFFFF, 0x67EA94};
     static const int handWidth[3] = {6, 4, 2};
     for (int i = 0; i < 3; i++) {
-        g_handPts[i][0] = {92, 92};
-        g_handPts[i][1] = {92, 40};
+        g_handPts[i][0] = {(lv_value_precise_t)cc, (lv_value_precise_t)cc};
+        g_handPts[i][1] = {(lv_value_precise_t)cc, (lv_value_precise_t)(cc - 52.0f * g_sc)};
         g_hand[i] = lv_line_create(g_analog);
         lv_line_set_points(g_hand[i], g_handPts[i], 2);
         lv_obj_set_style_line_width(g_hand[i], handWidth[i], 0);
@@ -273,6 +330,7 @@ static void build(void)
         lv_obj_set_style_line_rounded(g_hand[i], true, 0);
     }
     g_clock = mk_label(&mui_font_clock_64, 0xFFFFFF);
+    g_lp = g_info;
     g_date = mk_label(&ui_font_montserrat_14, 0xCCCCCC);
     g_battery = mk_label(&ui_font_montserrat_20, 0xFFFFFF);
     g_nodes = mk_label(&ui_font_montserrat_14, 0xFFFFFF);
@@ -283,17 +341,21 @@ static void build(void)
     lv_obj_set_style_pad_hor(g_unread, 12, 0);
     lv_obj_set_style_pad_ver(g_unread, 3, 0);
     g_last = mk_label(&ui_font_montserrat_14, 0xBBBBBB);
-    lv_obj_set_width(g_last, 260);
+    lv_obj_set_width(g_last, g_land ? lv_pct(100) : 260);
     lv_label_set_long_mode(g_last, LV_LABEL_LONG_WRAP);
     g_gps = mk_label(&ui_font_montserrat_14, 0xFFFFFF);
     g_chan = mk_label(&ui_font_montserrat_14, 0xBBBBBB);
-    g_chanBar = lv_bar_create(g_ov);
-    lv_obj_set_size(g_chanBar, 200, 6);
+    g_chanBar = lv_bar_create(g_info);
+    lv_obj_set_size(g_chanBar, g_land ? 140 : 200, 6);
     lv_bar_set_range(g_chanBar, 0, 100);
     lv_obj_set_style_bg_color(g_chanBar, lv_color_hex(0x333333), 0);
     lv_obj_set_style_bg_color(g_chanBar, lv_color_hex(0x67EA94), LV_PART_INDICATOR);
     g_link = mk_label(&ui_font_montserrat_14, 0xBBBBBB);
     g_foot = mk_label(&ui_font_montserrat_14, 0x888888);
+    g_imgNote = mk_label(&ui_font_montserrat_14, 0xF2A0A0);
+    g_tapNote = mk_label(&ui_font_montserrat_14, 0x666666);
+    lv_obj_set_width(g_imgNote, g_land ? lv_pct(100) : 280);
+    lv_label_set_long_mode(g_imgNote, LV_LABEL_LONG_WRAP);
     lv_obj_add_flag(g_ov, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -333,6 +395,10 @@ static void refresh(void)
     }
     // look: digital, analog or both, and the image modes
     int cstyle = g_cfg[14], look = g_cfg[13];
+    bool rowFlow = g_land && (cstyle == 1 || cstyle == 2);
+    lv_obj_set_flex_flow(g_ov, rowFlow ? LV_FLEX_FLOW_ROW : LV_FLEX_FLOW_COLUMN);
+    if (g_land)
+        lv_obj_set_width(g_info, rowFlow ? 150 : 280);
     bool imageOnly = (look == 2 && g_imgBuf);
     show_if(g_analog, !imageOnly && (cstyle == 1 || cstyle == 2));
     show_if(g_clock, !imageOnly && (cstyle == 0 || cstyle == 2));
@@ -341,14 +407,22 @@ static void refresh(void)
     float am = ((float)mm * 6.0f + (float)ss * 0.1f) * 3.14159265f / 180.0f;
     float as = (float)ss * 6.0f * 3.14159265f / 180.0f;
     const float ang[3] = {ah, am, as};
-    const float len[3] = {46.0f, 68.0f, 76.0f};
+    const float len[3] = {46.0f * g_sc, 68.0f * g_sc, 76.0f * g_sc};
+    float cc2 = 92.0f * g_sc;
     for (int i = 0; i < 3; i++) {
-        g_handPts[i][1] = {(lv_value_precise_t)(92 + sinf(ang[i]) * len[i]), (lv_value_precise_t)(92 - cosf(ang[i]) * len[i])};
+        g_handPts[i][1] = {(lv_value_precise_t)(cc2 + sinf(ang[i]) * len[i]), (lv_value_precise_t)(cc2 - cosf(ang[i]) * len[i])};
         lv_line_set_points(g_hand[i], g_handPts[i], 2);
     }
     show_if(g_hand[2], g_cfg[15]);
     show_if(g_band, g_imgBuf && look == 1);
     show_if(g_img, g_imgBuf != nullptr);
+    show_if(g_imgNote, look != 0 && g_imgMsg[0]);
+    {
+        char tb[40];
+        snprintf(tb, sizeof(tb), "touch: %u", (unsigned)g_tapCount);
+        lv_label_set_text(g_tapNote, tb);
+    }
+    lv_label_set_text(g_imgNote, g_imgMsg);
     if (imageOnly) {
         lv_obj_t *all[] = {g_date, g_battery, g_nodes, g_unread, g_last, g_gps, g_chan, g_chanBar, g_link, g_foot};
         for (lv_obj_t *o : all)
@@ -399,23 +473,37 @@ static void timer_cb(lv_timer_t *t)
     refresh();
 }
 
+static bool img_name(const char *nm)
+{
+    size_t l = strlen(nm);
+    if (l > 4 && (strcasecmp(nm + l - 4, ".png") == 0 || strcasecmp(nm + l - 4, ".jpg") == 0))
+        return true;
+    return l > 5 && strcasecmp(nm + l - 5, ".jpeg") == 0;
+}
+
 static uint8_t *read_sd(const char *path, uint32_t *size_out)
 {
 #ifdef HAS_SDCARD
     if (!emoji_sd_ready || !emoji_sd_ready())
         return nullptr;
     FsFile f = SDFs.open(path, O_RDONLY);
-    if (!f)
+    if (!f) {
+        snprintf(g_imgMsg, sizeof(g_imgMsg), "cannot open the image file");
         return nullptr;
+    }
     uint32_t size = f.size();
     if (size == 0 || size > 1500000) {
+        snprintf(g_imgMsg, sizeof(g_imgMsg), "file too big: %u KB, max 1500 KB", (unsigned)(size / 1024));
         f.close();
         return nullptr;
     }
     uint8_t *buf = (uint8_t *)heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf)
+        snprintf(g_imgMsg, sizeof(g_imgMsg), "out of memory for the image");
     if (buf && f.read(buf, size) != (int)size) {
         free(buf);
         buf = nullptr;
+        snprintf(g_imgMsg, sizeof(g_imgMsg), "SD read failed");
     }
     f.close();
     *size_out = size;
@@ -441,6 +529,7 @@ static void image_free(void)
 static void image_load(void)
 {
     image_free();
+    g_imgMsg[0] = 0;
     if (g_cfg[13] == 0)
         return;
     char path[120];
@@ -448,8 +537,10 @@ static void image_load(void)
     uint8_t *buf = nullptr;
 #ifdef HAS_SDCARD
     if (emoji_sd_ready && emoji_sd_ready()) {
-        // the PNG files in /screensaver: the chosen one, or the next one for a slideshow, or the first when none is chosen
+        // the PNG and JPEG files in /screensaver: the chosen one, or the next one for a slideshow, or the first when none is chosen
         FsFile d = SDFs.open("/screensaver");
+        if (!d || !d.isDir())
+            snprintf(g_imgMsg, sizeof(g_imgMsg), "no /screensaver folder on the SD card");
         if (d && d.isDir()) {
             static char names[40][40];
             int n = 0;
@@ -458,13 +549,14 @@ static void image_load(void)
                 char nm[40];
                 if (!e.isDir()) {
                     e.getName(nm, sizeof(nm));
-                    size_t l = strlen(nm);
-                    if (l > 4 && strcasecmp(nm + l - 4, ".png") == 0)
+                    if (img_name(nm))
                         snprintf(names[n++], sizeof(names[0]), "%s", nm);
                 }
                 e.close();
             }
             d.close();
+            if (n == 0)
+                snprintf(g_imgMsg, sizeof(g_imgMsg), "no PNG or JPEG file in /screensaver");
             if (n > 0) {
                 int pick = 0;
                 if (g_cfg[16]) {
@@ -479,24 +571,78 @@ static void image_load(void)
                 buf = read_sd(path, &size);
             }
         }
+    } else {
+        snprintf(g_imgMsg, sizeof(g_imgMsg), "SD card not ready");
     }
+#else
+    snprintf(g_imgMsg, sizeof(g_imgMsg), "no SD card support in this build");
 #endif
     if (!buf)
-        return; // no card or no file, the clock page shows alone
+        return; // no card or no file, the clock page shows alone with the reason
     g_imgBuf = buf;
     memset(&g_imgDsc, 0, sizeof(g_imgDsc));
     g_imgDsc.header.magic = LV_IMAGE_HEADER_MAGIC;
     g_imgDsc.header.cf = LV_COLOR_FORMAT_RAW;
     g_imgDsc.data = buf;
     g_imgDsc.data_size = size;
+    lv_image_header_t hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    if (lv_image_decoder_get_info(&g_imgDsc, &hdr) != LV_RESULT_OK || hdr.w <= 0 || hdr.h <= 0) {
+        snprintf(g_imgMsg, sizeof(g_imgMsg), "not a valid PNG or JPEG (no progressive JPEG)");
+        image_free();
+        return;
+    }
+    if ((uint32_t)hdr.w * (uint32_t)hdr.h * 4 > 1400000) {
+        snprintf(g_imgMsg, sizeof(g_imgMsg), "image too large: %dx%d, use %dx%d", (int)hdr.w, (int)hdr.h, (int)lv_display_get_horizontal_resolution(NULL),
+                 (int)lv_display_get_vertical_resolution(NULL));
+        image_free();
+        return;
+    }
     lv_image_set_src(g_img, &g_imgDsc);
+}
+
+// while the screensaver is up the controls of the screens below leave the input group, so a joystick or encoder press cannot
+// activate something that is hidden behind it
+static lv_obj_t *g_heldObjs[200];
+static int g_heldN = 0;
+static lv_obj_t *g_heldFocus = nullptr;
+static void group_hold(void)
+{
+    lv_group_t *g = lv_group_get_default();
+    if (!g || g_heldN)
+        return;
+    g_heldFocus = lv_group_get_focused(g);
+    uint32_t n = lv_group_get_obj_count(g);
+    if (n > 200)
+        n = 200;
+    for (uint32_t i = 0; i < n; i++)
+        g_heldObjs[g_heldN++] = lv_group_get_obj_by_index(g, i);
+    for (int i = 0; i < g_heldN; i++)
+        lv_group_remove_obj(g_heldObjs[i]);
+}
+static void group_release(void)
+{
+    lv_group_t *g = lv_group_get_default();
+    if (!g)
+        return;
+    for (int i = 0; i < g_heldN; i++)
+        if (lv_obj_is_valid(g_heldObjs[i]))
+            lv_group_add_obj(g, g_heldObjs[i]);
+    g_heldN = 0;
+    if (g_heldFocus && lv_obj_is_valid(g_heldFocus))
+        lv_group_focus_obj(g_heldFocus);
+    g_heldFocus = nullptr;
 }
 
 static void ss_show(void)
 {
+    CRUMB("ss_show start");
     if (!g_ov)
         build();
+    CRUMB("ss_show built");
     image_load();
+    CRUMB("ss_show image loaded");
+    group_hold();
     if (!g_timer)
         g_timer = lv_timer_create(timer_cb, 1000, nullptr);
     g_dismiss = false;
@@ -508,11 +654,15 @@ static void ss_show(void)
 
 static void ss_hide(void)
 {
+    CRUMB("ss_hide start");
+    if (g_active)
+        group_release();
     g_active = false;
     g_preview = false;
     if (g_ov)
         lv_obj_add_flag(g_ov, LV_OBJ_FLAG_HIDDEN);
     image_free();
+    CRUMB("ss_hide done");
 }
 
 // Called by the display driver on every round. Returns 0 normal flow, 1 screensaver is up (brightness to *outBl), 2 time for the
@@ -526,6 +676,8 @@ extern "C" int emoji_ss_poll(uint32_t inactiveMs, uint32_t timeoutMs, bool power
             ss_hide();
         return 0;
     }
+    if (g_active)
+        poll_taps();
     if (g_dismiss) {
         g_dismiss = false;
         ss_hide();

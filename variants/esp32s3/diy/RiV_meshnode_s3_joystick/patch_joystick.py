@@ -250,9 +250,8 @@ void TFTView_320x240::hideKeyboard"""
                 "        lv_group_add_obj(g, objects.arrow_down_button);\n"
                 "    } }\n", 1)
             changed = True
-        # focus highlight style for map imagebuttons (outline on LV_STATE_FOCUSED)
-        map_focus_style_anchor = "    } }\n"
-        map_focus_style_add    = (
+        # focus highlight style for map imagebuttons — theme does not cover imagebutton, keep explicit
+        map_focus_style_add = (
             "    { static lv_style_t _mfs; lv_style_init(&_mfs);"
             " lv_style_set_outline_width(&_mfs, 2);"
             " lv_style_set_outline_color(&_mfs, lv_color_make(255,255,255));"
@@ -261,15 +260,19 @@ void TFTView_320x240::hideKeyboard"""
             " objects.arrow_up_button, objects.arrow_left_button, objects.arrow_right_button, objects.arrow_down_button};"
             " for (int _i = 0; _i < 7; _i++) lv_obj_add_style(_mb[_i], &_mfs, LV_STATE_FOCUSED); }\n"
         )
-        if ("lv_group_add_obj(g, objects.arrow_down_button);" in content
-                and map_focus_style_add not in content
-                and map_focus_style_anchor in content):
-            # insert once after the first occurrence of the closing "    } }" of the group block
+        if "lv_group_add_obj(g, objects.arrow_down_button);" in content and map_focus_style_add not in content:
             idx = content.find("    lv_group_add_obj(g, objects.arrow_down_button);\n    } }\n")
             if idx != -1:
                 end = idx + len("    lv_group_add_obj(g, objects.arrow_down_button);\n    } }\n")
                 content = content[:end] + map_focus_style_add + content[end:]
                 changed = True
+
+        # smaller keyboard for joystick-only variant (no touch needed for key sizing)
+        old_kb_size = "lv_obj_set_size(objects.keyboard, LV_PCT(100), LV_PCT(45));"
+        new_kb_size = "lv_obj_set_size(objects.keyboard, LV_PCT(100), LV_PCT(33));"
+        if old_kb_size in content and new_kb_size not in content:
+            content = content.replace(old_kb_size, new_kb_size, 1)
+            changed = True
 
         # scroll messages_panel up enough to keep textarea visible above the emoji strip
         old_panel_anim = "lv_anim_set_values(&a1, panelY, kbdPanelBaseY - kb_h);"
