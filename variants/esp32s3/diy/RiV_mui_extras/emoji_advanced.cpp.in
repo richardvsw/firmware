@@ -7,6 +7,10 @@
 #include "meshtastic/module_config.pb.h"
 #include "esp_random.h"
 #include <Preferences.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <NTPClient.h>
+#include <sys/time.h>
 #ifdef HAS_SDCARD
 #include <SdFat.h>
 #endif
@@ -27,6 +31,8 @@
 
 extern "C" bool emoji_long_names(void);
 extern "C" bool emoji_long_names_toggle(void);
+extern "C" int emoji_name_mode(void);
+extern "C" int emoji_name_mode_cycle(void);
 extern "C" void add_style_settings_button_style(lv_obj_t *obj);
 
 // breadcrumbs that survive a crash or watchdog reset, shown at the top of the Advanced list after the next start
@@ -735,6 +741,356 @@ static void gps_open_cb(lv_event_t *e)
     open_panel(g_gpsPanel);
 }
 
+// set clock: the GPS time, NTP, the time zone, and a time set by hand
+enum RTCQuality { RTCQualityNone = 0, RTCQualityDevice = 1, RTCQualityFromNet = 2, RTCQualityNTP = 3, RTCQualityGPS = 4 };
+enum RTCSetResult { RTCSetResultNotSet = 0, RTCSetResultSuccess = 1, RTCSetResultInvalidTime = 3, RTCSetResultError = 4 };
+RTCQuality getRTCQuality();
+RTCSetResult perhapsSetRTC(RTCQuality q, const struct timeval *tv, bool forceUpdate);
+
+static CfgFn g_netCfg = nullptr, g_devCfg = nullptr;
+static VoidFn g_sendNet = nullptr, g_sendDev = nullptr;
+extern "C" void emoji_settings_host3(void *(*net)(void), void (*sendNet)(void), void *(*dev)(void), void (*sendDev)(void))
+{
+    g_netCfg = net;
+    g_sendNet = sendNet;
+    g_devCfg = dev;
+    g_sendDev = sendDev;
+}
+
+static lv_obj_t *g_ckPanel = nullptr, *g_ckNow = nullptr, *g_ckGps = nullptr, *g_ckNtp = nullptr, *g_ckTz = nullptr, *g_ckMsg = nullptr;
+static lv_obj_t *g_ckVal[5];
+static int g_ck[5]; // year, month, day, hour, minute of the time set by hand
+static const int CK_TZ[] = {-660, -600, -540, -480, -420, -360, -300, -240, -180, -120, -60, 0,   60,  120, 180, 210,
+                            240,  270,  300,  330,  345,  360,  390,  420,  480,  540,  570, 600, 660, 720, 780, 840};
+static const int CK_TZ_N = sizeof(CK_TZ) / sizeof(CK_TZ[0]);
+static bool g_ckTzExtra = false; // the list starts with "Current setting" when the node has a time zone that is not in the list
+
+static void ck_tz_posix(int min, char *out, size_t n)
+{
+    if (min == 0) {
+        snprintf(out, n, "UTC0");
+        return;
+    }
+    int a = min < 0 ? -min : min, h = a / 60, m = a % 60;
+    char name[16], off[16];
+    if (m)
+        snprintf(name, sizeof(name), "%c%02d%02d", min < 0 ? '-' : '+', h, m);
+    else
+        snprintf(name, sizeof(name), "%c%02d", min < 0 ? '-' : '+', h);
+    if (m)
+        snprintf(off, sizeof(off), "%s%d:%02d", min < 0 ? "" : "-", h, m);
+    else
+        snprintf(off, sizeof(off), "%s%d", min < 0 ? "" : "-", h);
+    snprintf(out, n, "<%s>%s", name, off);
+}
+
+static bool ck_gps_time(uint32_t *t, uint32_t *ageS)
+{
+    if (!g_gps.valid || g_gps.time < 1700000000)
+        return false;
+    uint32_t a = (millis() - g_gps.at) / 1000;
+    if (a > 1800)
+        return false;
+    *t = g_gps.time + a;
+    *ageS = a;
+    return true;
+}
+
+static int ck_dim(int y, int m)
+{
+    static const int D[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (m == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0))
+        return 29;
+    return D[(m - 1) % 12];
+}
+
+static void ck_show_fields(void)
+{
+    char t[8];
+    for (int i = 0; i < 5; i++) {
+        snprintf(t, sizeof(t), i == 0 ? "%04d" : "%02d", g_ck[i]);
+        if (g_ckVal[i])
+            lv_label_set_text(g_ckVal[i], t);
+    }
+}
+
+static void ck_msg(const char *m)
+{
+    if (g_ckMsg)
+        lv_label_set_text(g_ckMsg, m);
+}
+
+static void ck_refresh(void)
+{
+    if (!g_ckNow)
+        return;
+    char buf[200];
+    RTCQuality q = getRTCQuality();
+    if (q == RTCQualityNone) {
+        snprintf(buf, sizeof(buf), "--:--:--\nsource: not set");
+    } else {
+        time_t now = time(nullptr);
+        struct tm t;
+        localtime_r(&now, &t);
+        const char *src = q == RTCQualityGPS ? "GPS" : (q == RTCQualityNTP ? "NTP" : (q == RTCQualityFromNet ? "another node" : "by hand"));
+        snprintf(buf, sizeof(buf), "%04d-%02d-%02d  %02d:%02d:%02d\nsource: %s", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min,
+                 t.tm_sec, src);
+    }
+    lv_label_set_text(g_ckNow, buf);
+    uint32_t gt, age;
+    if (ck_gps_time(&gt, &age))
+        snprintf(buf, sizeof(buf), "%02u:%02u:%02u UTC\nreported %u min ago", (unsigned)((gt / 3600) % 24), (unsigned)((gt / 60) % 60),
+                 (unsigned)(gt % 60), (unsigned)(age / 60));
+    else
+        snprintf(buf, sizeof(buf), "--:--:--\nno GPS time yet, the node sends its position on the broadcast interval");
+    lv_label_set_text(g_ckGps, buf);
+}
+
+static void ck_timer_cb(lv_timer_t *tm)
+{
+    if (g_ckPanel && !lv_obj_has_flag(g_ckPanel, LV_OBJ_FLAG_HIDDEN))
+        ck_refresh();
+}
+
+static void ck_use_gps_cb(lv_event_t *e)
+{
+    uint32_t gt, age;
+    if (!ck_gps_time(&gt, &age)) {
+        ck_msg("No GPS time yet. Wait for a fix, and check that the GPS is on.");
+        return;
+    }
+    struct timeval tv = {(time_t)gt, 0};
+    perhapsSetRTC(RTCQualityGPS, &tv, true);
+    ck_msg("Clock set from the GPS time.");
+    ck_refresh();
+}
+
+static void ck_ntp_cb(lv_event_t *e)
+{
+    if (WiFi.status() != WL_CONNECTED) {
+        ck_msg("Wi-Fi is not connected. Turn it on in the network settings first.");
+        return;
+    }
+    const char *srv = lv_textarea_get_text(g_ckNtp);
+    if (!srv || !srv[0])
+        srv = "meshtastic.pool.ntp.org";
+    if (g_netCfg) {
+        meshtastic_Config_NetworkConfig *nc = (meshtastic_Config_NetworkConfig *)g_netCfg();
+        if (nc && strncmp(nc->ntp_server, srv, sizeof(nc->ntp_server) - 1) != 0) {
+            strncpy(nc->ntp_server, srv, sizeof(nc->ntp_server) - 1);
+            nc->ntp_server[sizeof(nc->ntp_server) - 1] = 0;
+            if (g_sendNet)
+                g_sendNet();
+        }
+    }
+    WiFiUDP udp;
+    NTPClient client(udp, srv);
+    client.begin();
+    bool ok = client.forceUpdate();
+    unsigned long epoch = client.getEpochTime();
+    client.end();
+    if (!ok || epoch < 1700000000) {
+        ck_msg("No answer from the NTP server. Check the address and the internet connection.");
+        return;
+    }
+    struct timeval tv = {(time_t)epoch, 0};
+    perhapsSetRTC(RTCQualityNTP, &tv, true);
+    ck_msg("Clock set from the NTP server.");
+    ck_refresh();
+}
+
+static void ck_step_cb(lv_event_t *e)
+{
+    intptr_t u = (intptr_t)lv_event_get_user_data(e);
+    int f = (int)(u >> 1), d = (u & 1) ? 1 : -1;
+    int lo = f == 0 ? 2024 : (f == 1 || f == 2 ? 1 : 0);
+    int hi = f == 0 ? 2099 : (f == 1 ? 12 : (f == 2 ? ck_dim(g_ck[0], g_ck[1]) : (f == 3 ? 23 : 59)));
+    int v = g_ck[f] + d;
+    if (v > hi)
+        v = lo;
+    if (v < lo)
+        v = hi;
+    g_ck[f] = v;
+    if (g_ck[2] > ck_dim(g_ck[0], g_ck[1]))
+        g_ck[2] = ck_dim(g_ck[0], g_ck[1]);
+    ck_show_fields();
+    ck_msg("");
+}
+
+static void ck_set_cb(lv_event_t *e)
+{
+    struct tm t;
+    memset(&t, 0, sizeof(t));
+    t.tm_year = g_ck[0] - 1900;
+    t.tm_mon = g_ck[1] - 1;
+    t.tm_mday = g_ck[2];
+    t.tm_hour = g_ck[3];
+    t.tm_min = g_ck[4];
+    t.tm_isdst = -1;
+    time_t secs = mktime(&t);
+    struct timeval tv = {secs, 0};
+    perhapsSetRTC(RTCQualityDevice, &tv, true);
+    ck_msg("Clock set. A GPS or NTP time will replace it.");
+    ck_refresh();
+}
+
+static void ck_tz_cb(lv_event_t *e)
+{
+    int sel = (int)lv_dropdown_get_selected(g_ckTz);
+    if (g_ckTzExtra) {
+        if (sel == 0)
+            return; // the current setting stays
+        sel--;
+    }
+    if (sel < 0 || sel >= CK_TZ_N)
+        return;
+    char tz[24];
+    ck_tz_posix(CK_TZ[sel], tz, sizeof(tz));
+    setenv("TZ", tz, 1);
+    tzset();
+    if (g_devCfg) {
+        meshtastic_Config_DeviceConfig *dc = (meshtastic_Config_DeviceConfig *)g_devCfg();
+        if (dc) {
+            strncpy(dc->tzdef, tz, sizeof(dc->tzdef) - 1);
+            dc->tzdef[sizeof(dc->tzdef) - 1] = 0;
+            if (g_sendDev)
+                g_sendDev();
+        }
+    }
+    ck_msg("Time zone set.");
+    ck_refresh();
+}
+
+static void ck_back_cb(lv_event_t *e)
+{
+    close_panel(g_ckPanel);
+}
+
+static lv_obj_t *ck_heading(lv_obj_t *content, const char *text)
+{
+    lv_obj_t *l = lv_label_create(content);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_color(l, lv_color_hex(0xB8BEE6), 0);
+    return l;
+}
+
+static lv_obj_t *ck_value_label(lv_obj_t *content)
+{
+    lv_obj_t *l = lv_label_create(content);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(l, lv_pct(100));
+    lv_obj_set_style_text_color(l, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_color(l, lv_color_hex(0x2A2E4D), 0);
+    lv_obj_set_style_bg_opa(l, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(l, 8, 0);
+    lv_obj_set_style_pad_all(l, 8, 0);
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+    return l;
+}
+
+static void ck_open_cb(lv_event_t *e)
+{
+    if (!g_ckPanel) {
+        lv_obj_t *content;
+        g_ckPanel = make_panel("Set clock", ck_back_cb, &content);
+        ck_heading(content, "Time now");
+        g_ckNow = ck_value_label(content);
+        ck_heading(content, "GPS time");
+        g_ckGps = ck_value_label(content);
+        lv_obj_t *useGps = make_label_button(content, "Use GPS time", 0x2F7D4F, ck_use_gps_cb);
+        lv_obj_set_width(useGps, lv_pct(100));
+        g_ckNtp = make_field(content, "NTP server", 32, false);
+        lv_obj_t *useNtp = make_label_button(content, "Sync from NTP (needs Wi-Fi)", 0x2F7D4F, ck_ntp_cb);
+        lv_obj_set_width(useNtp, lv_pct(100));
+        // the time zone, the list starts with the current setting when it is not one of the whole offsets
+        const char *cur = "";
+        if (g_devCfg) {
+            meshtastic_Config_DeviceConfig *dc = (meshtastic_Config_DeviceConfig *)g_devCfg();
+            if (dc)
+                cur = dc->tzdef;
+        }
+        char opts[900], one[24];
+        opts[0] = 0;
+        int sel = -1;
+        for (int i = 0; i < CK_TZ_N; i++) {
+            ck_tz_posix(CK_TZ[i], one, sizeof(one));
+            if (strcmp(cur, one) == 0)
+                sel = i;
+        }
+        g_ckTzExtra = sel < 0;
+        if (g_ckTzExtra)
+            strcat(opts, "Current setting\n");
+        for (int i = 0; i < CK_TZ_N; i++) {
+            int a = CK_TZ[i] < 0 ? -CK_TZ[i] : CK_TZ[i];
+            char lab[24];
+            snprintf(lab, sizeof(lab), "UTC%c%02d:%02d%s", CK_TZ[i] < 0 ? '-' : '+', a / 60, a % 60, i + 1 < CK_TZ_N ? "\n" : "");
+            strcat(opts, lab);
+        }
+        g_ckTz = make_dropdown(content, "Time zone", opts);
+        lv_dropdown_set_selected(g_ckTz, g_ckTzExtra ? 0 : (uint32_t)sel);
+        lv_obj_add_event_cb(g_ckTz, ck_tz_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+        ck_heading(content, "Or set by hand");
+        lv_obj_t *row = lv_obj_create(content);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        static const char *const CAP[5] = {"year", "month", "day", "hour", "min"};
+        for (int i = 0; i < 5; i++) {
+            lv_obj_t *col = lv_obj_create(row);
+            lv_obj_remove_style_all(col);
+            lv_obj_set_size(col, lv_pct(19), LV_SIZE_CONTENT);
+            lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_row(col, 3, 0);
+            lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_t *plus = make_label_button(col, "+", COL_BTN, nullptr);
+            lv_obj_set_width(plus, lv_pct(100));
+            lv_obj_set_style_pad_hor(plus, 0, 0);
+            lv_obj_add_event_cb(plus, ck_step_cb, LV_EVENT_CLICKED, (void *)(intptr_t)((i << 1) | 1));
+            g_ckVal[i] = lv_label_create(col);
+            lv_obj_set_style_text_color(g_ckVal[i], lv_color_hex(0xFFFFFF), 0);
+            lv_obj_t *minus = make_label_button(col, "-", COL_BTN, nullptr);
+            lv_obj_set_width(minus, lv_pct(100));
+            lv_obj_set_style_pad_hor(minus, 0, 0);
+            lv_obj_add_event_cb(minus, ck_step_cb, LV_EVENT_CLICKED, (void *)(intptr_t)(i << 1));
+            lv_obj_t *cap = lv_label_create(col);
+            lv_label_set_text(cap, CAP[i]);
+            lv_obj_set_style_text_color(cap, lv_color_hex(0xB8BEE6), 0);
+        }
+        lv_obj_t *set = make_label_button(content, "Set clock", COL_BTN, ck_set_cb);
+        lv_obj_set_width(set, lv_pct(100));
+        g_ckMsg = make_status(content);
+        lv_timer_create(ck_timer_cb, 1000, nullptr);
+    }
+    // the fields start from the time the node has now
+    time_t now = time(nullptr);
+    struct tm t;
+    if (getRTCQuality() == RTCQualityNone) {
+        t = {};
+        t.tm_year = 2026 - 1900;
+        t.tm_mon = 0;
+        t.tm_mday = 1;
+        t.tm_hour = 12;
+    } else {
+        localtime_r(&now, &t);
+    }
+    g_ck[0] = t.tm_year + 1900;
+    g_ck[1] = t.tm_mon + 1;
+    g_ck[2] = t.tm_mday;
+    g_ck[3] = t.tm_hour;
+    g_ck[4] = t.tm_min;
+    ck_show_fields();
+    if (g_netCfg) {
+        meshtastic_Config_NetworkConfig *nc = (meshtastic_Config_NetworkConfig *)g_netCfg();
+        lv_textarea_set_text(g_ckNtp, nc && nc->ntp_server[0] ? nc->ntp_server : "meshtastic.pool.ntp.org");
+    }
+    ck_msg("");
+    ck_refresh();
+    open_panel(g_ckPanel);
+}
+
 // screensaver settings
 extern "C" int emoji_ss_cfg_get(int key) __attribute__((weak));
 extern "C" void emoji_ss_cfg_set(int key, int val) __attribute__((weak));
@@ -747,11 +1103,11 @@ extern "C" void emoji_ss_img_get(char *out, size_t size) __attribute__((weak));
 extern "C" void emoji_ss_img_set(const char *path) __attribute__((weak));
 extern "C" void emoji_ss_preview(void) __attribute__((weak));
 
-// image picker: the PNG and JPEG files in the /screensaver folder of the SD card
+// image picker: the JPEG files in the /screensaver folder of the SD card
 static bool img_name(const char *nm)
 {
     size_t l = strlen(nm);
-    if (l > 4 && (strcasecmp(nm + l - 4, ".png") == 0 || strcasecmp(nm + l - 4, ".jpg") == 0))
+    if (l > 4 && strcasecmp(nm + l - 4, ".jpg") == 0)
         return true;
     return l > 5 && strcasecmp(nm + l - 5, ".jpeg") == 0;
 }
@@ -795,7 +1151,7 @@ static void pick_fill(void)
     lv_label_set_long_mode(h, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(h, lv_pct(100));
     lv_obj_set_style_text_color(h, lv_color_hex(0xB8BEE6), 0);
-    lv_label_set_text(h, "PNG or JPEG files in the /screensaver folder of the SD card, 320 x 480 pixels");
+    lv_label_set_text(h, "JPEG files in the /screensaver folder of the SD card, 320 x 480 pixels");
 #ifdef HAS_SDCARD
     if (!emoji_sd_ready || !emoji_sd_ready()) {
         lv_obj_t *m = lv_label_create(g_pickList);
@@ -833,7 +1189,7 @@ static void pick_fill(void)
     d.close();
     if (g_pickCount == 0) {
         lv_obj_t *m = lv_label_create(g_pickList);
-        lv_label_set_text(m, "No pictures yet. Copy PNG or JPEG files into /screensaver on the SD card.");
+        lv_label_set_text(m, "No pictures yet. Copy baseline JPEG files into /screensaver on the SD card.");
     }
 #else
     lv_obj_t *m = lv_label_create(g_pickList);
@@ -2048,12 +2404,13 @@ extern "C" void emoji_settings_host(void *(*lora)(void), void *(*pos)(void), voi
 static void names_text(void)
 {
     if (g_namesLabel)
-        lv_label_set_text(lv_obj_get_child(g_namesLabel, 0), emoji_long_names() ? "Chat names: long" : "Chat names: short");
+        lv_label_set_text(lv_obj_get_child(g_namesLabel, 0),
+                          emoji_name_mode() == 1 ? "Chat names: long" : (emoji_name_mode() == 2 ? "Chat names: both" : "Chat names: short"));
 }
 
 static void names_cb(lv_event_t *e)
 {
-    emoji_long_names_toggle();
+    emoji_name_mode_cycle();
     names_text();
 }
 
@@ -2266,6 +2623,7 @@ static void build_adv_panel(void)
     g_namesLabel = names;
     names_text();
     make_nav(content, "MQTT  >", mqtt_open_cb);
+    make_nav(content, "Set clock  >", ck_open_cb);
     if (g_nodesFn)
         make_nav(content, "Nodes  >", nd_open_cb);
     if (g_loraCfg) {

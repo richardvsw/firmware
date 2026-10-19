@@ -42,7 +42,7 @@ extern const lv_font_t mui_font_clock_64;
 // 15 seconds hand, 16 slideshow of all the pictures in /screensaver, 17 slide time (0 5 s, 1 10 s, 2 30 s, 3 1 min)
 static int g_cfg[18] = {0, 1, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
 static bool g_cfgLoaded = false;
-static char g_imgPath[96] = ""; // empty: the first PNG in /screensaver
+static char g_imgPath[96] = ""; // empty: the first JPEG in /screensaver
 static char g_imgMsg[64] = ""; // why no image is shown, drawn on the screensaver
 static bool g_preview = false;
 
@@ -207,6 +207,14 @@ static bool g_small = false;
 static float g_sc = 1.0f;
 static lv_obj_t *g_img = nullptr, *g_band = nullptr, *g_analog = nullptr, *g_imgNote = nullptr, *g_tapNote = nullptr;
 static uint8_t *g_imgBuf = nullptr;
+// the overlay has padding, a child is placed inside it: this puts a picture or dim layer on the whole screen
+static void ov_fill(lv_obj_t *o)
+{
+    if (!o || !g_ov)
+        return;
+    lv_obj_set_size(o, lv_display_get_horizontal_resolution(NULL), lv_display_get_vertical_resolution(NULL));
+    lv_obj_set_pos(o, -lv_obj_get_style_pad_left(g_ov, LV_PART_MAIN), -lv_obj_get_style_pad_top(g_ov, LV_PART_MAIN));
+}
 static lv_image_dsc_t g_imgDsc;
 static int g_slideNext = 1;
 static uint32_t g_slideAt = 0;
@@ -423,6 +431,12 @@ static void show_if(lv_obj_t *o, bool on)
         lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
 }
 
+static void set_txt(lv_obj_t *l, const char *t)
+{
+    if (strcmp(lv_label_get_text(l), t) != 0)
+        lv_label_set_text(l, t);
+}
+
 static void refresh(void)
 {
     if (!g_ov || lv_obj_has_flag(g_ov, LV_OBJ_FLAG_HIDDEN))
@@ -440,14 +454,14 @@ static void refresh(void)
         mm = t.tm_min;
         ss = t.tm_sec;
         snprintf(buf, sizeof(buf), "%02d:%02d", t.tm_hour, t.tm_min);
-        lv_label_set_text(g_clock, buf);
+        set_txt(g_clock, buf);
         static const char *const days[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
         static const char *const mon[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
         snprintf(buf, sizeof(buf), "%s, %d %s", days[t.tm_wday % 7], t.tm_mday, mon[t.tm_mon % 12]);
-        lv_label_set_text(g_date, buf);
+        set_txt(g_date, buf);
     } else {
-        lv_label_set_text(g_clock, "--:--");
-        lv_label_set_text(g_date, "clock not set");
+        set_txt(g_clock, "--:--");
+        set_txt(g_date, "clock not set");
     }
     // look: digital, analog or both, and the image modes
     int cstyle = g_cfg[14], look = g_cfg[13];
@@ -470,10 +484,11 @@ static void refresh(void)
         lv_line_set_points(g_hand[i], g_handPts[i], 2);
     }
     show_if(g_hand[2], g_cfg[15]);
+    ov_fill(g_band);
     show_if(g_band, g_imgBuf && (look == 1 || look == 3));
     show_if(g_img, g_imgBuf != nullptr);
     show_if(g_imgNote, look != 0 && g_imgMsg[0]);
-    lv_label_set_text(g_imgNote, g_imgMsg);
+    set_txt(g_imgNote, g_imgMsg);
     if (imageOnly) {
         lv_obj_t *all[] = {g_date, g_battery, g_nodes, g_unread, g_last, g_gps, g_chan, g_chanBar, g_link, g_foot};
         for (lv_obj_t *o : all)
@@ -485,20 +500,20 @@ static void refresh(void)
     }
     show_if(g_battery, g_cfg[4]);
     if (g_bat > 100)
-        lv_label_set_text(g_battery, LV_SYMBOL_CHARGE " plugged");
+        set_txt(g_battery, LV_SYMBOL_CHARGE " plugged");
     else {
         snprintf(buf, sizeof(buf), LV_SYMBOL_BATTERY_FULL " %u%%", (unsigned)g_bat);
-        lv_label_set_text(g_battery, buf);
+        set_txt(g_battery, buf);
     }
     show_if(g_nodes, g_cfg[5]);
     snprintf(buf, sizeof(buf), "%u of %u nodes online", (unsigned)d[0], (unsigned)d[1]);
-    lv_label_set_text(g_nodes, buf);
+    set_txt(g_nodes, buf);
     show_if(g_unread, g_cfg[6] && d[2] > 0);
     snprintf(buf, sizeof(buf), d[2] == 1 ? "%u new message" : "%u new messages", (unsigned)d[2]);
-    lv_label_set_text(g_unread, buf);
+    set_txt(g_unread, buf);
     show_if(g_last, g_cfg[7] && g_lastText[0]);
     snprintf(buf, sizeof(buf), "%s: %s", g_lastFrom, g_lastText);
-    lv_label_set_text(g_last, buf);
+    set_txt(g_last, buf);
     uint32_t sats = 0, fix = 0;
     float hdop = 0;
     bool gv = emoji_gps_snapshot && emoji_gps_snapshot(&sats, &fix, &hdop);
@@ -507,19 +522,19 @@ static void refresh(void)
         snprintf(buf, sizeof(buf), "GPS %s  %u sats  HDOP %.1f", fix == 3 ? "3D" : (fix == 2 ? "2D" : "no fix"), (unsigned)sats, hdop);
     else
         snprintf(buf, sizeof(buf), "GPS: no data yet");
-    lv_label_set_text(g_gps, buf);
+    set_txt(g_gps, buf);
     show_if(g_chan, g_cfg[9]);
     show_if(g_chanBar, g_cfg[9]);
     snprintf(buf, sizeof(buf), "channel use %.0f%%", g_chUtil);
-    lv_label_set_text(g_chan, buf);
+    set_txt(g_chan, buf);
     lv_bar_set_value(g_chanBar, (int)g_chUtil, LV_ANIM_OFF);
     show_if(g_link, g_cfg[10]);
     snprintf(buf, sizeof(buf), "MQTT %s   Wi-Fi %s", d[3] ? "on" : "off", d[4] ? "on" : "off");
-    lv_label_set_text(g_link, buf);
+    set_txt(g_link, buf);
     show_if(g_foot, g_cfg[11]);
     uint32_t up = millis() / 1000;
     snprintf(buf, sizeof(buf), "up %uh %02um", (unsigned)(up / 3600), (unsigned)((up / 60) % 60));
-    lv_label_set_text(g_foot, buf);
+    set_txt(g_foot, buf);
 #ifdef RIV_STICKMAN
     sm_refresh(d[0], d[1]);
 #endif
@@ -542,7 +557,7 @@ static void timer_cb(lv_timer_t *t)
 static bool img_name(const char *nm)
 {
     size_t l = strlen(nm);
-    if (l > 4 && (strcasecmp(nm + l - 4, ".png") == 0 || strcasecmp(nm + l - 4, ".jpg") == 0))
+    if (l > 4 && strcasecmp(nm + l - 4, ".jpg") == 0)
         return true;
     return l > 5 && strcasecmp(nm + l - 5, ".jpeg") == 0;
 }
@@ -659,10 +674,37 @@ static bool jpeg_size(const uint8_t *b, uint32_t n, int *w, int *h)
     return false;
 }
 
+static uint8_t *g_oldBuf = nullptr; // the picture on screen while the next one is being loaded
+
+// nearest neighbour scaling of an RGB565 picture to fill w x h, the part that does not fit is cut off at the sides
+static uint16_t *cover565(const uint16_t *src, int sw, int sh, int w, int h)
+{
+    uint16_t *out = (uint16_t *)heap_caps_malloc((size_t)w * h * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!out)
+        return nullptr;
+    int uw = sw, uh = sh;
+    if ((int64_t)sw * h > (int64_t)w * sh)
+        uw = (int)((int64_t)w * sh / h);
+    else
+        uh = (int)((int64_t)h * sw / w);
+    int ox = (sw - uw) / 2, oy = (sh - uh) / 2;
+    for (int y = 0; y < h; y++) {
+        const uint16_t *row = src + (size_t)(oy + (int)((int64_t)y * uh / h)) * sw + ox;
+        uint16_t *o = out + (size_t)y * w;
+        for (int x = 0; x < w; x++)
+            o[x] = row[(int)((int64_t)x * uw / w)];
+    }
+    return out;
+}
+
 static void image_free(void)
 {
     if (g_img)
         lv_image_set_src(g_img, nullptr);
+    if (g_oldBuf) {
+        free(g_oldBuf);
+        g_oldBuf = nullptr;
+    }
     if (g_imgBuf) {
         lv_image_cache_drop(&g_imgDsc);
         free(g_imgBuf);
@@ -670,9 +712,8 @@ static void image_free(void)
     }
 }
 
-static void image_load(void)
+static void image_load_inner(void)
 {
-    image_free();
     g_imgMsg[0] = 0;
     if (g_cfg[13] == 0)
         return;
@@ -681,7 +722,7 @@ static void image_load(void)
     uint8_t *buf = nullptr;
 #ifdef HAS_SDCARD
     if (emoji_sd_ready && emoji_sd_ready()) {
-        // the PNG and JPEG files in /screensaver: the chosen one, or the next one for a slideshow, or the first when none is chosen
+        // the JPEG files in /screensaver: the chosen one, or the next one for a slideshow, or the first when none is chosen
         ISpiLock::Guard bus; // the SD card shares its SPI bus with the screen and the radio, take the host's lock like the display library does
         FsFile d = SDFs.open("/screensaver");
         if (!d || !d.isDir())
@@ -701,7 +742,7 @@ static void image_load(void)
             }
             d.close();
             if (n == 0)
-                snprintf(g_imgMsg, sizeof(g_imgMsg), "no PNG or JPEG file in /screensaver");
+                snprintf(g_imgMsg, sizeof(g_imgMsg), "no JPEG file in /screensaver");
             if (n > 0) {
                 int pick = 0;
                 if (g_cfg[16]) {
@@ -731,10 +772,10 @@ static void image_load(void)
     g_imgDsc.data = buf;
     g_imgDsc.data_size = size;
     if (size > 4 && buf[0] == 0xFF && buf[1] == 0xD8) {
-        // the JPEG decoder takes the size from the descriptor, PNG reads its own header
+        // the JPEG decoder takes the size from the descriptor
         int jw = 0, jh = 0;
         if (!jpeg_size(buf, (uint32_t)size, &jw, &jh)) {
-            snprintf(g_imgMsg, sizeof(g_imgMsg), "progressive or broken JPEG, save it as a baseline JPEG or PNG");
+            snprintf(g_imgMsg, sizeof(g_imgMsg), "progressive or broken JPEG, save it as a baseline JPEG");
             image_free();
             return;
         }
@@ -749,13 +790,27 @@ static void image_load(void)
         int tw = (jw + s - 1) / s, th = (jh + s - 1) / s;
         uint8_t *rgb = jpeg_to_565(buf, (uint32_t)size, jw, jh, s);
         if (!rgb) {
-            snprintf(g_imgMsg, sizeof(g_imgMsg), "cannot decode this JPEG, save it as a baseline JPEG or PNG");
+            snprintf(g_imgMsg, sizeof(g_imgMsg), "cannot decode this JPEG, save it as a baseline JPEG");
             image_free();
             return;
         }
         free(buf);
         buf = rgb;
         g_imgBuf = rgb;
+        {
+            int W = lv_display_get_horizontal_resolution(NULL), H = lv_display_get_vertical_resolution(NULL);
+            if (tw != W || th != H) {
+                uint16_t *fit = cover565((const uint16_t *)rgb, tw, th, W, H);
+                if (fit) {
+                    free(rgb);
+                    rgb = (uint8_t *)fit;
+                    buf = rgb;
+                    g_imgBuf = rgb;
+                    tw = W;
+                    th = H;
+                }
+            }
+        }
         size = (uint32_t)tw * (uint32_t)th * 2;
         g_imgDsc.header.cf = LV_COLOR_FORMAT_RGB565;
         g_imgDsc.header.w = tw;
@@ -767,7 +822,7 @@ static void image_load(void)
     lv_image_header_t hdr;
     memset(&hdr, 0, sizeof(hdr));
     if (lv_image_decoder_get_info(&g_imgDsc, &hdr) != LV_RESULT_OK || hdr.w <= 0 || hdr.h <= 0) {
-        snprintf(g_imgMsg, sizeof(g_imgMsg), "not a valid PNG or JPEG (no progressive JPEG)");
+        snprintf(g_imgMsg, sizeof(g_imgMsg), "not a JPEG file, only baseline JPEG is supported");
         image_free();
         return;
     }
@@ -777,9 +832,26 @@ static void image_load(void)
         image_free();
         return;
     }
-    lv_obj_set_size(g_img, lv_display_get_horizontal_resolution(NULL), lv_display_get_vertical_resolution(NULL));
+    ov_fill(g_img);
     lv_image_set_inner_align(g_img, LV_IMAGE_ALIGN_COVER); // other sizes than the screen are scaled to fill it
+    lv_image_cache_drop(&g_imgDsc); // the descriptor is reused for every picture
     lv_image_set_src(g_img, &g_imgDsc);
+}
+
+// a slideshow change swaps the picture in one step, the old one is only released when the new one is shown
+static void image_load(void)
+{
+    g_oldBuf = g_imgBuf;
+    g_imgBuf = nullptr;
+    image_load_inner();
+    if (!g_imgBuf) {
+        image_free();
+        return;
+    }
+    if (g_oldBuf) {
+        free(g_oldBuf);
+        g_oldBuf = nullptr;
+    }
 }
 
 // while the screensaver is up the controls of the screens below leave the input group, so a joystick or encoder press cannot

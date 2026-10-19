@@ -169,7 +169,7 @@ extern "C" void emoji_suggest_init(lv_obj_t *ta)
 
 // Setting: show the sender's long name instead of the 4 character short name in group chat bubbles, kept in NVS. The switch for it
 // is in the advanced settings panel.
-static bool g_longNames = false;
+static int g_nameMode = 0; // 0 short name, 1 long name, 2 short name chip and long name
 static bool g_namesLoaded = false;
 
 static void names_load(void)
@@ -179,27 +179,40 @@ static void names_load(void)
     g_namesLoaded = true;
     Preferences prefs;
     if (prefs.begin("chatui", true)) {
-        g_longNames = prefs.getBool("longnames", false);
+        int m = prefs.getInt("chatnames", -1);
+        g_nameMode = (m >= 0 && m <= 2) ? m : (prefs.getBool("longnames", false) ? 1 : 0);
         prefs.end();
     }
 }
 
-extern "C" bool emoji_long_names(void)
+extern "C" int emoji_name_mode(void)
 {
     names_load();
-    return g_longNames;
+    return g_nameMode;
+}
+
+// the long name is in the header for the modes long and both
+extern "C" bool emoji_long_names(void)
+{
+    return emoji_name_mode() != 0;
+}
+
+extern "C" int emoji_name_mode_cycle(void)
+{
+    names_load();
+    g_nameMode = (g_nameMode + 1) % 3;
+    Preferences prefs;
+    if (prefs.begin("chatui", false)) {
+        prefs.putInt("chatnames", g_nameMode);
+        prefs.end();
+    }
+    return g_nameMode;
 }
 
 extern "C" bool emoji_long_names_toggle(void)
 {
-    names_load();
-    g_longNames = !g_longNames;
-    Preferences prefs;
-    if (prefs.begin("chatui", false)) {
-        prefs.putBool("longnames", g_longNames);
-        prefs.end();
-    }
-    return g_longNames;
+    emoji_name_mode_cycle();
+    return emoji_long_names();
 }
 
 // Replies and reactions carry the id of the message they answer. Remember the last few text messages so a reply can show a
@@ -248,7 +261,7 @@ extern "C" size_t emoji_quote_compose(uint32_t id, uint32_t replyId, uint32_t em
         for (int i = 0; i < 16; i++)
             if (g_quotes[i].id == replyId && replyId != 0)
                 orig = g_quotes[i].text;
-        int w = snprintf(out, outSize, "> %s\n", orig ? orig : "earlier message");
+        int w = snprintf(out, outSize, "> %s\n", orig ? orig : "replying to a message");
         pos = (w < 0) ? 0 : ((size_t)w < outSize ? (size_t)w : outSize - 1);
     }
     quote_store(id, payload, size);

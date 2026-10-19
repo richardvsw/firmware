@@ -19,8 +19,10 @@ static const uintptr_t MARK_QUOTE = 0xE0E0E0E1;
 struct BubbleRef {
     uint32_t id;
     lv_obj_t *panel; // panel holding the bubble label
-    lv_obj_t *chipLabel; // label of the reaction chip row, nullptr until the first reaction
-    char react[28];
+    lv_obj_t *chipLabel; // the row of reaction chips under the bubble, nullptr until the first reaction
+    char em[4][13];
+    uint8_t cnt[4];
+    uint8_t n;
     bool sent;
 };
 static BubbleRef g_bubbles[24];
@@ -47,7 +49,7 @@ extern "C" void emoji_aux_restyle(lv_obj_t *label, bool quote, bool bot)
     lv_obj_set_style_pad_ver(label, 3, 0);
     lv_obj_set_style_max_width(label, 200, 0);
     if (quote) {
-        lv_obj_set_style_radius(label, 4, 0);
+        lv_obj_set_style_radius(label, 8, 0);
         lv_obj_set_style_border_width(label, 3, 0);
         lv_obj_set_style_border_side(label, LV_BORDER_SIDE_LEFT, 0);
         lv_obj_set_style_bg_color(label, lv_color_hex(bot ? 0xE9EDF7 : 0x2B3158), 0);
@@ -101,6 +103,120 @@ static void body_snippet(lv_obj_t *label, char *out, size_t outSize)
         out[n++] = '.';
     }
     out[n] = 0;
+}
+
+extern "C" int emoji_name_mode(void);
+static bool g_chipGroup = false;
+// set before a message bubble is built: true for a group message, which has a "name time" line on top
+extern "C" void emoji_chip_expect(bool group)
+{
+    g_chipGroup = group;
+}
+
+// the colour of a node in the node list, the same rule as the display library uses
+static void chip_color(uint32_t num, uint32_t *bg, uint32_t *fg)
+{
+    uint32_t red = (num & 0xff0000) >> 16, green = (num & 0xff00) >> 8, blue = num & 0xff;
+    while (red + green + blue < 0xF0) {
+        red += red / 3 + 10;
+        green += green / 3 + 10;
+        blue += blue / 3 + 10;
+    }
+    *bg = (red << 16) | (green << 8) | blue;
+    *fg = (2 * red + 2 * green + blue) > 600 ? 0x000000 : 0xFFFFFF;
+}
+
+// a chip with the short name in the node's colour on the first line of a group message, the long name after it is cut with ..
+// so that chip, name and time stay on one line
+extern "C" void emoji_name_chip(lv_obj_t *label, uint32_t nodeNum, const char *shortName)
+{
+    bool group = g_chipGroup;
+    g_chipGroup = false;
+    int mode = emoji_name_mode();
+    if (!group || !label || mode == 1 || !shortName || !shortName[0])
+        return;
+    const char *txt = lv_label_get_text(label);
+    const char *nl = strchr(txt, '\n');
+    if (!nl)
+        return;
+    const char *tw0 = nl; // start of the time word, the header is "name time"
+    while (tw0 > txt && tw0[-1] != ' ')
+        tw0--;
+    if (tw0 == txt)
+        return;
+    size_t nameLen = (size_t)(tw0 - txt) - 1;
+    size_t timeLen = (size_t)(nl - tw0);
+    const lv_font_t *font = lv_obj_get_style_text_font(label, LV_PART_MAIN);
+    int bw = lv_obj_get_style_border_width(label, LV_PART_MAIN);
+    int padL = lv_obj_get_style_pad_left(label, LV_PART_MAIN) + bw;
+    int padR = lv_obj_get_style_pad_right(label, LV_PART_MAIN) + bw;
+    int padT = lv_obj_get_style_pad_top(label, LV_PART_MAIN) + bw;
+    int chipW = lv_text_get_width(shortName, (uint32_t)strlen(shortName), &ui_font_montserrat_12, 0) + 10;
+    int spaceW = lv_font_get_glyph_width(font, ' ', ' ');
+    if (spaceW < 2)
+        spaceW = 4;
+    int nsp = (chipW + 4 + spaceW - 1) / spaceW;
+    if (nsp > 14)
+        nsp = 14;
+    size_t restLen = strlen(nl);
+    char *nt = (char *)malloc(restLen + 120);
+    if (!nt)
+        return;
+    size_t o = 0;
+    for (int i = 0; i < nsp; i++)
+        nt[o++] = ' ';
+    if (mode == 2 && nameLen > 0) {
+        int timeW = lv_text_get_width(tw0, (uint32_t)timeLen, font, 0);
+        int avail = (int)lv_obj_get_width(label) - padL - padR - nsp * spaceW - spaceW - timeW;
+        char nm[64];
+        size_t n = nameLen < sizeof(nm) - 1 ? nameLen : sizeof(nm) - 1;
+        memcpy(nm, txt, n);
+        nm[n] = 0;
+        bool cut = false;
+        int dotsW = lv_text_get_width("..", 2, font, 0);
+        while (n > 0 && lv_text_get_width(nm, (uint32_t)n, font, 0) + (cut ? dotsW : 0) > avail) {
+            n--;
+            while (n > 0 && ((unsigned char)nm[n] & 0xC0) == 0x80)
+                n--;
+            nm[n] = 0;
+            cut = true;
+        }
+        if (n > 0) {
+            memcpy(nt + o, nm, n);
+            o += n;
+            if (cut) {
+                nt[o++] = '.';
+                nt[o++] = '.';
+            }
+            nt[o++] = ' ';
+        }
+    }
+    memcpy(nt + o, tw0, timeLen);
+    o += timeLen;
+    memcpy(nt + o, nl, restLen + 1);
+    lv_label_set_text(label, nt);
+    // the bubble width follows the new first line, like the display library sizes it
+    int w = lv_text_get_width(nt, (uint32_t)strlen(nt), &ui_font_montserrat_14, 0);
+    int lw = (w < 160 ? w : 160) + 10;
+    lv_obj_set_width(label, lw < 40 ? 40 : lw);
+    free(nt);
+    lv_obj_t *panel = lv_obj_get_parent(label);
+    uint32_t bg, fg;
+    chip_color(nodeNum, &bg, &fg);
+    lv_obj_t *chip = lv_label_create(panel);
+    lv_label_set_text(chip, shortName);
+    lv_obj_set_style_text_font(chip, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(chip, lv_color_hex(fg), 0);
+    lv_obj_set_style_bg_color(chip, lv_color_hex(bg), 0);
+    lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(chip, 6, 0);
+    lv_obj_set_style_pad_hor(chip, 5, 0);
+    lv_obj_set_style_pad_ver(chip, 0, 0);
+    lv_obj_set_width(chip, LV_SIZE_CONTENT);
+    lv_obj_add_flag(chip, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_remove_flag(chip, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_update_layout(panel);
+    lv_obj_align_to(chip, label, LV_ALIGN_TOP_LEFT, padL, padT + 1);
 }
 
 extern "C" void emoji_pending_id(uint32_t id)
@@ -355,6 +471,55 @@ static void longpress_cb(lv_event_t *e)
     popup_button(buttons, "Cancel", 0x5A6078, cancel_popup_cb);
 }
 
+static void unflash_cb(lv_timer_t *t)
+{
+    lv_obj_t *o = (lv_obj_t *)lv_timer_get_user_data(t);
+    if (o && lv_obj_is_valid(o))
+        lv_obj_set_style_outline_width(o, 0, 0);
+    lv_timer_delete(t);
+}
+
+// a tap on a quote scrolls to the message it quotes and outlines it for a moment
+static void quote_jump_cb(lv_event_t *e)
+{
+    lv_obj_t *ql = (lv_obj_t *)lv_event_get_target(e);
+    lv_obj_t *qp = lv_obj_get_parent(ql);
+    lv_obj_t *container = qp ? lv_obj_get_parent(qp) : nullptr;
+    if (!container)
+        return;
+    char key[48];
+    strncpy(key, lv_label_get_text(ql), sizeof(key) - 1);
+    key[sizeof(key) - 1] = 0;
+    size_t kl = strlen(key);
+    if (kl >= 2 && key[kl - 1] == '.' && key[kl - 2] == '.')
+        key[kl - 2] = 0;
+    if (!key[0] || !strcmp(key, "replying to a message"))
+        return;
+    for (int i = (int)lv_obj_get_index(qp) - 1; i >= 0; i--) {
+        lv_obj_t *c = lv_obj_get_child(container, i);
+        if (!c || lv_obj_get_user_data(c) == (void *)MARK_CHIP || lv_obj_get_user_data(c) == (void *)MARK_QUOTE)
+            continue;
+        uint32_t n = lv_obj_get_child_count(c);
+        for (uint32_t k = 0; k < n; k++) {
+            lv_obj_t *l = lv_obj_get_child(c, k);
+            if (!l || !lv_obj_check_type(l, &lv_label_class))
+                continue;
+            const char *t = lv_label_get_text(l);
+            const char *nl = strchr(t, '\n');
+            const char *body = nl ? nl + 1 : t;
+            if (body && strstr(body, key)) {
+                lv_obj_scroll_to_view(c, LV_ANIM_ON);
+                lv_obj_set_style_outline_width(l, 2, 0);
+                lv_obj_set_style_outline_color(l, lv_color_hex(0xFFD54A), 0);
+                lv_obj_set_style_outline_pad(l, 1, 0);
+                lv_timer_t *tm = lv_timer_create(unflash_cb, 1500, l);
+                lv_timer_set_repeat_count(tm, 1);
+                return;
+            }
+        }
+    }
+}
+
 // Called for every new bubble. id is the message id of a sent bubble, 0 for a received one, which takes the id that
 // emoji_pending_id announced. A bubble that starts with a quote line has that line moved into its own panel above.
 extern "C" void emoji_bubble_register(lv_obj_t *label, uint32_t id)
@@ -398,6 +563,8 @@ extern "C" void emoji_bubble_register(lv_obj_t *label, uint32_t id)
         if (quoteText) {
             lv_obj_t *ql = make_aux(container, quoteText, true, sent, emoji_bot_container(container));
             lv_obj_move_to_index(lv_obj_get_parent(ql), lv_obj_get_index(panel));
+            lv_obj_add_flag(ql, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(ql, quote_jump_cb, LV_EVENT_CLICKED, nullptr);
         }
     }
     lv_obj_t *vis = emoji_format_bubble ? emoji_format_bubble(label, sent) : nullptr;
@@ -408,7 +575,7 @@ extern "C" void emoji_bubble_register(lv_obj_t *label, uint32_t id)
     b.id = id;
     b.panel = panel;
     b.chipLabel = nullptr;
-    b.react[0] = 0;
+    b.n = 0;
     b.sent = sent;
     lv_obj_add_flag(label, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(label, longpress_cb, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)id);
@@ -417,6 +584,41 @@ extern "C" void emoji_bubble_register(lv_obj_t *label, uint32_t id)
         lv_obj_add_flag(vis, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(vis, longpress_cb, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)id);
     }
+}
+
+// one small chip per emoji with its count, under the bubble it answers
+static void rebuild_chips(BubbleRef &b)
+{
+    lv_obj_t *container = lv_obj_get_parent(b.panel);
+    if (b.chipLabel && lv_obj_is_valid(b.chipLabel))
+        lv_obj_delete(b.chipLabel);
+    bool bot = emoji_bot_container(container);
+    lv_obj_t *row = lv_obj_create(container);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_width(row, lv_pct(100));
+    lv_obj_set_height(row, LV_SIZE_CONTENT);
+    lv_obj_remove_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_set_user_data(row, (void *)MARK_CHIP);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(row, b.sent ? LV_FLEX_ALIGN_END : LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 4, 0);
+    lv_obj_set_style_pad_row(row, 2, 0);
+    lv_obj_set_style_pad_hor(row, 4, 0);
+    for (int k = 0; k < b.n; k++) {
+        char t[24];
+        snprintf(t, sizeof(t), "%s %d", b.em[k], (int)b.cnt[k]);
+        lv_obj_t *l = lv_label_create(row);
+        lv_label_set_text(l, t);
+        lv_obj_set_style_text_font(l, &ui_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(l, lv_color_hex(bot ? 0x1F2937 : 0xFFFFFF), 0);
+        lv_obj_set_style_bg_color(l, lv_color_hex(bot ? 0xDDE2F0 : 0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(l, bot ? LV_OPA_COVER : (lv_opa_t)50, 0);
+        lv_obj_set_style_radius(l, 9, 0);
+        lv_obj_set_style_pad_hor(l, 6, 0);
+        lv_obj_set_style_pad_ver(l, 1, 0);
+    }
+    b.chipLabel = row;
+    lv_obj_move_to_index(row, lv_obj_get_index(b.panel) + 1);
 }
 
 // true when the reaction was put under the bubble it answers
@@ -428,22 +630,23 @@ extern "C" bool emoji_reaction_apply(uint32_t replyId, const char *payload, size
         BubbleRef &b = g_bubbles[i];
         if (b.id != replyId || !b.panel || !lv_obj_is_valid(b.panel))
             continue;
-        size_t have = strlen(b.react);
-        if (have + size + 3 >= sizeof(b.react))
-            return true; // chip row is full, drop the extra reaction
-        if (have) {
-            b.react[have++] = ' ';
-            b.react[have++] = ' ';
+        bool found = false;
+        for (int k = 0; k < b.n; k++)
+            if (strlen(b.em[k]) == size && memcmp(b.em[k], payload, size) == 0) {
+                if (b.cnt[k] < 99)
+                    b.cnt[k]++;
+                found = true;
+                break;
+            }
+        if (!found) {
+            if (b.n >= 4)
+                return true; // the chip row is full, drop the extra emoji
+            memcpy(b.em[b.n], payload, size);
+            b.em[b.n][size] = 0;
+            b.cnt[b.n] = 1;
+            b.n++;
         }
-        memcpy(b.react + have, payload, size);
-        b.react[have + size] = 0;
-        if (b.chipLabel && lv_obj_is_valid(b.chipLabel)) {
-            lv_label_set_text(b.chipLabel, b.react);
-        } else {
-            lv_obj_t *container = lv_obj_get_parent(b.panel);
-            b.chipLabel = make_aux(container, b.react, false, b.sent, emoji_bot_container(container));
-            lv_obj_move_to_index(lv_obj_get_parent(b.chipLabel), lv_obj_get_index(b.panel) + 1);
-        }
+        rebuild_chips(b);
         return true;
     }
     return false;

@@ -326,6 +326,8 @@ def main():
         tft_decl += ('extern "C" void emoji_suggest_init(lv_obj_t *);\n'
                      'extern "C" bool emoji_long_names(void);\n'
                      'extern "C" void emoji_bubble_register(lv_obj_t *, uint32_t);\n'
+                     'extern "C" void emoji_chip_expect(bool);\n'
+                     'extern "C" void emoji_name_chip(lv_obj_t *, uint32_t, const char *);\n'
                      'extern "C" void emoji_set_reply(uint32_t, bool);\n'
                      'extern "C" int emoji_ctx_mode(void);\n'
                      'extern "C" uint32_t emoji_ctx_target(void);\n'
@@ -351,6 +353,22 @@ def main():
             recv_anchor = "    emoji_bubble_style(msgLabel, container, false);\n"
         edit(tft, sent_anchor, "    emoji_bubble_register(textLabel, requestId);\n")
         edit(tft, recv_anchor, "    emoji_bubble_register(msgLabel, 0);\n")
+        # coloured short name chip on group messages, and the group flag set by the caller
+        edit(tft, "    emoji_bubble_register(msgLabel, 0);\n",
+             "    {\n"
+             "        char chipShort[5] = {0};\n"
+             "        auto itc = nodes.find(nodeNum);\n"
+             "        if (itc != nodes.end()) {\n"
+             "            const char *ud = (const char *)&(itc->second->LV_OBJ_IDX(node_lbs_idx)->user_data);\n"
+             "            for (int ci = 0; ci < 4 && ud[ci]; ci++)\n"
+             "                chipShort[ci] = ud[ci];\n"
+             "        } else\n"
+             "            snprintf(chipShort, sizeof(chipShort), \"%04x\", (unsigned)(nodeNum & 0xffff));\n"
+             "        emoji_name_chip(msgLabel, nodeNum, chipShort);\n"
+             "    }\n"
+             "    emoji_bubble_register(msgLabel, 0);\n", "replace")
+        edit(tft, "    // place message into container\n    newMessage(from, container, ch, buf);\n",
+             "    // place message into container\n    emoji_chip_expect(to == UINT32_MAX);\n    newMessage(from, container, ch, buf);\n", "replace")
         # group bubbles show the long name when the setting is on
         names_old = ("            char *userData = (char *)&(nodes[from]->LV_OBJ_IDX(node_lbs_idx)->user_data);\n"
                      "            while (pos < 4 && userData[pos] != 0) {\n"
@@ -468,7 +486,8 @@ def main():
                      'void (*)(lv_obj_t *));\n'
                      'extern "C" void emoji_settings_host(void *(*)(void), void *(*)(void), void *(*)(void), void *(*)(void), '
                      'void (*)(void), void (*)(void), void (*)(void), void (*)(void));\n'
-                     'extern "C" void emoji_settings_host2(void *(*)(void), void (*)(void), int, void (*)(const char *));\n')
+                     'extern "C" void emoji_settings_host2(void *(*)(void), void (*)(void), int, void (*)(const char *));\n'
+                     'extern "C" void emoji_settings_host3(void *(*)(void), void (*)(void), void *(*)(void), void (*)(void));\n')
         vc_decl += 'extern "C" void emoji_gps_record(const void *);\n'
         # renaming the node shows "Rebooting ..." but nothing asks the node to reboot, so the screen would wait for ever
         edit(tft, '                THIS->controller->sendConfig(user, THIS->ownNode);\n                THIS->notifyReboot(true);\n',
@@ -504,6 +523,12 @@ def main():
              "            buf[sizeof(buf) - 1] = 0;" + chr(10) +
              "            THIS->controller->sendConfig(buf);" + chr(10) +
              "        });" + chr(10))
+        edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n",
+             "    emoji_settings_host3(\n"
+             "        []() -> void * { return &THIS->db.config.network; },\n"
+             "        []() { THIS->controller->sendConfig(meshtastic_Config_NetworkConfig{THIS->db.config.network}); },\n"
+             "        []() -> void * { return &THIS->db.config.device; },\n"
+             "        []() { THIS->controller->sendConfig(meshtastic_Config_DeviceConfig{THIS->db.config.device}); });\n")
         edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n",
              "    emoji_settings_init(\n"
              "        objects.basic_settings_language_button, objects.main_screen, objects.keyboard,\n"
@@ -619,8 +644,9 @@ def main():
     # declarations, one block per file
     if tft_decl:
         seen = set()
-        blk = "".join(l + "\n" for l in tft_decl.split("\n") if l and not (l in seen or seen.add(l)))
-        edit(tft, SD_INC, blk)
+        for l in tft_decl.split("\n"):
+            if l and not (l in seen or seen.add(l)):
+                edit(tft, SD_INC, l + "\n")  # one line at a time, so a changed block is not injected a second time
     if vc_decl:
         edit(vc, VC_FN, vc_decl, "before")
 

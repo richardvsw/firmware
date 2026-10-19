@@ -54,8 +54,8 @@
 #define HAS_TOUCHSCREEN 1
 #define TOUCH_SDA 18
 #define TOUCH_SCL 17
-#define TOUCH_INT 21
-#define TOUCH_RST 1
+#define TOUCH_INT -1
+#define TOUCH_RST -1
 
 // ==================== SD CARD (LoRa SPI bus) ====================
 
