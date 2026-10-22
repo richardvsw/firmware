@@ -119,7 +119,21 @@ def edit(path, anchor, add, mode="after"):
     s, crlf = read(path)
     if add in s:
         return
-    if anchor not in s:
+    if isinstance(anchor, (list, tuple)):
+        match = None
+        for a in anchor:
+            if a in s:
+                match = a
+                break
+        if not match:
+            marks = [ln for ln in add.split("\n") if len(ln.strip()) > 12]
+            if marks and marks[0] in s:
+                return
+            print("MUI-EXTRAS WARNING: anchor not found in %s: %r" % (os.path.basename(path), anchor[0][:80]))
+            MISSES.append(os.path.basename(path) + ": " + anchor[0][:60])
+            return
+        anchor = match
+    elif anchor not in s:
         # a later patch may have rewritten the text of this one, then its first real line is still there
         marks = [ln for ln in add.split("\n") if len(ln.strip()) > 12]
         if marks and marks[0] in s:
@@ -443,8 +457,10 @@ def patch_mui_node_and_channel(tft, UI):
          own_add, "after")
 
     # addNode detail label and max height
-    edit(tft, "    lv_obj_set_style_max_height(nodeButton, 132, ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));",
-         "    lv_obj_set_style_max_height(nodeButton, 220, ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));", "replace")
+    edit(tft, (
+        "    lv_obj_set_style_max_height(nodeButton, 132, ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));",
+        "    lv_obj_set_style_max_height(nodeButton, 132, LV_PART_MAIN | LV_STATE_DEFAULT);"
+    ), "    lv_obj_set_style_max_height(nodeButton, 220, ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));", "replace")
 
     add_detail_block = (
         '    lv_obj_t *detail_lbl = lv_label_create(p);\n'
@@ -700,14 +716,26 @@ def main():
         for def_pct in ("45", "34"):
             edit(tft, "lv_obj_set_size(objects.keyboard, LV_PCT(100), LV_PCT(%s));" % def_pct,
                  "lv_obj_set_size(objects.keyboard, LV_PCT(100), LV_PCT(%s));" % kb_pct, "replace")
-        edit(tft, "        lv_anim_set_values(&a1, panelY, kbdPanelBaseY - kb_h);\n",
-             "        int32_t gapBelow = (int32_t)v - text_coords.y2;\n"
-             "        if (gapBelow < 0)\n"
-             "            gapBelow = 0;\n"
-             "        int32_t slide = (int32_t)kb_h - gapBelow + 2" + (" + emoji_strip_height()" if "compose" in feat else "") + ";\n"
-             "        if (slide < 0)\n"
-             "            slide = 0;\n"
-             "        lv_anim_set_values(&a1, panelY, kbdPanelBaseY - slide);\n", "replace")
+        strip_extra = (" + emoji_strip_height()" if "compose" in feat else "")
+        s_tft, _ = read(tft)
+        if "kbdPanelBaseY" in s_tft:
+            edit(tft, "        lv_anim_set_values(&a1, panelY, kbdPanelBaseY - kb_h);\n",
+                 "        int32_t gapBelow = (int32_t)v - text_coords.y2;\n"
+                 "        if (gapBelow < 0)\n"
+                 "            gapBelow = 0;\n"
+                 "        int32_t slide = (int32_t)kb_h - gapBelow + 2" + strip_extra + ";\n"
+                 "        if (slide < 0)\n"
+                 "            slide = 0;\n"
+                 "        lv_anim_set_values(&a1, panelY, kbdPanelBaseY - slide);\n", "replace")
+        else:
+            edit(tft, "        lv_anim_set_values(&a1, panel_coords.y1, panel_coords.y1 - kb_h);\n",
+                 "        int32_t gapBelow = (int32_t)v - text_coords.y2;\n"
+                 "        if (gapBelow < 0)\n"
+                 "            gapBelow = 0;\n"
+                 "        int32_t slide = (int32_t)kb_h - gapBelow + 2" + strip_extra + ";\n"
+                 "        if (slide < 0)\n"
+                 "            slide = 0;\n"
+                 "        lv_anim_set_values(&a1, panel_coords.y1, panel_coords.y1 - slide);\n", "replace")
         old_show_kb = ("    } else {\n"
                        "        if (text_coords.y1 > kb_h + 30) {\n"
                        "            // if enough place above put under top panel\n"
