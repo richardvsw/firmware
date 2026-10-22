@@ -1,9 +1,15 @@
 // Loads the emoji packs from the SD card root: /emoji_color.bin (colour 18x18 images) and /emoji.bin (monochrome LVGL font)
 #include "lvgl.h"
+#if defined(ARCH_ESP32) || defined(ARDUINO_ARCH_ESP32) || defined(ESP32)
 #include <esp_heap_caps.h>
+#define ALLOC_BUF(sz) heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#else
+#define ALLOC_BUF(sz) malloc(sz)
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include "util/ISpiLock.h"
 
 extern "C" lv_font_t ui_emoji_font;
@@ -12,15 +18,39 @@ extern "C" bool emoji_color_load_pack(const uint8_t *buf, uint32_t size);
 #ifdef HAS_SDCARD
 #include <SdFat.h>
 extern SdFs SDFs;
+#endif
 
 static uint8_t *read_file(const char *path, uint32_t *size_out)
 {
-    ISpiLock::Guard bus; // the SD card shares its SPI bus with the screen and the radio, take the host's lock like the display library does
+    // Try POSIX filesystem first (e.g. Linux mount points on DAP / SBC)
+    const char *prefixes[] = {"/mnt/sd_0", "/usr/data/mnt/sd_0", "/sdcard", ""};
+    for (int i = 0; i < 4; i++) {
+        char full[128];
+        snprintf(full, sizeof(full), "%s%s", prefixes[i], path);
+        FILE *f = fopen(full, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (sz > 0) {
+                uint8_t *b = (uint8_t *)ALLOC_BUF((size_t)sz);
+                if (b && fread(b, 1, sz, f) == (size_t)sz) {
+                    fclose(f);
+                    *size_out = (uint32_t)sz;
+                    return b;
+                }
+                free(b);
+            }
+            fclose(f);
+        }
+    }
+#ifdef HAS_SDCARD
+    ISpiLock::Guard bus; // the SD card shares its SPI bus with the screen and the radio
     FsFile f = SDFs.open(path, O_RDONLY);
     if (!f)
         return nullptr;
     uint32_t size = f.size();
-    uint8_t *buf = size ? (uint8_t *)heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : nullptr;
+    uint8_t *buf = size ? (uint8_t *)ALLOC_BUF(size) : nullptr;
     if (buf && f.read(buf, size) != (int)size) {
         free(buf);
         buf = nullptr;
@@ -28,22 +58,37 @@ static uint8_t *read_file(const char *path, uint32_t *size_out)
     f.close();
     *size_out = size;
     return buf;
-}
+#else
+    return nullptr;
 #endif
+}
 
 static bool g_sdReady = false;
 static int g_colorSt = 0, g_monoSt = 0; // 0 not tried, 1 loaded, 2 file not found, 3 file is not a valid pack
 static uint32_t g_colorKB = 0, g_monoKB = 0;
-// one line for Advanced settings: did the emoji packs on the SD card load
+
+static bool check_sd_mounted(void)
+{
+    if (access("/mnt/sd_0", F_OK) == 0 || access("/usr/data/mnt/sd_0", F_OK) == 0 || access("/sdcard", F_OK) == 0)
+        return true;
+#ifdef HAS_SDCARD
+    return true;
+#else
+    return false;
+#endif
+}
+
 extern "C" int emoji_sd_status(char *out, int n)
 {
-#ifdef HAS_SDCARD
+    if (check_sd_mounted())
+        g_sdReady = true;
+
     if (!g_sdReady) {
         snprintf(out, n, "SD emoji pack: SD card not ready");
         return 0;
     }
     if (g_colorSt == 2 && g_monoSt == 2) {
-        snprintf(out, n, "SD emoji pack: not found, using the built-in emoji (put emoji_color.bin and emoji.bin in the SD root)");
+        snprintf(out, n, "SD emoji pack: not found, using built-in emoji (put emoji_color.bin in SD root)");
         return 0;
     }
     char c[40], m[40];
@@ -57,20 +102,20 @@ extern "C" int emoji_sd_status(char *out, int n)
         snprintf(m, sizeof(m), "mono %s", g_monoSt == 3 ? "file invalid" : "not found");
     snprintf(out, n, "SD emoji pack: %s, %s", c, m);
     return (g_colorSt == 1 || g_monoSt == 1) && g_colorSt != 3 && g_monoSt != 3 ? 1 : 0;
-#else
-    snprintf(out, n, "SD emoji pack: no SD card support in this build");
-    return 0;
-#endif
 }
+
 extern "C" bool emoji_sd_ready(void)
 {
+    if (check_sd_mounted())
+        g_sdReady = true;
     return g_sdReady;
 }
 
 extern "C" void emoji_load_from_sd(void)
 {
-    g_sdReady = true;
-#ifdef HAS_SDCARD
+    if (check_sd_mounted())
+        g_sdReady = true;
+
     static bool loaded = false;
     if (loaded)
         return;
@@ -102,5 +147,4 @@ extern "C" void emoji_load_from_sd(void)
             g_monoSt = 3;
         }
     }
-#endif
 }

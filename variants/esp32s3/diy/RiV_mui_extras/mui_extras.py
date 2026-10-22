@@ -241,6 +241,435 @@ def patch_keyboard_emoji(compose):
     print("Patched", kb)
 
 
+
+def patch_mui_node_and_channel(tft, UI):
+    tft_h = os.path.join(UI, "include", "graphics", "view", "TFT", "TFTView_320x240.h")
+    edit(tft_h, "    static void ui_event_NodeButton(lv_event_t *e);\n",
+         "    static void ui_event_search_ta(lv_event_t *e);\n    static void ui_event_search_kb(lv_event_t *e);\n", "after")
+
+    decl_block = (
+        'extern "C" __attribute__((weak)) void get_node_details_string(uint32_t nodeNum, char *idStr, size_t idLen,\n'
+        '                                                             char *roleModelStr, size_t rmLen,\n'
+        '                                                             char *batSigStr, size_t bsLen,\n'
+        '                                                             char *gpsStr, size_t gpsLen)\n'
+        '{\n'
+        '    snprintf(idStr, idLen, "!%08x (%u)", (unsigned)nodeNum, (unsigned)nodeNum);\n'
+        '    snprintf(roleModelStr, rmLen, "Role: Client  •  Model: Node");\n'
+        '    snprintf(batSigStr, bsLen, "Bat: --  •  No signal data");\n'
+        '    snprintf(gpsStr, gpsLen, "GPS: No position data");\n'
+        '}\n\n'
+        'extern "C" void emoji_channel_open_index(int);\n'
+        'static lv_obj_t *g_node_search_bar = nullptr;\n'
+        'static lv_obj_t *g_node_search_ta = nullptr;\n\n'
+        'void TFTView_320x240::ui_event_search_ta(lv_event_t *e) {\n'
+        '    lv_event_code_t code = lv_event_get_code(e);\n'
+        '    lv_obj_t *ta = (lv_obj_t *)lv_event_get_target(e);\n'
+        '    if (code == LV_EVENT_CLICKED || code == LV_EVENT_FOCUSED) {\n'
+        '        if (objects.keyboard) {\n'
+        '            lv_obj_remove_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN);\n'
+        '            lv_obj_move_foreground(objects.keyboard);\n'
+        '        }\n'
+        '        THIS->showKeyboard(ta);\n'
+        '    } else if (code == LV_EVENT_VALUE_CHANGED) {\n'
+        '        const char *txt = lv_textarea_get_text(ta);\n'
+        '        lv_textarea_set_text(objects.nodes_filter_name_area, txt ? txt : "");\n'
+        '        THIS->updateNodesFiltered(true);\n'
+        '        THIS->updateNodesStatus();\n'
+        '    } else if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {\n'
+        '        if (objects.keyboard)\n'
+        '            lv_obj_add_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN);\n'
+        '        lv_obj_remove_state(ta, LV_STATE_FOCUSED);\n'
+        '    }\n'
+        '}\n\n'
+        'void TFTView_320x240::ui_event_search_kb(lv_event_t *e) {\n'
+        '    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {\n'
+        '        if (objects.keyboard) {\n'
+        '            if (lv_obj_has_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN)) {\n'
+        '                lv_obj_remove_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN);\n'
+        '                lv_obj_move_foreground(objects.keyboard);\n'
+        '                THIS->showKeyboard(g_node_search_ta);\n'
+        '            } else {\n'
+        '                lv_obj_add_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN);\n'
+        '                if (g_node_search_ta)\n'
+        '                    lv_obj_remove_state(g_node_search_ta, LV_STATE_FOCUSED);\n'
+        '            }\n'
+        '        }\n'
+        '    }\n'
+        '}\n\n'
+    )
+    edit(tft, "void TFTView_320x240::ui_set_active(lv_obj_t *b, lv_obj_t *p, lv_obj_t *tp)\n{",
+         decl_block, "before")
+
+    set_active_sb = (
+        '    if (g_node_search_bar) {\n'
+        '        if (p == objects.nodes_panel)\n'
+        '            lv_obj_clear_flag(g_node_search_bar, LV_OBJ_FLAG_HIDDEN);\n'
+        '        else {\n'
+        '            lv_obj_add_flag(g_node_search_bar, LV_OBJ_FLAG_HIDDEN);\n'
+        '            if (objects.keyboard)\n'
+        '                lv_obj_add_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN);\n'
+        '        }\n'
+        '    }\n'
+    )
+    edit(tft, "    lv_obj_clear_flag(p, LV_OBJ_FLAG_HIDDEN);\n", set_active_sb, "after")
+
+    hotfix_extras = (
+        '    // Responsive scaling for all settings modal dialogs:\n'
+        '    // Prevents keyboard buttons from being stripped at x=224 and OK/Cancel colliding with bottom frame\n'
+        '    uint32_t dlg_w = (h >= 360) ? ((h * 90) / 100) : (h - 20);\n'
+        '    if (dlg_w > 440) dlg_w = 440;\n'
+        '    lv_obj_t *dialogs[] = {\n'
+        '        objects.settings_reboot_panel, objects.settings_username_panel, objects.settings_region_panel,\n'
+        '        objects.settings_modem_preset_panel, objects.settings_device_role_panel, objects.settings_wifi_panel,\n'
+        '        objects.settings_brightness_panel, objects.settings_theme_panel, objects.settings_screen_timeout_panel,\n'
+        '        objects.settings_screen_lock_panel, objects.settings_input_control_panel, objects.settings_alert_buzzer_panel,\n'
+        '        objects.settings_language_panel, objects.settings_backup_restore_panel, objects.settings_reset_panel,\n'
+        '        objects.settings_modify_channel_panel\n'
+        '    };\n'
+        '    for (lv_obj_t *d : dialogs) {\n'
+        '        if (!d) continue;\n'
+        '        lv_obj_set_width(d, dlg_w);\n'
+        '        int32_t cur_h = lv_obj_get_height(d);\n'
+        '        if (v >= 600) {\n'
+        '            if (cur_h <= 130) lv_obj_set_height(d, 180);\n'
+        '            else if (cur_h <= 175) lv_obj_set_height(d, 235);\n'
+        '            else if (cur_h <= 185) lv_obj_set_height(d, 255);\n'
+        '        }\n'
+        '        for (uint32_t i = 0; i < lv_obj_get_child_count(d); i++) {\n'
+        '            lv_obj_t *ch = lv_obj_get_child(d, i);\n'
+        '            if (ch && lv_obj_check_type(ch, &lv_textarea_class))\n'
+        '                lv_obj_set_width(ch, dlg_w - 60);\n'
+        '            if (ch && lv_obj_check_type(ch, &lv_button_class)) {\n'
+        '                if (lv_obj_get_x(ch) > 180) {\n'
+        '                    lv_obj_set_pos(ch, dlg_w - 48, lv_obj_get_y(ch));\n'
+        '                    lv_obj_set_size(ch, 36, 30);\n'
+        '                }\n'
+        '            }\n'
+        '        }\n'
+        '    }\n'
+        '    if (!g_node_search_bar && objects.main_screen) {\n'
+        '        uint32_t top_h = objects.top_nodes_panel ? lv_obj_get_height(objects.top_nodes_panel) : 0;\n'
+        '        if (top_h == 0) top_h = (v * 10) / 100;\n'
+        '        uint32_t sb_h = (v >= 600) ? 46 : ((v >= 360) ? 36 : 28);\n'
+        '        g_node_search_bar = lv_obj_create(objects.main_screen);\n'
+        '        lv_obj_set_pos(g_node_search_bar, 0, top_h);\n'
+        '        lv_obj_set_size(g_node_search_bar, LV_PCT(100), sb_h);\n'
+        '        lv_obj_add_flag(g_node_search_bar, LV_OBJ_FLAG_HIDDEN);\n'
+        '        lv_obj_clear_flag(g_node_search_bar, LV_OBJ_FLAG_SCROLLABLE);\n'
+        '        lv_obj_set_style_bg_color(g_node_search_bar, colorDarkGray, LV_PART_MAIN);\n'
+        '        lv_obj_set_style_border_width(g_node_search_bar, 0, LV_PART_MAIN);\n'
+        '        lv_obj_set_style_pad_all(g_node_search_bar, 2, LV_PART_MAIN);\n'
+        '        lv_obj_set_style_pad_column(g_node_search_bar, 4, LV_PART_MAIN);\n'
+        '        lv_obj_set_style_radius(g_node_search_bar, 0, LV_PART_MAIN);\n'
+        '        lv_obj_set_layout(g_node_search_bar, LV_LAYOUT_FLEX);\n'
+        '        lv_obj_set_flex_flow(g_node_search_bar, LV_FLEX_FLOW_ROW);\n'
+        '        lv_obj_set_flex_align(g_node_search_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);\n'
+        '        g_node_search_ta = lv_textarea_create(g_node_search_bar);\n'
+        '        lv_obj_set_flex_grow(g_node_search_ta, 1);\n'
+        '        lv_obj_set_height(g_node_search_ta, sb_h - 4);\n'
+        '        lv_textarea_set_placeholder_text(g_node_search_ta, "Search nodes or !id...");\n'
+        '        lv_textarea_set_one_line(g_node_search_ta, true);\n'
+        '        lv_obj_set_style_text_font(g_node_search_ta, (v >= 600) ? &ui_font_montserrat_14 : &ui_font_montserrat_12, LV_PART_MAIN);\n'
+        '        lv_obj_set_style_pad_top(g_node_search_ta, (v >= 600) ? 6 : 2, LV_PART_MAIN);\n'
+        '        lv_obj_set_style_pad_left(g_node_search_ta, 8, LV_PART_MAIN);\n'
+        '        lv_obj_set_style_pad_bottom(g_node_search_ta, 4, LV_PART_MAIN);\n'
+        '        lv_obj_set_style_bg_color(g_node_search_ta, lv_color_hex(0x181818), LV_PART_MAIN);\n'
+        '        lv_obj_set_style_text_color(g_node_search_ta, lv_color_hex(0xffffff), LV_PART_MAIN);\n'
+        '        lv_obj_set_style_border_color(g_node_search_ta, colorMesh, LV_PART_MAIN);\n'
+        '        lv_obj_set_style_border_width(g_node_search_ta, 1, LV_PART_MAIN);\n'
+        '        lv_obj_set_style_radius(g_node_search_ta, 6, LV_PART_MAIN);\n'
+        '        lv_obj_add_event_cb(g_node_search_ta, ui_event_search_ta, LV_EVENT_ALL, this);\n'
+        '        lv_obj_t *btn_kb = lv_button_create(g_node_search_bar);\n'
+        '        lv_obj_set_size(btn_kb, (v >= 600) ? 44 : 34, sb_h - 4);\n'
+        '        lv_obj_set_style_radius(btn_kb, 6, LV_PART_MAIN);\n'
+        '        lv_obj_set_style_bg_color(btn_kb, lv_color_hex(0x2d2d2d), LV_PART_MAIN);\n'
+        '        lv_obj_set_style_bg_image_src(btn_kb, &img_keyboard_image, LV_PART_MAIN);\n'
+        '        lv_obj_set_style_bg_image_recolor(btn_kb, lv_color_hex(0xffffff), LV_PART_MAIN);\n'
+        '        lv_obj_set_style_bg_image_recolor_opa(btn_kb, 255, LV_PART_MAIN);\n'
+        '        lv_obj_add_event_cb(btn_kb, ui_event_search_kb, LV_EVENT_CLICKED, this);\n'
+        '    }\n'
+        '    if (objects.nodes_panel) {\n'
+        '        uint32_t top_h = objects.top_nodes_panel ? lv_obj_get_height(objects.top_nodes_panel) : 0;\n'
+        '        if (top_h == 0) top_h = (v * 10) / 100;\n'
+        '        uint32_t sb_h = (v >= 600) ? 46 : ((v >= 360) ? 36 : 28);\n'
+        '        int32_t nav_h = objects.button_panel ? lv_obj_get_height(objects.button_panel) : 0;\n'
+        '        if (nav_h <= 0) nav_h = (v * 12) / 100;\n'
+        '        lv_obj_set_y(objects.nodes_panel, top_h + sb_h);\n'
+        '        int32_t rem_h = v - (top_h + sb_h) - nav_h;\n'
+        '        if (rem_h > 60) lv_obj_set_height(objects.nodes_panel, rem_h);\n'
+        '    }\n'
+        '    if (objects.message_input_area && objects.keyboard_button_0) {\n'
+        '        uint32_t bottom_pad = (v >= 600) ? 8 : 4;\n'
+        '        uint32_t btn_h = (v >= 600) ? 40 : 28;\n'
+        '        uint32_t btn_w = (v >= 600) ? 46 : 34;\n'
+        '        int32_t margin_x = (int32_t)bottom_pad + 2;\n'
+        '        lv_obj_set_pos(objects.keyboard_button_0, -margin_x, -(int32_t)bottom_pad);\n'
+        '        lv_obj_set_size(objects.keyboard_button_0, btn_w, btn_h);\n'
+        '        lv_obj_set_style_radius(objects.keyboard_button_0, 6, LV_PART_MAIN);\n'
+        '        int32_t ta_w = (int32_t)h - margin_x - 8 - btn_w - margin_x;\n'
+        '        if (ta_w > 80) {\n'
+        '            lv_obj_set_size(objects.message_input_area, ta_w, btn_h);\n'
+        '            lv_obj_set_pos(objects.message_input_area, margin_x, -(int32_t)bottom_pad);\n'
+        '            lv_obj_set_style_radius(objects.message_input_area, 6, LV_PART_MAIN);\n'
+        '            lv_obj_set_style_max_height(objects.message_input_area, 100, LV_PART_MAIN);\n'
+        '            lv_obj_set_style_pad_top(objects.message_input_area, (v >= 600) ? 8 : 3, LV_PART_MAIN);\n'
+        '            lv_obj_set_style_pad_left(objects.message_input_area, 8, LV_PART_MAIN);\n'
+        '            lv_obj_set_style_pad_bottom(objects.message_input_area, 4, LV_PART_MAIN);\n'
+        '            lv_obj_set_style_text_font(objects.message_input_area, (v >= 600) ? &ui_font_montserrat_14 : &ui_font_montserrat_12, LV_PART_MAIN);\n'
+        '        }\n'
+        '        if (objects.messages_panel && objects.messages_container) {\n'
+        '            int32_t p_h = lv_obj_get_height(objects.messages_panel);\n'
+        '            if (p_h > (int32_t)(btn_h + bottom_pad + 20))\n'
+        '                lv_obj_set_height(objects.messages_container, p_h - (btn_h + bottom_pad + 6));\n'
+        '        }\n'
+        '    }\n'
+    )
+    edit(tft, "    if (objects.blank_screen)\n        lv_obj_set_size(objects.blank_screen, h, v);\n",
+         hotfix_extras, "after")
+
+    # Own node detail label and max height
+    own_add = (
+        '    lv_obj_set_style_max_height(objects.node_button, 220, ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));\n'
+        '    lv_obj_t *own_detail_lbl = lv_label_create(objects.node_panel);\n'
+        '    lv_obj_set_pos(own_detail_lbl, -5, 53);\n'
+        '    lv_obj_set_size(own_detail_lbl, LV_PCT(100), LV_SIZE_CONTENT);\n'
+        '    lv_label_set_long_mode(own_detail_lbl, LV_LABEL_LONG_WRAP);\n'
+        '    lv_obj_set_style_text_font(own_detail_lbl, &ui_font_montserrat_12, ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));\n'
+        '    lv_obj_set_style_text_color(own_detail_lbl, lv_color_hex(0xc0c0c0), ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));\n'
+        '    lv_obj_set_style_text_line_space(own_detail_lbl, 2, ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));\n'
+        '    lv_obj_add_flag(own_detail_lbl, LV_OBJ_FLAG_HIDDEN);\n'
+    )
+    edit(tft, "lv_obj_add_event_cb(objects.node_button, ui_event_NodeButton, LV_EVENT_ALL, (void *)ownNode);\n",
+         own_add, "after")
+
+    # addNode detail label and max height
+    edit(tft, "    lv_obj_set_style_max_height(nodeButton, 132, ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));",
+         "    lv_obj_set_style_max_height(nodeButton, 220, ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));", "replace")
+
+    add_detail_block = (
+        '    lv_obj_t *detail_lbl = lv_label_create(p);\n'
+        '    lv_obj_set_pos(detail_lbl, -5, 53);\n'
+        '    lv_obj_set_size(detail_lbl, LV_PCT(100), LV_SIZE_CONTENT);\n'
+        '    lv_label_set_long_mode(detail_lbl, LV_LABEL_LONG_WRAP);\n'
+        '    lv_obj_set_style_text_font(detail_lbl, &ui_font_montserrat_12, ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));\n'
+        '    lv_obj_set_style_text_color(detail_lbl, lv_color_hex(0xc0c0c0), ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));\n'
+        '    lv_obj_set_style_text_line_space(detail_lbl, 2, ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));\n'
+        '    lv_obj_add_flag(detail_lbl, LV_OBJ_FLAG_HIDDEN);\n'
+    )
+    edit(tft, "    lv_obj_add_event_cb(nodeButton, ui_event_NodeButton, LV_EVENT_ALL, (void *)nodeNum);\n",
+         add_detail_block, "before")
+
+    # ui_event_NodeButton replacement
+    old_event_btn = (
+        'void TFTView_320x240::ui_event_NodeButton(lv_event_t *e)\n'
+        '{\n'
+        '    static bool animRunning = false;\n'
+        '    static auto deleted_cb = [](_lv_anim_t *) { animRunning = false; };\n'
+        '    lv_event_code_t event_code = lv_event_get_code(e);\n'
+        '    if (event_code == LV_EVENT_CLICKED && !animRunning) {\n'
+        '        uint32_t nodeNum = (unsigned long)e->user_data;\n'
+        '        if (!nodeNum) // event-handler for own node has value 0 in user_data\n'
+        '            nodeNum = THIS->ownNode;\n'
+        '        lv_obj_t *panel = THIS->nodes[nodeNum];\n'
+        '        if (currentPanel) {\n'
+        '            // create animation to shrink other panel\n'
+        '            animRunning = true;\n'
+        '            static lv_anim_t a;\n'
+        '            int32_t height = lv_obj_get_height(currentPanel);\n'
+        '            lv_anim_init(&a);\n'
+        '            lv_anim_set_var(&a, currentPanel);\n'
+        '            lv_anim_set_values(&a, height, 136 - height);\n'
+        '            lv_anim_set_duration(&a, 200);\n'
+        '            lv_anim_set_exec_cb(&a, ui_anim_node_panel_cb);\n'
+        '            lv_anim_set_path_cb(&a, lv_anim_path_linear);\n'
+        '            lv_anim_set_deleted_cb(&a, deleted_cb);\n'
+        '            lv_anim_start(&a);\n'
+        '        }\n'
+        '        if (panel != currentPanel) {\n'
+        '            // create animation to enlarge node panel\n'
+        '            animRunning = true;\n'
+        '            static lv_anim_t a;\n'
+        '            int32_t height = lv_obj_get_height(panel);\n'
+        '            lv_anim_init(&a);\n'
+        '            lv_anim_set_var(&a, panel);\n'
+        '            lv_anim_set_values(&a, height, 136 - height);\n'
+        '            lv_anim_set_duration(&a, 200);\n'
+        '            lv_anim_set_exec_cb(&a, ui_anim_node_panel_cb);\n'
+        '            lv_anim_set_path_cb(&a, lv_anim_path_linear);\n'
+        '            lv_anim_set_deleted_cb(&a, deleted_cb);\n'
+        '            lv_anim_start(&a);\n'
+        '            currentPanel = panel;\n'
+        '            currentNode = nodeNum;\n'
+        '        } else {\n'
+        '            currentPanel = nullptr;\n'
+        '            currentNode = 0;\n'
+        '        }\n'
+        '        if (THIS->chooseNodeSignalScanner) {\n'
+        '            THIS->chooseNodeSignalScanner = false;\n'
+        '            ui_event_signal_scanner(NULL);\n'
+        '            // restore previous filter\n'
+        '            lv_dropdown_set_selected(objects.nodes_filter_hops_dropdown, THIS->selectedHops);\n'
+        '            THIS->updateNodesFiltered(true);\n'
+        '            THIS->updateNodesStatus();\n'
+        '        } else if (THIS->chooseNodeTraceRoute) {\n'
+        '            THIS->chooseNodeTraceRoute = false;\n'
+        '            ui_event_trace_route(NULL);\n'
+        '        }\n'
+        '    } else if (event_code == LV_EVENT_LONG_PRESSED) {\n'
+        '        //  set color and text of clicked node\n'
+        '        uint32_t nodeNum = (unsigned long)e->user_data;\n'
+        '        bool isMessagable = !((unsigned long)(THIS->nodes[nodeNum]->LV_OBJ_IDX(node_img_idx)->user_data) == eRole::unmessagable);\n'
+        '        if (nodeNum != THIS->ownNode && isMessagable)\n'
+        '            THIS->showMessages(nodeNum);\n'
+        '    }\n'
+        '}'
+    )
+    new_event_btn = (
+        'void TFTView_320x240::ui_event_NodeButton(lv_event_t *e)\n'
+        '{\n'
+        '    static bool ignoreClicked = false;\n'
+        '    lv_event_code_t event_code = lv_event_get_code(e);\n'
+        '    if (event_code == LV_EVENT_CLICKED) {\n'
+        '        if (ignoreClicked) {\n'
+        '            ignoreClicked = false;\n'
+        '            return;\n'
+        '        }\n'
+        '        uint32_t nodeNum = (unsigned long)e->user_data;\n'
+        '        if (!nodeNum)\n'
+        '            nodeNum = THIS->ownNode;\n'
+        '        auto it = THIS->nodes.find(nodeNum);\n'
+        '        lv_obj_t *panel = (it != THIS->nodes.end()) ? it->second : nullptr;\n'
+        '        if (!panel) return;\n'
+        '        if (currentPanel && currentPanel != panel) {\n'
+        '            lv_obj_set_height(currentPanel, 53);\n'
+        '            if (lv_obj_get_child_count(currentPanel) > 11)\n'
+        '                lv_obj_add_flag(lv_obj_get_child(currentPanel, 11), LV_OBJ_FLAG_HIDDEN);\n'
+        '            currentPanel = nullptr;\n'
+        '            currentNode = 0;\n'
+        '        }\n'
+        '        bool isExpanded = (lv_obj_get_height(panel) > 60);\n'
+        '        if (isExpanded) {\n'
+        '            lv_obj_set_height(panel, 53);\n'
+        '            if (lv_obj_get_child_count(panel) > 11)\n'
+        '                lv_obj_add_flag(lv_obj_get_child(panel, 11), LV_OBJ_FLAG_HIDDEN);\n'
+        '            currentPanel = nullptr;\n'
+        '            currentNode = 0;\n'
+        '        } else {\n'
+        '            currentPanel = panel;\n'
+        '            currentNode = nodeNum;\n'
+        '            for (int idx = 7; idx <= 10; idx++) {\n'
+        '                if (lv_obj_get_child_count(panel) > idx)\n'
+        '                    lv_obj_add_flag(lv_obj_get_child(panel, idx), LV_OBJ_FLAG_HIDDEN);\n'
+        '            }\n'
+        '            if (lv_obj_get_child_count(panel) > 11) {\n'
+        '                lv_obj_t *dl = lv_obj_get_child(panel, 11);\n'
+        '                char idStr[64] = {0}, rmStr[64] = {0}, bsStr[64] = {0}, gpsStr[64] = {0};\n'
+        '                get_node_details_string(nodeNum, idStr, sizeof(idStr), rmStr, sizeof(rmStr), bsStr, sizeof(bsStr), gpsStr, sizeof(gpsStr));\n'
+        '                char fullBuf[320];\n'
+        '                snprintf(fullBuf, sizeof(fullBuf), "%s\\n%s\\n%s\\n%s", idStr, rmStr, bsStr, gpsStr);\n'
+        '                lv_label_set_text(dl, fullBuf);\n'
+        '                lv_obj_clear_flag(dl, LV_OBJ_FLAG_HIDDEN);\n'
+        '            }\n'
+        '            lv_obj_set_height(panel, 142);\n'
+        '        }\n'
+        '        if (THIS->chooseNodeSignalScanner) {\n'
+        '            THIS->chooseNodeSignalScanner = false;\n'
+        '            ui_event_signal_scanner(NULL);\n'
+        '            lv_dropdown_set_selected(objects.nodes_filter_hops_dropdown, THIS->selectedHops);\n'
+        '            THIS->updateNodesFiltered(true);\n'
+        '            THIS->updateNodesStatus();\n'
+        '        } else if (THIS->chooseNodeTraceRoute) {\n'
+        '            THIS->chooseNodeTraceRoute = false;\n'
+        '            ui_event_trace_route(NULL);\n'
+        '        }\n'
+        '    } else if (event_code == LV_EVENT_LONG_PRESSED) {\n'
+        '        ignoreClicked = true;\n'
+        '        uint32_t nodeNum = (unsigned long)e->user_data;\n'
+        '        if (!nodeNum)\n'
+        '            nodeNum = THIS->ownNode;\n'
+        '        if (nodeNum != THIS->ownNode) {\n'
+        '            auto it = THIS->nodes.find(nodeNum);\n'
+        '            if (it != THIS->nodes.end()) {\n'
+        '                bool isMessagable = !((unsigned long)(it->second->LV_OBJ_IDX(node_img_idx)->user_data) == eRole::unmessagable);\n'
+        '                if (isMessagable)\n'
+        '                    THIS->showMessages(nodeNum);\n'
+        '            }\n'
+        '        }\n'
+        '    }\n'
+        '}'
+    )
+    edit(tft, old_event_btn, new_event_btn, "replace")
+
+    # Real-time search filter matching
+    old_filter = (
+        '        const char *name = lv_textarea_get_text(objects.nodes_filter_name_area);\n'
+        '        if (name[0] != \'\\0\') {\n'
+        '            if (name[0] != \'!\') { // use \'!\' char to negate search result\n'
+        '                if (!strcasestr(lv_label_get_text(panel->LV_OBJ_IDX(node_lbl_idx)), name) &&\n'
+        '                    !strcasestr(lv_label_get_text(panel->LV_OBJ_IDX(node_lbs_idx)), name)) {\n'
+        '                    hide = true;\n'
+        '                }\n'
+        '            } else {\n'
+        '                if (strcasestr(lv_label_get_text(panel->LV_OBJ_IDX(node_lbl_idx)), &name[1]) ||\n'
+        '                    strcasestr(lv_label_get_text(panel->LV_OBJ_IDX(node_lbs_idx)), &name[1])) {\n'
+        '                    hide = true;\n'
+        '                }\n'
+        '            }\n'
+        '        }'
+    )
+    new_filter = (
+        '        const char *name = lv_textarea_get_text(objects.nodes_filter_name_area);\n'
+        '        if (name && name[0] != \'\\0\') {\n'
+        '            const char *query = (name[0] == \'!\' && strlen(name) > 1) ? &name[1] : name;\n'
+        '            char hexId[16];\n'
+        '            snprintf(hexId, sizeof(hexId), "%08x", (unsigned)nodeNum);\n'
+        '            char bangHex[16];\n'
+        '            snprintf(bangHex, sizeof(bangHex), "!%08x", (unsigned)nodeNum);\n'
+        '            char decId[16];\n'
+        '            snprintf(decId, sizeof(decId), "%u", (unsigned)nodeNum);\n'
+        '            const char *longName = lv_label_get_text(panel->LV_OBJ_IDX(node_lbl_idx));\n'
+        '            const char *shortName = lv_label_get_text(panel->LV_OBJ_IDX(node_lbs_idx));\n'
+        '            bool match = (longName && strcasestr(longName, name) != nullptr) ||\n'
+        '                         (shortName && strcasestr(shortName, name) != nullptr) ||\n'
+        '                         (strcasestr(hexId, query) != nullptr) ||\n'
+        '                         (strcasestr(bangHex, name) != nullptr) ||\n'
+        '                         (strcasestr(decId, name) != nullptr);\n'
+        '            if (!match && name[0] == \'!\') {\n'
+        '                match = (longName && strcasestr(longName, query) != nullptr) ||\n'
+        '                        (shortName && strcasestr(shortName, query) != nullptr);\n'
+        '            }\n'
+        '            if (!match) {\n'
+        '                hide = true;\n'
+        '            }\n'
+        '        }'
+    )
+    edit(tft, old_filter, new_filter, "replace")
+
+    # Hook channel click in Settings -> Channels:
+    old_ch_click = (
+        '        uint32_t btn_id = (unsigned long)e->user_data;\n'
+        '        int8_t ch = (signed long)THIS->ch_label[btn_id]->user_data;\n'
+        '        if (ch != -1) {'
+    )
+    new_ch_click = (
+        '        // Intercept channel click to open rich Android-style Channel editor\n'
+        '        uint32_t btn_id = (unsigned long)e->user_data;\n'
+        '        int8_t ch = (signed long)THIS->ch_label[btn_id]->user_data;\n'
+        '        if (ch == -1) {\n'
+        '            for (int i = 0; i < c_max_channels; i++) {\n'
+        '                if (THIS->channel_scratch[i].role == meshtastic_Channel_Role_DISABLED) {\n'
+        '                    ch = i;\n'
+        '                    break;\n'
+        '                }\n'
+        '            }\n'
+        '            if (ch == -1) ch = btn_id;\n'
+        '        }\n'
+        '        emoji_channel_open_index(ch);\n'
+        '        return;\n'
+        '        if (ch != -1) {'
+    )
+    edit(tft, old_ch_click, new_ch_click, "replace")
+
 def main():
     dst = os.path.join(UI, "source", "graphics", "common")
     tft = os.path.join(UI, "source", "graphics", "TFT", "TFTView_320x240.cpp")
@@ -248,6 +677,8 @@ def main():
     drv = os.path.join(UI, "include", "graphics", "driver", "LGFXDriver.h")
     drvbase = os.path.join(UI, "include", "graphics", "driver", "DisplayDriver.h")
     conf = os.path.join(UI, "include", "lv_conf.h")
+    # Ensure LV_USE_TJPGD is 0 to avoid collision with libesp32-camera.a (jd_prepare, jd_decomp) on 2.7.x
+    edit(conf, "#define LV_USE_TJPGD 1", "#define LV_USE_TJPGD 0", "replace")
     # anchors that moved between library versions: use the first form that exists
     tft_text = read(tft)[0] if os.path.exists(tft) else ""
     SD_INC = next((a for a in ('#include "util/ILog.h"\n', '#include "graphics/common/SdCard.h"\n', '#include "ui.h"\n') if a in tft_text),
@@ -256,10 +687,19 @@ def main():
     INACT = "lv_display_get_default()" if "lv_display_get_inactive_time(lv_display_get_default()) > screenTimeout" in drv_text else "NULL"
     VC_FN = "void ViewController::sendTextMessage("
 
+    # Provide ISpiLock if missing in older device-ui (e.g. 2.7.x)
+    spilock_h = os.path.join(UI, "include", "util", "ISpiLock.h")
+    if not os.path.exists(spilock_h):
+        os.makedirs(os.path.join(UI, "include", "util"), exist_ok=True)
+        os.makedirs(os.path.join(UI, "source", "util"), exist_ok=True)
+        copy("ISpiLock.h.in", os.path.join(UI, "include", "util"), "ISpiLock.h")
+        copy("ISpiLock.cpp.in", os.path.join(UI, "source", "util"), "ISpiLock.cpp")
+
     # keyboard height and the gap it leaves above the message box
     if "keyboard" in feat and kb_pct:
-        edit(tft, "lv_obj_set_size(objects.keyboard, LV_PCT(100), LV_PCT(45));",
-             "lv_obj_set_size(objects.keyboard, LV_PCT(100), LV_PCT(%s));" % kb_pct, "replace")
+        for def_pct in ("45", "34"):
+            edit(tft, "lv_obj_set_size(objects.keyboard, LV_PCT(100), LV_PCT(%s));" % def_pct,
+                 "lv_obj_set_size(objects.keyboard, LV_PCT(100), LV_PCT(%s));" % kb_pct, "replace")
         edit(tft, "        lv_anim_set_values(&a1, panelY, kbdPanelBaseY - kb_h);\n",
              "        int32_t gapBelow = (int32_t)v - text_coords.y2;\n"
              "        if (gapBelow < 0)\n"
@@ -268,6 +708,28 @@ def main():
              "        if (slide < 0)\n"
              "            slide = 0;\n"
              "        lv_anim_set_values(&a1, panelY, kbdPanelBaseY - slide);\n", "replace")
+        old_show_kb = ("    } else {\n"
+                       "        if (text_coords.y1 > kb_h + 30) {\n"
+                       "            // if enough place above put under top panel\n"
+                       "            lv_obj_set_pos(objects.keyboard, 0, 28);\n"
+                       "        } else if ((text_coords.y1 + 10) > v / 2) {\n"
+                       "            // if text area is at lower half then place above text area\n"
+                       "            lv_obj_set_pos(objects.keyboard, 0, text_coords.y1 - kb_h - 2);\n"
+                       "        } else {\n"
+                       "            // place below text area\n"
+                       "            lv_obj_set_pos(objects.keyboard, 0, text_coords.y2 + 3);\n"
+                       "        }\n"
+                       "    }\n")
+        new_show_kb = ("    } else {\n"
+                       "        // In portrait mode, always dock virtual keyboard to bottom of screen\n"
+                       "        lv_obj_set_pos(objects.keyboard, 0, v - kb_h);\n"
+                       "    }\n")
+        edit(tft, old_show_kb, new_show_kb, "replace")
+
+    edit(tft,
+         "void TFTView_320x240::apply_hotfix(void)\n{\n    // adapt screens to custom display resolution\n    uint32_t h = lv_display_get_horizontal_resolution(displaydriver->getDisplay());\n    uint32_t v = lv_display_get_vertical_resolution(displaydriver->getDisplay());\n",
+         "void TFTView_320x240::apply_hotfix(void)\n{\n    // adapt screens to custom display resolution\n    uint32_t h = lv_display_get_horizontal_resolution(displaydriver->getDisplay());\n    uint32_t v = lv_display_get_vertical_resolution(displaydriver->getDisplay());\n    if (objects.main_screen)\n        lv_obj_set_size(objects.main_screen, h, v);\n    if (objects.boot_screen)\n        lv_obj_set_size(objects.boot_screen, h, v);\n    if (objects.blank_screen)\n        lv_obj_set_size(objects.blank_screen, h, v);\n",
+         "replace")
 
     tft_decl = ""
     vc_decl = ""
@@ -305,6 +767,7 @@ def main():
 
     # :name suggestions, quote header, reaction chips, long press to react or reply, long chat names
     if "chat" in feat or "advanced" in feat:
+        copy("MuiPrefs.h", dst)
         copy("emoji_suggest.cpp.in", dst)
         copy("emoji_names.inc", dst)
     if "chat" in feat:
@@ -336,6 +799,8 @@ def main():
         vc_decl += ('extern "C" void emoji_quote_record(uint32_t, const char *);\n'
                     'extern "C" size_t emoji_quote_compose(uint32_t, uint32_t, uint32_t, const char *, size_t, char *, size_t);\n'
                     'extern "C" void emoji_pending_id(uint32_t);\n'
+                    'extern "C" void emoji_record_hops(uint32_t, bool);\n'
+                    'extern "C" void emoji_message_alert(void);\n'
                     'extern "C" bool emoji_reaction_apply(uint32_t, const char *, size_t);\n'
                     'extern "C" int emoji_ctx_mode(void);\n'
                     'extern "C" uint32_t emoji_send_reply_id(void);\n'
@@ -405,6 +870,9 @@ def main():
                     "                                               (const char *)p.decoded.payload.bytes, p.decoded.payload.size, quoted,\n"
                     "                                               sizeof(quoted));\n"
                     "        emoji_pending_id(p.id);\n"
+                    "        uint32_t pHops = (p.hop_start > p.hop_limit) ? (p.hop_start - p.hop_limit) : 0;\n"
+                    "        emoji_record_hops(pHops, p.via_mqtt);\n"
+                    "        emoji_message_alert();\n"
                     "        view->newMessage(p.from, p.to, p.channel, quoted, time);\n"
                     "        log.write(LogMessageEnv(p.from, p.to, p.channel, time, LogMessage::eDefault, false, quotedLen,\n"
                     "                                (const uint8_t *)quoted));\n")
@@ -454,7 +922,15 @@ def main():
              "    emoji_compose_init(objects.message_input_area, objects.main_screen, objects.keyboard, [](lv_obj_t *ta) {\n"
              "        lv_obj_move_foreground(objects.keyboard);\n"
              "        THIS->showKeyboard(ta);\n"
-             "    });\n", "before")
+             "    });\n"
+             "    lv_obj_add_event_cb(objects.message_input_area, [](lv_event_t *e) {\n"
+             "        lv_event_code_t code = lv_event_get_code(e);\n"
+             "        if (code == LV_EVENT_CLICKED || code == LV_EVENT_FOCUSED) {\n"
+             "            lv_obj_remove_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN);\n"
+             "            lv_obj_move_foreground(objects.keyboard);\n"
+             "            THIS->showKeyboard(objects.message_input_area);\n"
+             "        }\n"
+             "    }, LV_EVENT_ALL, NULL);\n", "before")
 
     # extra themes
     if "themes" in feat:
@@ -480,14 +956,22 @@ def main():
 
     # advanced settings with the chat names switch and the MQTT form
     if "advanced" in feat:
+        copy("MuiPrefs.h", dst)
         copy("emoji_advanced.cpp.in", dst)
+        themes_cpp3 = os.path.join(UI, "source", "graphics", "TFT", "Themes.cpp")
+        edit(themes_cpp3, "void Themes::set(enum Theme th)\n{",
+             'extern "C" void emoji_advanced_theme(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\n', "before")
+        edit(themes_cpp3, "apply_style_statistics_table_style_ITEMS_DEFAULT();\n",
+             "apply_style_statistics_table_style_ITEMS_DEFAULT();\n"
+             "    emoji_advanced_theme(THEME(ePanelBg), THEME(eTopPanelBg), THEME(eTopPanelText), THEME(eNodePanelBg), THEME(eNodePanelText), THEME(eSettingsButtonBg), THEME(eSettingsButtonText), THEME(eColorTextLabel), THEME(eNodePanelBorder), THEME(ePanelPressedBg));\n")
         tft_decl += ('extern "C" bool emoji_long_names(void);\n'
                      'extern "C" void emoji_settings_init(lv_obj_t *, lv_obj_t *, lv_obj_t *, void *(*)(void), void (*)(void), '
                      'void (*)(lv_obj_t *));\n'
                      'extern "C" void emoji_settings_host(void *(*)(void), void *(*)(void), void *(*)(void), void *(*)(void), '
                      'void (*)(void), void (*)(void), void (*)(void), void (*)(void));\n'
                      'extern "C" void emoji_settings_host2(void *(*)(void), void (*)(void), int, void (*)(const char *));\n'
-                     'extern "C" void emoji_settings_host3(void *(*)(void), void (*)(void), void *(*)(void), void (*)(void));\n')
+                     'extern "C" void emoji_settings_host3(void *(*)(void), void (*)(void), void *(*)(void), void (*)(void));\n'
+                     'extern "C" void emoji_settings_channels(void *(*)(int), void (*)(int), int (*)(void));\n')
         vc_decl += 'extern "C" void emoji_gps_record(const void *);\n'
         # renaming the node shows "Rebooting ..." but nothing asks the node to reboot, so the screen would wait for ever
         edit(tft, '                THIS->controller->sendConfig(user, THIS->ownNode);\n                THIS->notifyReboot(true);\n',
@@ -530,29 +1014,103 @@ def main():
              "        []() -> void * { return &THIS->db.config.device; },\n"
              "        []() { THIS->controller->sendConfig(meshtastic_Config_DeviceConfig{THIS->db.config.device}); });\n")
         edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n",
+             "    emoji_settings_channels(\n"
+             "        [](int ch) -> void * {\n"
+             "            if (ch < 0 || ch >= c_max_channels) return nullptr;\n"
+             "            if (THIS->channel_scratch) return &THIS->channel_scratch[ch];\n"
+             "            return &THIS->db.channel[ch];\n"
+             "        },\n"
+             "        [](int ch) {\n"
+             "            if (ch < 0 || ch >= c_max_channels) return;\n"
+             "            if (THIS->channel_scratch) THIS->db.channel[ch] = THIS->channel_scratch[ch];\n"
+             "            THIS->controller->sendConfig(THIS->db.channel[ch], THIS->ownNode);\n"
+             "            for (int b = 0; b < c_max_channels; b++) {\n"
+             "                if ((signed long)THIS->ch_label[b]->user_data == ch) {\n"
+             "                    lv_label_set_text(THIS->ch_label[b], THIS->db.channel[ch].settings.name[0] ? THIS->db.channel[ch].settings.name : _(\"<unset>\"));\n"
+             "                }\n"
+             "            }\n"
+             "        },\n"
+             "        []() -> int { return c_max_channels; });\n")
+        edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n",
+             "    lv_obj_set_style_pad_left(objects.tab_page_basic_settings, 0, LV_PART_MAIN | LV_STATE_DEFAULT);\n"
+             "    lv_obj_set_style_pad_right(objects.tab_page_basic_settings, 0, LV_PART_MAIN | LV_STATE_DEFAULT);\n"
+             "    lv_obj_set_flex_align(objects.tab_page_basic_settings, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);\n"
+             "    for (uint32_t i = 0; i < lv_obj_get_child_count(objects.home_container); i++) {\n"
+             "        lv_obj_t *hc = lv_obj_get_child(objects.home_container, i);\n"
+             "        if (hc && hc->class_p == &lv_button_class) lv_obj_add_flag(hc, LV_OBJ_FLAG_FLEX_IN_NEW_TRACK);\n"
+             "    }\n"
              "    emoji_settings_init(\n"
              "        objects.basic_settings_language_button, objects.main_screen, objects.keyboard,\n"
              "        []() -> void * { return &THIS->db.module_config.mqtt; },\n"
              "        []() { THIS->controller->sendConfig(meshtastic_ModuleConfig_MQTTConfig{THIS->db.module_config.mqtt}); },\n"
              "        [](lv_obj_t *ta) {\n"
+             "            lv_obj_remove_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN);\n"
              "            lv_obj_move_foreground(objects.keyboard);\n"
              "            THIS->showKeyboard(ta);\n"
              "        });\n")
 
+    # DISABLE_MUI_PROGRAMMING_MODE only silenced the notice of the packet API, a tap on the boot logo still entered programming mode
+    # (the hold time is checked against a start that is only set by a long press). With the flag a tap or a hold just ends the boot logo.
+    edit(tft,
+         "    if (state <= MeshtasticView::eBootScreenDone && state != MeshtasticView::eWaitingForReboot) {\n        enterProgrammingMode();\n    }\n",
+         "#ifndef DISABLE_MUI_PROGRAMMING_MODE\n    if (state == MeshtasticView::eEnterProgrammingMode) {\n        enterProgrammingMode();\n    }\n#endif\n",
+         "replace")
+    edit(tft,
+         "    if (state == MeshtasticView::eEnterProgrammingMode || state == MeshtasticView::eProgrammingMode ||\n        state == MeshtasticView::eWaitingForReboot) {\n        enterProgrammingMode();\n        return false;\n    }\n",
+         "#ifndef DISABLE_MUI_PROGRAMMING_MODE\n    if (state == MeshtasticView::eEnterProgrammingMode || state == MeshtasticView::eProgrammingMode ||\n        state == MeshtasticView::eWaitingForReboot) {\n        enterProgrammingMode();\n        return false;\n    }\n#endif\n",
+         "replace")
+    edit(tft,
+         "    lv_obj_remove_event_cb(objects.boot_logo_button, ui_event_LogoButton);\n",
+         "    lv_obj_remove_event_cb(objects.boot_logo_button, ui_event_LogoButton);\n    if (objects.main_screen)\n        lv_screen_load_anim(objects.main_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);\n",
+         "replace")
+    edit(tft,
+         "            lv_obj_add_flag(objects.boot_logo_arc, LV_OBJ_FLAG_HIDDEN);\n            THIS->state = MeshtasticView::eBootScreenDone;\n        }\n    } else if (event_code == LV_EVENT_LONG_PRESSED) {",
+         "            lv_obj_add_flag(objects.boot_logo_arc, LV_OBJ_FLAG_HIDDEN);\n            THIS->state = MeshtasticView::eBootScreenDone;\n            if (objects.main_screen)\n                lv_screen_load_anim(objects.main_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);\n        }\n    } else if (event_code == LV_EVENT_LONG_PRESSED) {",
+         "replace")
+    edit(tft, "        if (millis() - start > 800) {\n            THIS->state = MeshtasticView::eEnterProgrammingMode;\n            THIS->enterProgrammingMode();\n        } else {\n",
+         "#ifdef DISABLE_MUI_PROGRAMMING_MODE\n        if (false) {\n#else\n        if (millis() - start > 800) {\n#endif\n            THIS->state = MeshtasticView::eEnterProgrammingMode;\n            THIS->enterProgrammingMode();\n        } else {\n", "replace")
+    edit(tft, "        THIS->state = MeshtasticView::eEnterProgrammingMode;\n        THIS->enterProgrammingMode();\n    }\n    lv_obj_remove_event_cb(objects.boot_logo_button, ui_event_LogoButton);\n",
+         "#ifdef DISABLE_MUI_PROGRAMMING_MODE\n        THIS->state = MeshtasticView::eBootScreenDone;\n#else\n        THIS->state = MeshtasticView::eEnterProgrammingMode;\n        THIS->enterProgrammingMode();\n#endif\n    }\n    lv_obj_remove_event_cb(objects.boot_logo_button, ui_event_LogoButton);\n", "replace")
+
     # a received message wakes the screen for 8 seconds
     if "wake" in feat:
-        edit(drvbase, "    virtual void forceWakeup(void) {}\n", "    virtual void wakeForMessage(void) {}\n")
-        edit(drv, "    void forceWakeup(void) override { forcedWakeup = true; }\n",
-             "    void wakeForMessage(void) override\n"
-             "    {\n"
-             "        if (screenTimeout > 0) {\n"
-             "            msgWakeAt = millis();\n"
-             "            if (powerSaving)\n"
-             "                forcedWakeup = true;\n"
-             "            lv_display_trigger_activity(NULL);\n"
-             "        }\n"
-             "    }\n")
-        edit(drv, "    bool forcedWakeup;\n", "    uint32_t msgWakeAt = 0;\n")
+        drvbase_text = read(drvbase)[0] if os.path.exists(drvbase) else ""
+        if "wakeForMessage" not in drvbase_text:
+            if "virtual void forceWakeup(void) {}" in drvbase_text:
+                edit(drvbase, "    virtual void forceWakeup(void) {}\n", "    virtual void wakeForMessage(void) {}\n")
+            else:
+                edit(drvbase, "    virtual bool isPowersaving() { return false; }\n", "    virtual void wakeForMessage(void) {}\n")
+
+        drv_curr = read(drv)[0] if os.path.exists(drv) else ""
+        if "wakeForMessage" not in drv_curr:
+            if "void forceWakeup(void) override" in drv_text:
+                edit(drv, "    void forceWakeup(void) override { forcedWakeup = true; }\n",
+                     "    void wakeForMessage(void) override\n"
+                     "    {\n"
+                     "        if (screenTimeout > 0) {\n"
+                     "            msgWakeAt = millis();\n"
+                     "            if (powerSaving)\n"
+                     "                forcedWakeup = true;\n"
+                     "            lv_display_trigger_activity(NULL);\n"
+                     "        }\n"
+                     "    }\n")
+                edit(drv, "    bool forcedWakeup;\n", "    uint32_t msgWakeAt = 0;\n")
+            else:
+                edit(drv, "    bool isPowersaving(void) override { return powerSaving; }\n",
+                     "    void wakeForMessage(void) override\n"
+                     "    {\n"
+                     "        if (screenTimeout > 0) {\n"
+                     "            msgWakeAt = millis();\n"
+                     "            if (powerSaving) {\n"
+                     "                powerSaving = false;\n"
+                     "                lgfx->powerSaveOff();\n"
+                     "                lgfx->wakeup();\n"
+                     "            }\n"
+                     "            lv_display_trigger_activity(NULL);\n"
+                     "        }\n"
+                     "    }\n")
+                edit(drv, "    bool powerSaving;\n", "    uint32_t msgWakeAt = 0;\n")
+
         edit(drv, "    if ((screenTimeout > 0 && lv_display_get_inactive_time(%s) > screenTimeout) || powerSaving ||\n" % INACT,
              "    if (msgWakeAt && lv_display_get_inactive_time(NULL) + 1000 < millis() - msgWakeAt)\n"
              "        msgWakeAt = 0; // something touched the screen after the wake, back to the normal timeout\n"
@@ -625,6 +1183,110 @@ def main():
         s_drv = "#ifndef RIV_NO_PANEL_SLEEP\n#define RIV_NO_PANEL_SLEEP 0\n#endif\n" + s_drv
         write(drv, s_drv, c_drv)
 
+    # touch wake for boards without touch interrupt pin (XPT2046 on SPI with pin_int = -1):
+    # record driver instance so touchpad_read can request wake when touched during sleep
+    s_drv, c_drv = read(drv)
+    if "s_instance" not in s_drv or "touchWakeArmed" not in s_drv:
+        if "s_instance" not in s_drv:
+            s_drv = s_drv.replace("    static LGFX *lgfx;\n",
+                                  "    static LGFX *lgfx;\n    static LGFXDriver<LGFX> *s_instance;\n")
+            s_drv = s_drv.replace("template <class LGFX> LGFX *LGFXDriver<LGFX>::lgfx = nullptr;\n",
+                                  "template <class LGFX> LGFX *LGFXDriver<LGFX>::lgfx = nullptr;\n"
+                                  "template <class LGFX> LGFXDriver<LGFX> *LGFXDriver<LGFX>::s_instance = nullptr;\n")
+            s_drv = s_drv.replace("    lgfx = this->tft;\n",
+                                  "    lgfx = this->tft;\n    s_instance = this;\n")
+
+        # instant sleep on manual screen lock (Settings button long press)
+        if "isScreenLocked())\n                        lgfx->setBrightness(0);" not in s_drv:
+            s_drv = s_drv.replace(
+                "                if (!powerSaving) {\n                    // dim display brightness slowly down\n",
+                "                if (!powerSaving) {\n"
+                "                    if (DisplayDriver::view->isScreenLocked())\n"
+                "                        lgfx->setBrightness(0);\n"
+                "                    // dim display brightness slowly down\n"
+            )
+
+        # single-touch touchpad_read with armed wake
+        old_touch_p1 = (
+            "    if (!touched) {\n        data->state = LV_INDEV_STATE_REL;\n    } else {\n"
+            "        if (s_instance && s_instance->powerSaving) {\n"
+            "            s_instance->forcedWakeup = true;\n"
+            "            lv_display_trigger_activity(NULL);\n"
+            "        }\n"
+        )
+        old_touch_p2 = "    if (!touched) {\n        data->state = LV_INDEV_STATE_REL;\n    } else {\n"
+
+        new_touch = (
+            "    static bool touchWakeArmed = false;\n"
+            "    if (!touched) {\n"
+            "        data->state = LV_INDEV_STATE_REL;\n"
+            "        touchWakeArmed = true;\n"
+            "    } else {\n"
+            "        if (s_instance && s_instance->powerSaving) {\n"
+            "            if (touchWakeArmed) {\n"
+            "                touchWakeArmed = false;\n"
+            "                s_instance->forcedWakeup = true;\n"
+            "                lv_display_trigger_activity(NULL);\n"
+            "            }\n"
+            "        } else {\n"
+            "            touchWakeArmed = false;\n"
+            "        }\n"
+        )
+        if old_touch_p1 in s_drv:
+            s_drv = s_drv.replace(old_touch_p1, new_touch)
+        elif old_touch_p2 in s_drv:
+            s_drv = s_drv.replace(old_touch_p2, new_touch)
+
+        # multi-touch / gesture touchpad_read with armed wake
+        old_multi_p1 = (
+            "    prevCount = count;\n"
+            "    if (count > 0 && s_instance && s_instance->powerSaving) {\n"
+            "        s_instance->forcedWakeup = true;\n"
+            "        lv_display_trigger_activity(NULL);\n"
+            "    }\n\n    lv_indev_gesture_recognizers_update"
+        )
+        old_multi_p2 = "    prevCount = count;\n\n    lv_indev_gesture_recognizers_update"
+
+        new_multi = (
+            "    prevCount = count;\n"
+            "    static bool touchWakeArmed = false;\n"
+            "    if (count == 0) {\n"
+            "        touchWakeArmed = true;\n"
+            "    } else {\n"
+            "        if (s_instance && s_instance->powerSaving) {\n"
+            "            if (touchWakeArmed) {\n"
+            "                touchWakeArmed = false;\n"
+            "                s_instance->forcedWakeup = true;\n"
+            "                lv_display_trigger_activity(NULL);\n"
+            "            }\n"
+            "        } else {\n"
+            "            touchWakeArmed = false;\n"
+            "        }\n"
+            "    }\n\n    lv_indev_gesture_recognizers_update"
+        )
+        if old_multi_p1 in s_drv:
+            s_drv = s_drv.replace(old_multi_p1, new_multi)
+        elif old_multi_p2 in s_drv:
+            s_drv = s_drv.replace(old_multi_p2, new_multi)
+
+        # restore !isScreenLocked() if it was stripped
+        wake_target = "                        (screenTimeout + 50 > lv_display_get_inactive_time(lv_display_get_default()))) {\n"
+        if wake_target in s_drv:
+            s_drv = s_drv.replace(
+                wake_target,
+                "                        (screenTimeout + 50 > lv_display_get_inactive_time(lv_display_get_default()) &&\n"
+                "                         !DisplayDriver::view->isScreenLocked())) {\n"
+            )
+
+        if "screensaver" in feat and "uint32_t wakeBl" not in s_drv:
+            s_drv = s_drv.replace(
+                "                            lgfx->setBrightness(lastBrightness);\n",
+                "                            uint32_t wakeBl = (ssStage == 1 && ssBl >= 0) ? (uint32_t)ssBl : lastBrightness;\n"
+                "                            lgfx->setBrightness(wakeBl);\n"
+            )
+        write(drv, s_drv, c_drv)
+        print("Patched LGFXDriver touch wake and instant lock")
+
     # The node list keeps raw pointers into the input group's linked list (to order the buttons) and moves list entries with them for
     # every packet. Removing objects from the group (Advanced menu, screensaver) frees those entries, so the next packet from a node writes
     # through a stale pointer: the node panics (StoreProhibited) a few seconds or minutes later. Look the entries up each time instead.
@@ -649,6 +1311,8 @@ def main():
                 edit(tft, SD_INC, l + "\n")  # one line at a time, so a changed block is not injected a second time
     if vc_decl:
         edit(vc, VC_FN, vc_decl, "before")
+
+    patch_mui_node_and_channel(tft, UI)
 
 
 if os.path.isdir(UI) and os.path.isdir(LV):

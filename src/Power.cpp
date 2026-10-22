@@ -281,31 +281,6 @@ XPowersPPM *PPM = NULL;
 
 #ifdef HAS_PMU
 XPowersLibInterface *PMU = NULL;
-#else
-
-// Copy of the base class defined in axp20x.h.
-// I'd rather not include axp20x.h as it brings Wire dependency.
-class HasBatteryLevel
-{
-  public:
-    /**
-     * Battery state of charge, from 0 to 100 or -1 for unknown
-     */
-    virtual int getBatteryPercent() { return -1; }
-
-    /**
-     * The raw voltage of the battery or NAN if unknown
-     */
-    virtual uint16_t getBattVoltage() { return 0; }
-
-    /**
-     * return true if there is a battery installed in this unit
-     */
-    virtual bool isBatteryConnect() { return false; }
-
-    virtual bool isVbusIn() { return false; }
-    virtual bool isCharging() { return false; }
-};
 #endif
 
 bool pmu_irq = false;
@@ -314,17 +289,18 @@ Power *power;
 
 using namespace meshtastic;
 
-// NRF52 has AREF_VOLTAGE defined in architecture.h but
-// make sure it's included. If something is wrong with NRF52
-// definition - compilation will fail on missing definition
-#if !defined(AREF_VOLTAGE) && !defined(ARCH_NRF52)
-#define AREF_VOLTAGE 3.3
-#endif
-
 /**
  * If this board has a battery level sensor, set this to a valid implementation
  */
 static HasBatteryLevel *batteryLevel; // Default to NULL for no battery level sensor
+
+void Power::setBatterySensor(HasBatteryLevel *sensor)
+{
+    batteryLevel = sensor;
+    if (sensor) {
+        enabled = true;
+    }
+}
 
 #ifdef BATTERY_PIN
 
@@ -1229,8 +1205,9 @@ void Power::readPowerStatus()
     newStatus.notifyObservers(&powerStatus2);
 
     // Mirror battery level to the BLE Battery Service (0x2A19); the platform layer clamps and dedupes.
-    if (hasBattery == OptTrue)
+    if (hasBattery == OptTrue) {
         updateBatteryLevel(powerStatus2.getBatteryChargePercent());
+    }
 #ifdef DEBUG_HEAP
     if (lastheap != memGet.getFreeHeap()) {
         // Use stack-allocated buffer to avoid heap allocations in monitoring code

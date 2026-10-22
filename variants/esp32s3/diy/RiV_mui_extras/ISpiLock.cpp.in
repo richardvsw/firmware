@@ -1,0 +1,18 @@
+#include "util/ISpiLock.h"
+
+namespace
+{
+ISpiLock *hostLock = nullptr;
+}
+
+void ISpiLock::install(ISpiLock *lock)
+{
+    if (!lock)
+        return;
+    hostLock = lock;
+}
+
+ISpiLock *ISpiLock::installed(void)
+{
+    return hostLock;
+}

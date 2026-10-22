@@ -3,7 +3,7 @@
 #include <ctype.h>
 #include <stdint.h>
 #include <string.h>
-#include <Preferences.h>
+#include "MuiPrefs.h"
 
 #include "emoji_names.inc"
 

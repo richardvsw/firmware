@@ -7,13 +7,7 @@
 #define USE_POWERSAVE
 #define SLEEP_TIME 180
 
-// Analog Battery Measurement
-#define BATTERY_PIN 4       // Voltage divider pin
-#define ADC_MULTIPLIER 1.6  // Ratio voltage divider (100k / 220k)
-#define ADC_CHANNEL ADC_CHANNEL_3
-
 // Onboard LED & User Button
-#define LED_POWER -1 
 #define BUTTON_PIN 0        // Boot Button
 
 // Notification Buzzer
@@ -24,7 +18,6 @@
 #define I2C_SCL 17
 
 // ==================== LORA RADIO (RFM95 / SX1276 - Dedicated SPI2) ====================
-#define USE_RFM95
 
 // LORA SPI Pins
 #define LORA_SCK 5
@@ -54,8 +47,8 @@
 #define HAS_TOUCHSCREEN 1
 #define TOUCH_SDA 18
 #define TOUCH_SCL 17
-#define TOUCH_INT -1
-#define TOUCH_RST -1
+#define TOUCH_INT 21
+#define TOUCH_RST 1
 
 // ==================== SD CARD (LoRa SPI bus) ====================
 

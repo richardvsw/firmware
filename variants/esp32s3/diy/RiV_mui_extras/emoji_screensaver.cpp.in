@@ -598,14 +598,28 @@ static uint8_t *read_sd(const char *path, uint32_t *size_out)
 }
 
 // A JPEG is decoded once into an RGB565 buffer with the TJPGD library, so no image decoder has to run while drawing
+#if __has_include(<rom/tjpgd.h>)
+#include <rom/tjpgd.h>
+typedef UINT jpg_size_t;
+typedef BYTE jpg_byte_t;
+typedef UINT jpg_ret_t;
+#define HAS_TJPGD 1
+#elif __has_include("src/libs/tjpgd/tjpgd.h") && defined(LV_USE_TJPGD) && LV_USE_TJPGD
 #include "src/libs/tjpgd/tjpgd.h"
+typedef size_t jpg_size_t;
+typedef uint8_t jpg_byte_t;
+typedef int jpg_ret_t;
+#define HAS_TJPGD 1
+#endif
+
+#if defined(HAS_TJPGD)
 struct JpgCtx {
     const uint8_t *p;
     uint32_t pos, n;
     uint16_t *out;
     int w, h, s, tw;
 };
-static size_t jpg_in(JDEC *jd, uint8_t *buf, size_t nd)
+static jpg_size_t jpg_in(JDEC *jd, jpg_byte_t *buf, jpg_size_t nd)
 {
     JpgCtx *c = (JpgCtx *)jd->device;
     if (c->pos + nd > c->n)
@@ -615,7 +629,7 @@ static size_t jpg_in(JDEC *jd, uint8_t *buf, size_t nd)
     c->pos += nd;
     return nd;
 }
-static int jpg_out(JDEC *jd, void *bm, JRECT *r)
+static jpg_ret_t jpg_out(JDEC *jd, void *bm, JRECT *r)
 {
     JpgCtx *c = (JpgCtx *)jd->device;
     const uint8_t *s = (const uint8_t *)bm;
@@ -647,6 +661,13 @@ static uint8_t *jpeg_to_565(const uint8_t *b, uint32_t n, int w, int h, int s)
     }
     return out;
 }
+#else
+static uint8_t *jpeg_to_565(const uint8_t *b, uint32_t n, int w, int h, int s)
+{
+    (void)b; (void)n; (void)w; (void)h; (void)s;
+    return nullptr;
+}
+#endif
 
 // width and height of a baseline JPEG from its SOF marker; false for progressive or broken files
 static bool jpeg_size(const uint8_t *b, uint32_t n, int *w, int *h)

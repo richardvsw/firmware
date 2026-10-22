@@ -1,2686 +1,7111 @@
 // "Advanced settings" entry in the settings list. It opens a panel with the chat name setting and an MQTT form, so the node can be set
+
 // up without the phone app.
+
 #include "lvgl.h"
+
 #include "meshtastic/config.pb.h"
+
 #include "meshtastic/mesh.pb.h"
+
 #include <Arduino.h>
+
 #include "meshtastic/module_config.pb.h"
+
+#include "meshtastic/channel.pb.h"
+
+#if defined(ARCH_ESP32) || defined(ARDUINO_ARCH_ESP32) || defined(ESP32)
+
 #include "esp_random.h"
-#include <Preferences.h>
-#include <WiFi.h>
-#include <WiFiUdp.h>
-#include <NTPClient.h>
-#include <sys/time.h>
-#ifdef HAS_SDCARD
-#include <SdFat.h>
-#endif
-#include <Wire.h>
-#include <LittleFS.h>
-#include <set>
-#include "util/ISpiLock.h"
-#ifdef HAS_SDCARD
-#include "filesystem/SdCard.h"
-#endif
-#include <math.h>
+
 #include <esp_attr.h>
+
 #include <esp_system.h>
+
+#endif
+
+#include "MuiPrefs.h"
+
+#if __has_include(<WiFi.h>) && __has_include(<WiFiUdp.h>) && __has_include(<NTPClient.h>)
+
+#include <WiFi.h>
+
+#include <WiFiUdp.h>
+
+#include <NTPClient.h>
+
+#define HAS_WIFI_NTP 1
+
+#endif
+
+#include <sys/time.h>
+
+#ifdef HAS_SDCARD
+
+#include <SdFat.h>
+
+#endif
+
+#if __has_include(<Wire.h>)
+
+#include <Wire.h>
+
+#define HAS_WIRE 1
+
+#endif
+
+#if __has_include(<LittleFS.h>)
+
+#include <LittleFS.h>
+
+#define HAS_LITTLEFS 1
+
+#endif
+
+#include <set>
+
+#include <vector>
+
+#include "util/ISpiLock.h"
+
+#ifdef HAS_SDCARD
+
+#if __has_include("filesystem/SdCard.h")
+
+#include "filesystem/SdCard.h"
+
+#elif __has_include("graphics/common/SdCard.h")
+
+#include "graphics/common/SdCard.h"
+
+#elif __has_include("SdCard.h")
+
+#include "SdCard.h"
+
+#endif
+
+#endif
+
+#if __has_include(<sys/socket.h>)
+
+#include <sys/types.h>
+
+#include <sys/socket.h>
+
+#include <netdb.h>
+
+#include <arpa/inet.h>
+
+#include <netinet/in.h>
+
+#include <unistd.h>
+
+#define HAS_POSIX_SOCKETS 1
+
+#endif
+
+#if __has_include(<sys/statvfs.h>)
+
+#include <sys/statvfs.h>
+
+#define HAS_STATVFS 1
+
+#endif
+
+#include <math.h>
+
 #include <time.h>
+
 #include <stdio.h>
+
 #include <string.h>
+
 #include <strings.h>
 
+
+
 extern "C" bool emoji_long_names(void);
+
 extern "C" bool emoji_long_names_toggle(void);
+
 extern "C" int emoji_name_mode(void);
+
 extern "C" int emoji_name_mode_cycle(void);
+
 extern "C" void add_style_settings_button_style(lv_obj_t *obj);
 
+extern "C" void add_style_settings_panel_style(lv_obj_t *obj);
+
+extern "C" void add_style_top_panel_style(lv_obj_t *obj);
+
+extern const lv_img_dsc_t img_keyboard_image;
+
+
+
+#ifndef RTC_NOINIT_ATTR
+
+#define RTC_NOINIT_ATTR
+
+#endif
+
+
+
 // breadcrumbs that survive a crash or watchdog reset, shown at the top of the Advanced list after the next start
+
 RTC_NOINIT_ATTR static char g_crumb[48];
+
 RTC_NOINIT_ATTR static uint32_t g_crumbMagic;
+
 extern "C" void emoji_crumb(const char *s)
+
 {
+
     strncpy(g_crumb, s, sizeof(g_crumb) - 1);
+
     g_crumb[sizeof(g_crumb) - 1] = 0;
+
     g_crumbMagic = 0xC0FFEE42;
+
 }
+
 static void crumb(const char *s)
+
 {
+
     emoji_crumb(s);
+
 }
+
 static const char *reset_name(void)
+
 {
+
+#if defined(ARCH_ESP32) || defined(ARDUINO_ARCH_ESP32) || defined(ESP32)
+
     switch (esp_reset_reason()) {
+
     case ESP_RST_POWERON: return "power on";
+
     case ESP_RST_SW: return "software restart";
+
     case ESP_RST_PANIC: return "CRASH (panic)";
+
     case ESP_RST_INT_WDT: return "CRASH (interrupt watchdog)";
+
     case ESP_RST_TASK_WDT: return "CRASH (task watchdog)";
+
     case ESP_RST_WDT: return "watchdog";
+
     case ESP_RST_BROWNOUT: return "BROWNOUT (power dip)";
+
     case ESP_RST_DEEPSLEEP: return "deep sleep wake";
+
     default: return "other";
+
     }
+
+#else
+
+    return "normal";
+
+#endif
+
 }
+
+
 
 typedef void *(*MqttCfgFn)(void);
+
 typedef void (*VoidFn)(void);
+
 typedef void (*KbFn)(lv_obj_t *);
 
+
+
 static lv_obj_t *g_screen = nullptr;
+
 static lv_obj_t *g_kb = nullptr;
+
 static MqttCfgFn g_mqttCfg = nullptr;
+
 static VoidFn g_sendMqtt = nullptr;
+
 static KbFn g_showKb = nullptr;
 
+
+
 static lv_obj_t *g_advPanel = nullptr;
+
 static lv_obj_t *g_namesLabel = nullptr;
+
 extern "C" int emoji_sd_status(char *out, int n) __attribute__((weak));
+
 static lv_obj_t *g_mqttPanel = nullptr;
+
 static lv_obj_t *g_mqttStatus = nullptr;
+
 static lv_obj_t *g_swEnabled = nullptr, *g_swEnc = nullptr, *g_swTls = nullptr;
+
 static lv_obj_t *g_taAddress = nullptr, *g_taUser = nullptr, *g_taPass = nullptr, *g_taRoot = nullptr;
 
-static const uint32_t COL_BG = 0x1E2142;
-static const uint32_t COL_BAR = 0x2F3566;
-static const uint32_t COL_BTN = 0x3A4075;
-static const uint32_t COL_FIELD = 0xEEF0F6;
+
+
+// Dynamic theme colors inherited from MUI Themes
+
+static uint32_t g_themeBg = 0x303030;
+
+static uint32_t g_themeTopBg = 0x436C70;
+
+static uint32_t g_themeTopText = 0xE0E0E0;
+
+static uint32_t g_themeItemBg = 0x404040;
+
+static uint32_t g_themeItemText = 0xF0F0F0;
+
+static uint32_t g_themeBtnBg = 0x505050;
+
+static uint32_t g_themeBtnText = 0xAAFBFF;
+
+static uint32_t g_themeAccent = 0xAAFBFF;
+
+static uint32_t g_themeBorder = 0x808080;
+
+static uint32_t g_themePressedBg = 0x303030;
+
+
+
+#define COL_BG g_themeBg
+
+#define COL_BAR g_themeTopBg
+
+#define COL_BTN g_themeBtnBg
+
+#define COL_FIELD g_themeItemBg
+
+
+
+struct PanelRecord {
+
+    lv_obj_t *root;
+
+    lv_obj_t *bar;
+
+    lv_obj_t *back;
+
+    lv_obj_t *title;
+
+    lv_obj_t *content;
+
+};
+
+static std::vector<PanelRecord> g_panelRecords;
+
+
+
+static void emoji_advanced_retheme_all(void)
+
+{
+
+    for (auto &p : g_panelRecords) {
+
+        if (p.root && lv_obj_is_valid(p.root))
+
+            lv_obj_set_style_bg_color(p.root, lv_color_hex(g_themeBg), 0);
+
+        if (p.bar && lv_obj_is_valid(p.bar))
+
+            lv_obj_set_style_bg_color(p.bar, lv_color_hex(g_themeTopBg), 0);
+
+        if (p.back && lv_obj_is_valid(p.back)) {
+
+            lv_obj_set_style_bg_color(p.back, lv_color_hex(g_themeBtnBg), 0);
+
+            lv_obj_t *lbl = lv_obj_get_child(p.back, 0);
+
+            if (lbl && lv_obj_is_valid(lbl))
+
+                lv_obj_set_style_text_color(lbl, lv_color_hex(g_themeBtnText), 0);
+
+        }
+
+        if (p.title && lv_obj_is_valid(p.title))
+
+            lv_obj_set_style_text_color(p.title, lv_color_hex(g_themeTopText), 0);
+
+    }
+
+}
+
+
+
+extern "C" void emoji_advanced_theme(uint32_t bg, uint32_t topBg, uint32_t topText,
+
+                                     uint32_t itemBg, uint32_t itemText,
+
+                                     uint32_t btnBg, uint32_t btnText,
+
+                                     uint32_t accent, uint32_t border,
+
+                                     uint32_t pressedBg)
+
+{
+
+    g_themeBg = bg;
+
+    g_themeTopBg = topBg;
+
+    g_themeTopText = topText;
+
+    g_themeItemBg = itemBg;
+
+    g_themeItemText = itemText;
+
+    g_themeBtnBg = btnBg;
+
+    g_themeBtnText = btnText;
+
+    g_themeAccent = accent;
+
+    g_themeBorder = border;
+
+    g_themePressedBg = pressedBg;
+
+
+
+    emoji_advanced_retheme_all();
+
+}
+
+
 
 static void hide_kb(void)
+
 {
+
     if (g_kb)
+
         lv_obj_add_flag(g_kb, LV_OBJ_FLAG_HIDDEN);
+
 }
+
+
 
 // ---- joystick and encoder navigation for the panels ----
+
 // Only real controls take part (buttons, switches, text boxes, drop downs). While a panel is open the controls of the screens below
+
 // are taken out of the input group and put back when the last panel closes, so the cursor can only be on something that is on screen.
+
 // The focused control is drawn with a bright outline, so the cursor position is always visible.
+
 static lv_obj_t *g_panelStack[8];
+
 static int g_panelDepth = 0;
+
 static lv_obj_t *g_savedGrp[200];
+
 static int g_savedN = 0;
+
 static lv_obj_t *g_savedFocus = nullptr;
+
 static lv_style_t g_hl;
+
 static bool g_hlInit = false;
 
+
+
 static void hl_init(void)
+
 {
+
     if (g_hlInit)
+
         return;
+
     g_hlInit = true;
+
     lv_style_init(&g_hl);
+
     lv_style_set_outline_width(&g_hl, 3);
+
     lv_style_set_outline_color(&g_hl, lv_color_hex(0xFFD54A));
+
     lv_style_set_outline_opa(&g_hl, LV_OPA_COVER);
+
     lv_style_set_outline_pad(&g_hl, 2);
+
 }
+
+
 
 static bool focusable(lv_obj_t *o)
+
 {
+
     return lv_obj_check_type(o, &lv_button_class) || lv_obj_check_type(o, &lv_switch_class) || lv_obj_check_type(o, &lv_textarea_class) ||
+
            lv_obj_check_type(o, &lv_dropdown_class);
+
 }
+
+
 
 static void panel_group_add(lv_obj_t *obj, lv_group_t *g)
+
 {
+
     if (focusable(obj)) {
+
         lv_group_add_obj(g, obj);
+
         lv_obj_remove_style(obj, &g_hl, LV_STATE_FOCUSED);
+
         lv_obj_add_style(obj, &g_hl, LV_STATE_FOCUSED);
+
     }
+
     for (uint32_t i = 0; i < lv_obj_get_child_count(obj); i++)
+
         panel_group_add(lv_obj_get_child(obj, i), g);
+
 }
+
+
 
 static void panel_group_remove(lv_obj_t *obj)
+
 {
+
     if (focusable(obj)) {
+
         lv_group_remove_obj(obj);
+
         lv_obj_remove_style(obj, &g_hl, LV_STATE_FOCUSED);
+
     }
+
     for (uint32_t i = 0; i < lv_obj_get_child_count(obj); i++)
+
         panel_group_remove(lv_obj_get_child(obj, i));
+
 }
+
+
 
 static lv_obj_t *first_focusable(lv_obj_t *o)
+
 {
+
     if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN))
+
         return nullptr;
+
     if (focusable(o))
+
         return o;
+
     for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) {
+
         lv_obj_t *r = first_focusable(lv_obj_get_child(o, i));
+
         if (r)
+
             return r;
+
     }
+
     return nullptr;
+
 }
+
+
 
 static void panel_focus_first(lv_obj_t *p)
+
 {
+
     lv_group_t *g = lv_group_get_default();
+
     if (!g)
+
         return;
+
     // the content is the second child of a panel (bar first), fall back to the back button
+
     lv_obj_t *content = lv_obj_get_child_count(p) > 1 ? lv_obj_get_child(p, 1) : p;
+
     lv_obj_t *f = first_focusable(content);
+
     if (!f)
+
         f = first_focusable(p);
+
     if (f)
+
         lv_group_focus_obj(f);
+
     lv_group_set_editing(g, false);
+
 }
+
+
 
 // take the controls of the screens below out of the group
+
 static void group_isolate(lv_group_t *g)
+
 {
+
     g_savedN = 0;
+
     g_savedFocus = lv_group_get_focused(g);
+
     uint32_t n = lv_group_get_obj_count(g);
+
     if (n > 200)
+
         n = 200;
+
     for (uint32_t i = 0; i < n; i++)
+
         g_savedGrp[g_savedN++] = lv_group_get_obj_by_index(g, i);
+
     for (int i = 0; i < g_savedN; i++)
+
         lv_group_remove_obj(g_savedGrp[i]);
+
 }
+
+
 
 static void group_restore(lv_group_t *g)
+
 {
+
     for (int i = 0; i < g_savedN; i++)
+
         if (lv_obj_is_valid(g_savedGrp[i]))
+
             lv_group_add_obj(g, g_savedGrp[i]);
+
     g_savedN = 0;
+
     if (g_savedFocus && lv_obj_is_valid(g_savedFocus))
+
         lv_group_focus_obj(g_savedFocus);
+
     g_savedFocus = nullptr;
+
 }
+
+
 
 static void open_panel(lv_obj_t *p)
+
 {
+
     lv_obj_remove_flag(p, LV_OBJ_FLAG_HIDDEN);
+
     lv_obj_move_foreground(p);
+
     hl_init();
+
     lv_group_t *g = lv_group_get_default();
+
     if (g) {
+
         if (g_panelDepth == 0)
+
             group_isolate(g);
+
         else
+
             panel_group_remove(g_panelStack[g_panelDepth - 1]); // the panel below stays visible but is not navigable
+
         panel_group_add(p, g);
+
         if (g_panelDepth < 8)
+
             g_panelStack[g_panelDepth++] = p;
+
         panel_focus_first(p);
+
     }
+
 }
+
+
 
 static void close_panel(lv_obj_t *p)
+
 {
+
     hide_kb();
+
     lv_group_t *g = lv_group_get_default();
+
     if (g) {
+
         panel_group_remove(p);
+
         if (g_panelDepth > 0 && g_panelStack[g_panelDepth - 1] == p)
+
             g_panelDepth--;
+
         if (g_panelDepth > 0) {
+
             panel_group_add(g_panelStack[g_panelDepth - 1], g);
+
             panel_focus_first(g_panelStack[g_panelDepth - 1]);
+
         } else {
+
             group_restore(g);
+
         }
+
     }
+
     lv_obj_add_flag(p, LV_OBJ_FLAG_HIDDEN);
+
 }
+
+
 
 // returns the lv_button; child 0 is the lv_label (use lv_obj_get_child(btn,0) to set text)
+
 static lv_obj_t *make_label_button(lv_obj_t *parent, const char *text, uint32_t bg, lv_event_cb_t cb)
+
 {
+
     lv_obj_t *b = lv_button_create(parent);
+
     lv_obj_set_style_bg_color(b, lv_color_hex(bg), 0);
+
     lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+
     lv_obj_set_style_radius(b, 8, 0);
+
     lv_obj_set_style_pad_hor(b, 14, 0);
-    lv_obj_set_style_pad_ver(b, 9, 0);
+
+    lv_obj_set_style_pad_ver(b, 10, 0);
+
     lv_obj_t *l = lv_label_create(b);
+
     lv_label_set_text(l, text);
-    lv_obj_set_style_text_color(b, lv_color_hex(0xFFFFFF), 0);
+
+    lv_obj_set_style_text_color(l, lv_color_hex(g_themeBtnText), 0);
+
     if (cb)
+
         lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+
     return b;
+
 }
 
+
+
 // full screen panel with a title bar, a back button and a scrolling column for the content
+
 static lv_obj_t *make_panel(const char *title, lv_event_cb_t backCb, lv_obj_t **contentOut)
+
 {
+
     lv_obj_t *root = lv_obj_create(g_screen);
+
     lv_obj_remove_style_all(root);
+
     lv_obj_set_size(root, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(root, lv_color_hex(COL_BG), 0);
+
+    lv_obj_set_style_bg_color(root, lv_color_hex(g_themeBg), 0);
+
     lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+
     lv_obj_remove_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+
     lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
+
     lv_obj_set_style_pad_all(root, 0, 0);
+
     lv_obj_set_style_pad_row(root, 0, 0);
+
+
+
+    // Title / Top Bar (Native MUI TopPanel Style)
+
     lv_obj_t *bar = lv_obj_create(root);
+
     lv_obj_remove_style_all(bar);
-    lv_obj_set_size(bar, lv_pct(100), 36);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(COL_BAR), 0);
+
+    lv_obj_set_size(bar, lv_pct(100), 40);
+
+    add_style_top_panel_style(bar);
+
+    lv_obj_set_style_bg_color(bar, lv_color_hex(g_themeTopBg), 0);
+
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+
+    lv_obj_set_style_border_width(bar, 0, 0);
+
     lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *back = make_label_button(bar, "<", COL_BTN, backCb);
-    lv_obj_set_style_pad_ver(back, 6, 0);
+
+
+
+    lv_obj_t *back = lv_button_create(bar);
+
+    lv_obj_set_size(back, 64, 28);
+
+    add_style_settings_button_style(back);
+
+    lv_obj_set_style_shadow_width(back, 0, 0);
+
+    lv_obj_set_style_radius(back, 6, 0);
+
     lv_obj_align(back, LV_ALIGN_LEFT_MID, 6, 0);
+
+    if (backCb)
+
+        lv_obj_add_event_cb(back, backCb, LV_EVENT_CLICKED, nullptr);
+
+
+
+    lv_obj_t *bl = lv_label_create(back);
+
+    lv_label_set_text(bl, LV_SYMBOL_LEFT " Back");
+
+    lv_obj_set_style_align(bl, LV_ALIGN_CENTER, 0);
+
+
+
     lv_obj_t *t = lv_label_create(bar);
-    lv_label_set_text(t, title);
-    lv_obj_set_style_text_color(t, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(t, LV_ALIGN_LEFT_MID, 50, 0);
+
+    lv_label_set_text_fmt(t, "%s %s", LV_SYMBOL_SETTINGS, title);
+
+    lv_obj_set_style_text_color(t, lv_color_hex(g_themeTopText), 0);
+
+    lv_obj_set_style_text_font(t, &lv_font_montserrat_16, 0);
+
+    lv_obj_align(t, LV_ALIGN_LEFT_MID, 78, 0);
+
+
+
     lv_obj_t *content = lv_obj_create(root);
+
     lv_obj_remove_style_all(content);
+
     lv_obj_set_width(content, lv_pct(100));
+
     lv_obj_set_flex_grow(content, 1);
-    lv_obj_set_style_pad_all(content, 8, 0);
-    lv_obj_set_style_pad_row(content, 8, 0);
+
+    lv_obj_set_style_pad_top(content, 10, 0);
+
+    lv_obj_set_style_pad_bottom(content, 12, 0);
+
+    lv_obj_set_style_pad_left(content, 0, 0);
+
+    lv_obj_set_style_pad_right(content, 0, 0);
+
+    lv_obj_set_style_pad_row(content, 2, 0);
+
     lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_set_flex_align(content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
     lv_obj_set_scroll_dir(content, LV_DIR_VER);
+
     lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
+
     *contentOut = content;
+
+
+
     lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
+
+    g_panelRecords.push_back({root, bar, back, t, content});
+
     return root;
+
 }
+
+
+
+static lv_obj_t *make_status(lv_obj_t *content);
+
+static void make_save_cancel(lv_obj_t *content, lv_event_cb_t save, lv_event_cb_t cancel);
+
+static lv_obj_t *make_action_button(lv_obj_t *content, const char *text, lv_event_cb_t cb, uint32_t color = 0);
+
+
 
 // ---- MQTT form ----
 
-static void ta_click_cb(lv_event_t *e)
+
+
+static void show_keyboard_for(lv_obj_t *ta)
+
 {
-    lv_obj_t *ta = (lv_obj_t *)lv_event_get_target(e);
-    if (g_showKb)
+
+    if (g_kb) {
+
+        lv_obj_remove_flag(g_kb, LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_move_foreground(g_kb);
+
+        lv_keyboard_set_textarea(g_kb, ta);
+
+    }
+
+    if (g_showKb && ta) {
+
+        lv_group_focus_obj(ta);
+
         g_showKb(ta);
+
+    }
+
 }
+
+
+
+static void ta_click_cb(lv_event_t *e)
+
+{
+
+    lv_obj_t *ta = (lv_obj_t *)lv_event_get_target(e);
+
+    show_keyboard_for(ta);
+
+}
+
+
+
+static void kb_btn_click_cb(lv_event_t *e)
+
+{
+
+    lv_obj_t *ta = (lv_obj_t *)lv_event_get_user_data(e);
+
+    if (ta)
+
+        show_keyboard_for(ta);
+
+}
+
+
 
 static lv_obj_t *make_field(lv_obj_t *content, const char *label, uint32_t maxLen, bool password)
+
 {
+
     lv_obj_t *l = lv_label_create(content);
+
     lv_label_set_text(l, label);
-    lv_obj_set_style_text_color(l, lv_color_hex(0xB8BEE6), 0);
-    lv_obj_t *ta = lv_textarea_create(content);
-    lv_obj_set_width(ta, lv_pct(100));
+
+    lv_obj_set_style_text_color(l, lv_color_hex(g_themeAccent), 0);
+
+    lv_obj_set_style_pad_left(l, 4, 0);
+
+    lv_obj_set_style_pad_top(l, 4, 0);
+
+
+
+    lv_obj_t *row = lv_obj_create(content);
+
+    lv_obj_remove_style_all(row);
+
+    lv_obj_set_size(row, LV_PCT(95), 36);
+
+    lv_obj_set_style_align(row, LV_ALIGN_TOP_MID, 0);
+
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_set_style_pad_column(row, 6, 0);
+
+
+
+    lv_obj_t *ta = lv_textarea_create(row);
+
+    lv_obj_set_flex_grow(ta, 1);
+
     lv_textarea_set_one_line(ta, true);
+
     lv_textarea_set_max_length(ta, maxLen);
+
     lv_textarea_set_password_mode(ta, password);
-    lv_obj_set_style_bg_color(ta, lv_color_hex(COL_FIELD), 0);
-    lv_obj_set_style_text_color(ta, lv_color_hex(0x1F2937), 0);
+
+    lv_obj_set_style_bg_color(ta, lv_color_hex(g_themeItemBg), 0);
+
+    lv_obj_set_style_text_color(ta, lv_color_hex(g_themeItemText), 0);
+
+    lv_obj_set_style_border_color(ta, lv_color_hex(g_themeBorder), 0);
+
+    lv_obj_set_style_border_width(ta, 1, 0);
+
+    lv_obj_set_style_radius(ta, 6, 0);
+
+    lv_obj_set_style_pad_hor(ta, 8, 0);
+
+    lv_obj_set_style_pad_ver(ta, 6, 0);
+
     lv_obj_add_event_cb(ta, ta_click_cb, LV_EVENT_CLICKED, nullptr);
+
+
+
+    // Keyboard trigger button with authentic MUI keyboard icon
+
+    lv_obj_t *kbBtn = lv_button_create(row);
+
+    lv_obj_set_size(kbBtn, 36, 32);
+
+    lv_obj_set_style_radius(kbBtn, 6, 0);
+
+    lv_obj_set_style_bg_color(kbBtn, lv_color_hex(0xffffff), 0);
+
+    lv_obj_set_style_bg_image_src(kbBtn, &img_keyboard_image, 0);
+
+    lv_obj_set_style_bg_image_recolor(kbBtn, lv_color_hex(0x373737), 0);
+
+    lv_obj_set_style_bg_image_recolor_opa(kbBtn, 255, 0);
+
+    lv_obj_set_style_shadow_width(kbBtn, 0, 0);
+
+    lv_obj_add_event_cb(kbBtn, kb_btn_click_cb, LV_EVENT_CLICKED, ta);
+
+
+
     return ta;
+
 }
+
+
 
 static lv_obj_t *make_switch_row(lv_obj_t *content, const char *label)
+
 {
+
     lv_obj_t *row = lv_obj_create(content);
+
     lv_obj_remove_style_all(row);
-    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+
+    lv_obj_set_size(row, LV_PCT(95), 34);
+
+    lv_obj_set_style_align(row, LV_ALIGN_TOP_MID, 0);
+
     lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
     lv_obj_t *l = lv_label_create(row);
+
     lv_label_set_text(l, label);
-    lv_obj_set_style_text_color(l, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
+
+    lv_obj_set_style_text_color(l, lv_color_hex(g_themeItemText), 0);
+
+    lv_obj_align(l, LV_ALIGN_LEFT_MID, 2, 0);
+
     lv_obj_t *sw = lv_switch_create(row);
-    lv_obj_align(sw, LV_ALIGN_RIGHT_MID, 0, 0);
+
+    lv_obj_align(sw, LV_ALIGN_RIGHT_MID, 2, 0);
+
+    lv_obj_set_style_bg_color(sw, lv_color_hex(0x67EA94), LV_PART_INDICATOR | LV_STATE_CHECKED);
+
     return sw;
+
 }
+
+
 
 static void set_switch(lv_obj_t *sw, bool on)
+
 {
+
     if (on)
+
         lv_obj_add_state(sw, LV_STATE_CHECKED);
+
     else
+
         lv_obj_remove_state(sw, LV_STATE_CHECKED);
+
 }
+
+
 
 static void show_pass_cb(lv_event_t *e)
+
 {
+
     lv_obj_t *l = (lv_obj_t *)lv_event_get_target(e);
+
     bool hidden = lv_textarea_get_password_mode(g_taPass);
+
     lv_textarea_set_password_mode(g_taPass, !hidden);
+
     lv_label_set_text(lv_obj_get_child(l, 0), hidden ? "Hide password" : "Show password");
+
 }
+
+
 
 static void mqtt_load(void)
+
 {
+
     meshtastic_ModuleConfig_MQTTConfig *c = (meshtastic_ModuleConfig_MQTTConfig *)g_mqttCfg();
+
     set_switch(g_swEnabled, c->enabled);
+
     set_switch(g_swEnc, c->encryption_enabled);
+
     set_switch(g_swTls, c->tls_enabled);
-    lv_textarea_set_text(g_taAddress, c->address);
+
+    const char *rawAddr = c->address;
+
+    if (rawAddr && rawAddr[0] == '\'' && rawAddr[strlen(rawAddr) - 1] == '\'') {
+
+        char clean[64];
+
+        size_t len = strlen(rawAddr);
+
+        if (len >= 2 && len < sizeof(clean) + 2) {
+
+            strncpy(clean, rawAddr + 1, len - 2);
+
+            clean[len - 2] = 0;
+
+            lv_textarea_set_text(g_taAddress, clean);
+
+        } else {
+
+            lv_textarea_set_text(g_taAddress, rawAddr);
+
+        }
+
+    } else {
+
+        lv_textarea_set_text(g_taAddress, rawAddr ? rawAddr : "");
+
+    }
+
     lv_textarea_set_text(g_taUser, c->username);
+
     lv_textarea_set_text(g_taPass, c->password);
+
     lv_textarea_set_text(g_taRoot, c->root[0] ? c->root : "msh/ID");
+
     lv_label_set_text(g_mqttStatus, "");
+
 }
+
+
 
 static void copy_text(char *dst, size_t size, lv_obj_t *ta)
+
 {
+
     strncpy(dst, lv_textarea_get_text(ta), size - 1);
+
     dst[size - 1] = 0;
+
 }
+
+
 
 static void mqtt_save_cb(lv_event_t *e)
+
 {
+
     meshtastic_ModuleConfig_MQTTConfig *c = (meshtastic_ModuleConfig_MQTTConfig *)g_mqttCfg();
+
     c->enabled = lv_obj_has_state(g_swEnabled, LV_STATE_CHECKED);
+
     c->encryption_enabled = lv_obj_has_state(g_swEnc, LV_STATE_CHECKED);
+
     c->tls_enabled = lv_obj_has_state(g_swTls, LV_STATE_CHECKED);
+
     copy_text(c->address, sizeof(c->address), g_taAddress);
+
+    size_t alen = strlen(c->address);
+
+    if (alen >= 2 && c->address[0] == '\'' && c->address[alen - 1] == '\'') {
+
+        memmove(c->address, c->address + 1, alen - 2);
+
+        c->address[alen - 2] = 0;
+
+    }
+
     copy_text(c->username, sizeof(c->username), g_taUser);
+
     copy_text(c->password, sizeof(c->password), g_taPass);
+
     copy_text(c->root, sizeof(c->root), g_taRoot);
+
     g_sendMqtt();
+
     hide_kb();
+
     lv_label_set_text(g_mqttStatus, "Saved, the node applies it after a restart");
+
 }
+
+
 
 static void mqtt_back_cb(lv_event_t *e)
+
 {
+
     close_panel(g_mqttPanel);
+
 }
+
+
+
+static bool check_mqtt_connection(const char *address, int port, char *errOut, size_t errLen)
+
+{
+
+#if defined(HAS_POSIX_SOCKETS)
+
+    if (!address || !address[0]) {
+
+        snprintf(errOut, errLen, "No address provided");
+
+        return false;
+
+    }
+
+    char host[80];
+
+    int p = port;
+
+    const char *colon = strchr(address, ':');
+
+    if (colon) {
+
+        size_t hlen = colon - address;
+
+        if (hlen >= sizeof(host)) hlen = sizeof(host) - 1;
+
+        strncpy(host, address, hlen);
+
+        host[hlen] = 0;
+
+        p = atoi(colon + 1);
+
+        if (p <= 0) p = port;
+
+    } else {
+
+        strncpy(host, address, sizeof(host) - 1);
+
+        host[sizeof(host) - 1] = 0;
+
+    }
+
+
+
+    struct addrinfo hints, *res = nullptr;
+
+    memset(&hints, 0, sizeof(hints));
+
+    hints.ai_family = AF_INET;
+
+    hints.ai_socktype = SOCK_STREAM;
+
+    char portStr[16];
+
+    snprintf(portStr, sizeof(portStr), "%d", p);
+
+    if (getaddrinfo(host, portStr, &hints, &res) != 0 || !res) {
+
+        snprintf(errOut, errLen, "DNS lookup failed for %s", host);
+
+        return false;
+
+    }
+
+    int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+
+    if (sock < 0) {
+
+        freeaddrinfo(res);
+
+        snprintf(errOut, errLen, "Socket create failed");
+
+        return false;
+
+    }
+
+    struct timeval tv = {3, 0};
+
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv, sizeof(tv));
+
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv, sizeof(tv));
+
+    int ret = connect(sock, res->ai_addr, res->ai_addrlen);
+
+    close(sock);
+
+    freeaddrinfo(res);
+
+    if (ret == 0) {
+
+        snprintf(errOut, errLen, "Connected to %s:%d OK!", host, p);
+
+        return true;
+
+    } else {
+
+        snprintf(errOut, errLen, "Cannot connect to %s:%d", host, p);
+
+        return false;
+
+    }
+
+#else
+
+    snprintf(errOut, errLen, "Socket test not available");
+
+    return false;
+
+#endif
+
+}
+
+
+
+static void mqtt_check_conn_cb(lv_event_t *e)
+
+{
+
+    const char *addr = lv_textarea_get_text(g_taAddress);
+
+    bool tls = lv_obj_has_state(g_swTls, LV_STATE_CHECKED);
+
+    int defaultPort = tls ? 8883 : 1883;
+
+    char statusBuf[96];
+
+    bool ok = check_mqtt_connection(addr, defaultPort, statusBuf, sizeof(statusBuf));
+
+    lv_label_set_text(g_mqttStatus, statusBuf);
+
+    lv_obj_set_style_text_color(g_mqttStatus, lv_color_hex(ok ? 0x67EA94 : 0xF2A0A0), 0);
+
+}
+
+
 
 static void mqtt_cancel_cb(lv_event_t *e)
+
 {
+
     close_panel(g_mqttPanel);
+
 }
+
+
 
 static void build_mqtt_panel(void)
+
 {
+
     lv_obj_t *content;
+
     g_mqttPanel = make_panel("MQTT", mqtt_back_cb, &content);
+
     g_swEnabled = make_switch_row(content, "MQTT enabled");
+
     g_taAddress = make_field(content, "Address", 63, false);
+
     g_taUser = make_field(content, "Username", 63, false);
+
     g_taPass = make_field(content, "Password", 31, true);
-    lv_obj_t *show = make_label_button(content, "Show password", COL_BTN, show_pass_cb);
-    lv_obj_set_style_pad_ver(show, 6, 0);
+
+    make_action_button(content, "Show / Hide password", show_pass_cb);
+
     g_swEnc = make_switch_row(content, "Encryption enabled");
+
     g_swTls = make_switch_row(content, "TLS enabled");
+
     g_taRoot = make_field(content, "Root topic", 31, false);
+
+    make_action_button(content, "Test broker connection", mqtt_check_conn_cb);
+
     g_mqttStatus = lv_label_create(content);
+
     lv_label_set_text(g_mqttStatus, "");
+
+    lv_obj_set_style_align(g_mqttStatus, LV_ALIGN_TOP_MID, 0);
+
+    lv_obj_set_style_text_align(g_mqttStatus, LV_TEXT_ALIGN_CENTER, 0);
+
+    lv_obj_set_width(g_mqttStatus, LV_PCT(95));
+
+    lv_label_set_long_mode(g_mqttStatus, LV_LABEL_LONG_WRAP);
+
     lv_obj_set_style_text_color(g_mqttStatus, lv_color_hex(0x8FE0A8), 0);
-    lv_obj_t *buttons = lv_obj_create(content);
-    lv_obj_remove_style_all(buttons);
-    lv_obj_set_size(buttons, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
-    make_label_button(buttons, "Save", 0x2F7D4F, mqtt_save_cb);
-    make_label_button(buttons, "Cancel", 0x5A6078, mqtt_cancel_cb);
+
+    make_save_cancel(content, mqtt_save_cb, mqtt_cancel_cb);
+
     // room under the last button so the keyboard does not hide it
+
     lv_obj_t *pad = lv_obj_create(content);
+
     lv_obj_remove_style_all(pad);
+
     lv_obj_set_size(pad, 10, 150);
+
 }
 
+
+
 static void mqtt_open_cb(lv_event_t *e)
+
 {
+
     if (!g_mqttPanel)
+
         build_mqtt_panel();
+
     mqtt_load();
+
     open_panel(g_mqttPanel);
+
 }
+
+
 
 // ---- LoRa extras, position, quiet hours, security ----
 
+
+
 typedef void *(*CfgFn)(void);
+
 static CfgFn g_loraCfg = nullptr, g_posCfg = nullptr, g_secCfg = nullptr;
+
 static VoidFn g_sendLora = nullptr, g_sendPos = nullptr, g_sendSec = nullptr;
 
+
+
 static lv_obj_t *make_dropdown(lv_obj_t *content, const char *label, const char *options)
+
 {
+
     lv_obj_t *l = lv_label_create(content);
+
     lv_label_set_text(l, label);
-    lv_obj_set_style_text_color(l, lv_color_hex(0xB8BEE6), 0);
+
+    lv_obj_set_style_text_color(l, lv_color_hex(g_themeAccent), 0);
+
+    lv_obj_set_style_pad_left(l, 4, 0);
+
+    lv_obj_set_style_pad_top(l, 4, 0);
+
+
+
     lv_obj_t *dd = lv_dropdown_create(content);
-    lv_obj_set_width(dd, lv_pct(100));
+
+    lv_obj_set_size(dd, LV_PCT(95), 34);
+
+    lv_obj_set_style_align(dd, LV_ALIGN_TOP_MID, 0);
+
     lv_dropdown_set_options(dd, options);
-    lv_obj_set_style_bg_color(dd, lv_color_hex(COL_FIELD), 0);
-    lv_obj_set_style_text_color(dd, lv_color_hex(0x1F2937), 0);
+
+    lv_obj_set_style_bg_color(dd, lv_color_hex(g_themeItemBg), 0);
+
+    lv_obj_set_style_text_color(dd, lv_color_hex(g_themeItemText), 0);
+
+    lv_obj_set_style_border_color(dd, lv_color_hex(g_themeBorder), 0);
+
+    lv_obj_set_style_border_width(dd, 1, 0);
+
+    lv_obj_set_style_radius(dd, 6, 0);
+
     return dd;
+
 }
+
+
 
 static lv_obj_t *make_status(lv_obj_t *content)
+
 {
+
     lv_obj_t *l = lv_label_create(content);
+
     lv_label_set_text(l, "");
+
     lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(l, lv_pct(100));
-    lv_obj_set_style_text_color(l, lv_color_hex(0x8FE0A8), 0);
+
+    lv_obj_set_width(l, LV_PCT(95));
+
+    lv_obj_set_style_align(l, LV_ALIGN_TOP_MID, 0);
+
+    lv_obj_set_style_text_color(l, lv_color_hex(0x67EA94), 0);
+
     return l;
+
 }
+
+
 
 static void make_save_cancel(lv_obj_t *content, lv_event_cb_t save, lv_event_cb_t cancel)
+
 {
+
     lv_obj_t *buttons = lv_obj_create(content);
+
     lv_obj_remove_style_all(buttons);
-    lv_obj_set_size(buttons, lv_pct(100), LV_SIZE_CONTENT);
+
+    lv_obj_set_size(buttons, LV_PCT(95), 44);
+
+    lv_obj_set_style_align(buttons, LV_ALIGN_TOP_MID, 0);
+
     lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
+
     lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
     lv_obj_remove_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
-    make_label_button(buttons, "Save", 0x2F7D4F, save);
-    make_label_button(buttons, "Cancel", 0x5A6078, cancel);
+
+
+
+    lv_obj_t *btnSave = lv_button_create(buttons);
+
+    lv_obj_set_size(btnSave, LV_PCT(44), 36);
+
+    lv_obj_set_style_radius(btnSave, 7, 0);
+
+    lv_obj_set_style_bg_color(btnSave, lv_color_hex(0x216ad8), 0); // MUI primary blue
+
+    lv_obj_set_style_shadow_width(btnSave, 0, 0);
+
+    if (save)
+
+        lv_obj_add_event_cb(btnSave, save, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *sl = lv_label_create(btnSave);
+
+    lv_label_set_text(sl, "Save");
+
+    lv_obj_set_style_text_color(sl, lv_color_hex(0xffffff), 0);
+
+    lv_obj_center(sl);
+
+
+
+    lv_obj_t *btnCancel = lv_button_create(buttons);
+
+    lv_obj_set_size(btnCancel, LV_PCT(44), 36);
+
+    lv_obj_set_style_radius(btnCancel, 7, 0);
+
+    add_style_settings_button_style(btnCancel);
+
+    lv_obj_set_style_shadow_width(btnCancel, 0, 0);
+
+    if (cancel)
+
+        lv_obj_add_event_cb(btnCancel, cancel, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *cl = lv_label_create(btnCancel);
+
+    lv_label_set_text(cl, "Cancel");
+
+    lv_obj_center(cl);
+
 }
+
+
+
+static lv_obj_t *make_action_button(lv_obj_t *content, const char *text, lv_event_cb_t cb, uint32_t color)
+
+{
+
+    lv_obj_t *b = lv_button_create(content);
+
+    lv_obj_set_size(b, LV_PCT(95), 32);
+
+    add_style_settings_button_style(b);
+
+    lv_obj_set_style_align(b, LV_ALIGN_TOP_MID, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_obj_set_style_shadow_width(b, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    if (color) {
+
+        lv_obj_set_style_bg_color(b, lv_color_hex(color), 0);
+
+    }
+
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x4db270), LV_PART_MAIN | LV_STATE_PRESSED);
+
+    lv_obj_set_style_text_color(b, lv_color_hex(0x015114), LV_PART_MAIN | LV_STATE_PRESSED);
+
+    if (cb)
+
+        lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+
+    hl_init();
+
+    lv_obj_add_style(b, &g_hl, LV_STATE_FOCUSED);
+
+
+
+    lv_obj_t *lbl = lv_label_create(b);
+
+    lv_obj_set_size(lbl, LV_PCT(100), LV_SIZE_CONTENT);
+
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+
+    lv_obj_set_style_align(lbl, LV_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_label_set_text(lbl, text);
+
+    if (color) {
+
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xffffff), 0);
+
+    }
+
+    return b;
+
+}
+
+
 
 static lv_obj_t *make_nav(lv_obj_t *content, const char *text, lv_event_cb_t cb)
+
 {
-    lv_obj_t *b = make_label_button(content, text, COL_BTN, cb);
-    lv_obj_set_width(b, lv_pct(100));
+
+    lv_obj_t *b = lv_button_create(content);
+
+    lv_obj_set_size(b, LV_PCT(95), 30);
+
+    add_style_settings_button_style(b);
+
+    lv_obj_set_style_align(b, LV_ALIGN_TOP_MID, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_obj_set_style_shadow_width(b, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x4db270), LV_PART_MAIN | LV_STATE_PRESSED);
+
+    lv_obj_set_style_text_color(b, lv_color_hex(0x015114), LV_PART_MAIN | LV_STATE_PRESSED);
+
+    if (cb)
+
+        lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+
+    hl_init();
+
+    lv_obj_add_style(b, &g_hl, LV_STATE_FOCUSED);
+
+
+
+    lv_obj_t *lbl = lv_label_create(b);
+
+    lv_obj_set_size(lbl, LV_PCT(100), LV_SIZE_CONTENT);
+
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+
+    lv_obj_set_style_align(lbl, LV_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_label_set_text(lbl, text);
+
     return b;
+
 }
+
+
+
+static lv_obj_t *make_section_header(lv_obj_t *content, const char *title)
+
+{
+
+    lv_obj_t *sep = lv_obj_create(content);
+
+    lv_obj_remove_style_all(sep);
+
+    lv_obj_set_size(sep, LV_PCT(95), 26);
+
+    lv_obj_set_style_align(sep, LV_ALIGN_TOP_MID, 0);
+
+    lv_obj_set_style_pad_top(sep, 8, 0);
+
+    lv_obj_t *lbl = lv_label_create(sep);
+
+    lv_label_set_text(lbl, title);
+
+    lv_obj_set_style_text_color(lbl, lv_color_hex(g_themeAccent), 0);
+
+    lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 2, 0);
+
+    return sep;
+
+}
+
+
+
+// ---- Channels (Android App Parity: Uplink, Downlink, Position, Mute) ----
+
+typedef void *(*ChanGetFn)(int);
+
+typedef void (*ChanSendFn)(int);
+
+typedef int (*ChanMaxFn)(void);
+
+static ChanGetFn g_chanGet = nullptr;
+
+static ChanSendFn g_chanSend = nullptr;
+
+static ChanMaxFn g_chanMax = nullptr;
+
+
+
+extern "C" void emoji_settings_channels(void *(*getChan)(int), void (*sendChan)(int), int (*maxChan)(void))
+
+{
+
+    g_chanGet = getChan;
+
+    g_chanSend = sendChan;
+
+    g_chanMax = maxChan;
+
+}
+
+
+
+static lv_obj_t *g_chPanel = nullptr;
+
+static lv_obj_t *g_chDd = nullptr;
+
+static lv_obj_t *g_chNameTa = nullptr;
+
+static lv_obj_t *g_chPskTa = nullptr;
+
+static lv_obj_t *g_chRoleDd = nullptr;
+
+static lv_obj_t *g_chSwUplink = nullptr;
+
+static lv_obj_t *g_chSwDownlink = nullptr;
+
+static lv_obj_t *g_chSwPosition = nullptr;
+
+static lv_obj_t *g_chSwPrecise = nullptr;
+
+static lv_obj_t *g_chSwMute = nullptr;
+
+static lv_obj_t *g_chStatus = nullptr;
+
+
+
+static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+
+
+static std::string psk_to_base64(const uint8_t *data, size_t len) {
+
+    if (!data || len == 0) return "";
+
+    std::string out;
+
+    int val = 0, valb = -6;
+
+    for (size_t i = 0; i < len; i++) {
+
+        val = (val << 8) + data[i];
+
+        valb += 8;
+
+        while (valb >= 0) {
+
+            out.push_back(b64_table[(val >> valb) & 0x3F]);
+
+            valb -= 6;
+
+        }
+
+    }
+
+    if (valb > -6) out.push_back(b64_table[((val << 8) >> (valb + 8)) & 0x3F]);
+
+    while (out.size() % 4) out.push_back('=');
+
+    return out;
+
+}
+
+
+
+static bool base64_to_psk(const char *in, uint8_t *out, size_t &out_len) {
+
+    if (!in) { out_len = 0; return false; }
+
+    int T[256];
+
+    memset(T, -1, sizeof(T));
+
+    for (int i = 0; i < 64; i++) T[(uint8_t)b64_table[i]] = i;
+
+    int val = 0, valb = -8;
+
+    out_len = 0;
+
+    for (size_t i = 0; in[i]; i++) {
+
+        uint8_t c = (uint8_t)in[i];
+
+        if (c == '=') break;
+
+        if (T[c] == -1) continue;
+
+        val = (val << 6) + T[c];
+
+        valb += 6;
+
+        if (valb >= 0) {
+
+            if (out_len < 32)
+
+                out[out_len++] = (uint8_t)((val >> valb) & 0xFF);
+
+            valb -= 8;
+
+        }
+
+    }
+
+    return true;
+
+}
+
+
+
+static void ch_back_cb(lv_event_t *e)
+
+{
+
+    close_panel(g_chPanel);
+
+}
+
+
+
+static void update_precise_switch_state(void)
+
+{
+
+    if (!g_chSwPosition || !g_chSwPrecise || !g_chDd) return;
+
+    int idx = (int)lv_dropdown_get_selected(g_chDd);
+
+    const char *name = g_chNameTa ? lv_textarea_get_text(g_chNameTa) : "";
+
+    const char *pskStr = g_chPskTa ? lv_textarea_get_text(g_chPskTa) : "";
+
+    bool isPublic = (idx == 0 || (pskStr && strcmp(pskStr, "AQ==") == 0) ||
+
+                     (name && strcmp(name, "LongFast") == 0) ||
+
+                     (!name || strlen(name) == 0));
+
+    bool posEnabled = lv_obj_has_state(g_chSwPosition, LV_STATE_CHECKED);
+
+
+
+    if (!posEnabled) {
+
+        lv_obj_add_state(g_chSwPrecise, LV_STATE_DISABLED);
+
+        lv_obj_remove_state(g_chSwPrecise, LV_STATE_CHECKED);
+
+    } else if (isPublic) {
+
+        lv_obj_add_state(g_chSwPrecise, LV_STATE_DISABLED);
+
+        lv_obj_remove_state(g_chSwPrecise, LV_STATE_CHECKED);
+
+    } else {
+
+        lv_obj_remove_state(g_chSwPrecise, LV_STATE_DISABLED);
+
+    }
+
+}
+
+
+
+static void ch_pos_sw_cb(lv_event_t *e)
+
+{
+
+    update_precise_switch_state();
+
+}
+
+
+
+static void ch_precise_sw_cb(lv_event_t *e)
+
+{
+
+    int idx = (int)lv_dropdown_get_selected(g_chDd);
+
+    const char *name = g_chNameTa ? lv_textarea_get_text(g_chNameTa) : "";
+
+    const char *pskStr = g_chPskTa ? lv_textarea_get_text(g_chPskTa) : "";
+
+    bool isPublic = (idx == 0 || (pskStr && strcmp(pskStr, "AQ==") == 0) ||
+
+                     (name && strcmp(name, "LongFast") == 0) ||
+
+                     (!name || strlen(name) == 0));
+
+    if (isPublic) {
+
+        lv_obj_remove_state(g_chSwPrecise, LV_STATE_CHECKED);
+
+        lv_obj_add_state(g_chSwPrecise, LV_STATE_DISABLED);
+
+        if (g_chStatus) lv_label_set_text(g_chStatus, "Precise location disabled on public channels");
+
+    }
+
+}
+
+
+
+static void ch_gen_psk_cb(lv_event_t *e)
+
+{
+
+    uint8_t rand_bytes[32];
+
+#if defined(ARCH_PORTDUINO)
+
+    FILE *f = fopen("/dev/urandom", "rb");
+
+    if (f) {
+
+        size_t n = fread(rand_bytes, 1, 32, f);
+
+        (void)n;
+
+        fclose(f);
+
+    } else {
+
+        for (int i = 0; i < 32; i++) rand_bytes[i] = (uint8_t)(rand() & 0xFF);
+
+    }
+
+#else
+
+    for (int i = 0; i < 32; i++) rand_bytes[i] = (uint8_t)(rand() & 0xFF);
+
+#endif
+
+    std::string b64 = psk_to_base64(rand_bytes, 32);
+
+    if (g_chPskTa)
+
+        lv_textarea_set_text(g_chPskTa, b64.c_str());
+
+    if (g_chStatus)
+
+        lv_label_set_text(g_chStatus, "Generated new 256-bit AES key");
+
+    update_precise_switch_state();
+
+}
+
+
+
+static void ch_default_psk_cb(lv_event_t *e)
+
+{
+
+    if (g_chPskTa)
+
+        lv_textarea_set_text(g_chPskTa, "AQ==");
+
+    if (g_chStatus)
+
+        lv_label_set_text(g_chStatus, "Reset to default public key (AQ==)");
+
+    update_precise_switch_state();
+
+}
+
+
+
+static void ch_load_idx(int idx)
+
+{
+
+    if (!g_chanGet) return;
+
+    meshtastic_Channel *ch = (meshtastic_Channel *)g_chanGet(idx);
+
+    if (!ch) return;
+
+
+
+    lv_textarea_set_text(g_chNameTa, ch->settings.name);
+
+
+
+    std::string b64Psk = psk_to_base64(ch->settings.psk.bytes, ch->settings.psk.size);
+
+    if (g_chPskTa)
+
+        lv_textarea_set_text(g_chPskTa, b64Psk.c_str());
+
+
+
+    int roleSel = 0;
+
+    if (ch->role == meshtastic_Channel_Role_PRIMARY) roleSel = 0;
+
+    else if (ch->role == meshtastic_Channel_Role_SECONDARY) roleSel = 1;
+
+    else roleSel = 2; // Disabled
+
+    lv_dropdown_set_selected(g_chRoleDd, roleSel);
+
+
+
+    set_switch(g_chSwUplink, ch->settings.uplink_enabled);
+
+    set_switch(g_chSwDownlink, ch->settings.downlink_enabled);
+
+
+
+    // Public channel check: primary channel (idx == 0), or key is default AQ== (0x01), or named LongFast / unset
+
+    bool isPublic = (idx == 0 || (ch->settings.psk.size == 1 && ch->settings.psk.bytes[0] == 1) ||
+
+                     strcmp(ch->settings.name, "LongFast") == 0 || strlen(ch->settings.name) == 0);
+
+
+
+    bool posEnabled = true;
+
+    bool preciseLoc = false;
+
+    if (ch->settings.has_module_settings) {
+
+        uint32_t prec = ch->settings.module_settings.position_precision;
+
+        if (prec == 1) { // 1 = Disabled
+
+            posEnabled = false;
+
+            preciseLoc = false;
+
+        } else if (prec == 32) { // 32 = Precise
+
+            posEnabled = true;
+
+            preciseLoc = !isPublic;
+
+        } else {
+
+            posEnabled = true;
+
+            preciseLoc = false;
+
+        }
+
+        set_switch(g_chSwMute, ch->settings.module_settings.is_muted);
+
+    } else {
+
+        posEnabled = true;
+
+        preciseLoc = false;
+
+        set_switch(g_chSwMute, false);
+
+    }
+
+
+
+    set_switch(g_chSwPosition, posEnabled);
+
+    set_switch(g_chSwPrecise, preciseLoc);
+
+    update_precise_switch_state();
+
+    lv_label_set_text(g_chStatus, "");
+
+}
+
+
+
+static void ch_dd_cb(lv_event_t *e)
+
+{
+
+    int sel = (int)lv_dropdown_get_selected(g_chDd);
+
+    ch_load_idx(sel);
+
+}
+
+
+
+static void ch_save_cb(lv_event_t *e)
+
+{
+
+    if (!g_chanGet || !g_chanSend) return;
+
+    int idx = (int)lv_dropdown_get_selected(g_chDd);
+
+    meshtastic_Channel *ch = (meshtastic_Channel *)g_chanGet(idx);
+
+    if (!ch) return;
+
+
+
+    const char *name = lv_textarea_get_text(g_chNameTa);
+
+    strncpy(ch->settings.name, name ? name : "", sizeof(ch->settings.name) - 1);
+
+    ch->settings.name[sizeof(ch->settings.name) - 1] = 0;
+
+
+
+    if (g_chPskTa) {
+
+        const char *pskStr = lv_textarea_get_text(g_chPskTa);
+
+        if (pskStr && strlen(pskStr) > 0) {
+
+            uint8_t rawPsk[32];
+
+            size_t pskLen = 0;
+
+            if (base64_to_psk(pskStr, rawPsk, pskLen)) {
+
+                memcpy(ch->settings.psk.bytes, rawPsk, pskLen);
+
+                ch->settings.psk.size = (uint32_t)pskLen;
+
+            }
+
+        }
+
+    }
+
+
+
+    int roleSel = (int)lv_dropdown_get_selected(g_chRoleDd);
+
+    if (roleSel == 0) ch->role = meshtastic_Channel_Role_PRIMARY;
+
+    else if (roleSel == 1) ch->role = meshtastic_Channel_Role_SECONDARY;
+
+    else ch->role = meshtastic_Channel_Role_DISABLED;
+
+
+
+    ch->settings.uplink_enabled = lv_obj_has_state(g_chSwUplink, LV_STATE_CHECKED);
+
+    ch->settings.downlink_enabled = lv_obj_has_state(g_chSwDownlink, LV_STATE_CHECKED);
+
+
+
+    bool isPublic = (idx == 0 || (ch->settings.psk.size == 1 && ch->settings.psk.bytes[0] == 1) ||
+
+                     strcmp(ch->settings.name, "LongFast") == 0 || strlen(ch->settings.name) == 0);
+
+
+
+    ch->settings.has_module_settings = true;
+
+    bool posEnabled = lv_obj_has_state(g_chSwPosition, LV_STATE_CHECKED);
+
+    bool preciseLoc = lv_obj_has_state(g_chSwPrecise, LV_STATE_CHECKED);
+
+
+
+    if (!posEnabled) {
+
+        ch->settings.module_settings.position_precision = 1; // 1 = Disabled
+
+    } else if (preciseLoc && !isPublic) {
+
+        ch->settings.module_settings.position_precision = 32; // 32 = Precise 32-bit (~1 mm)
+
+    } else {
+
+        ch->settings.module_settings.position_precision = 0; // 0 = Default (inherited)
+
+    }
+
+    ch->settings.module_settings.is_muted = lv_obj_has_state(g_chSwMute, LV_STATE_CHECKED);
+
+
+
+    ch->has_settings = true;
+
+    g_chanSend(idx);
+
+    lv_label_set_text(g_chStatus, "Channel saved & applied!");
+
+}
+
+
+
+static void build_ch_panel(void)
+
+{
+
+    lv_obj_t *content;
+
+    g_chPanel = make_panel("Channel Settings", ch_back_cb, &content);
+
+
+
+    make_section_header(content, "SELECT CHANNEL");
+
+    g_chDd = make_dropdown(content, "Channel index", "Ch 0 (Primary)\nCh 1\nCh 2\nCh 3\nCh 4\nCh 5\nCh 6\nCh 7");
+
+    lv_obj_add_event_cb(g_chDd, ch_dd_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
+
+
+    make_section_header(content, "CHANNEL CONFIG");
+
+    g_chNameTa = make_field(content, "Channel name", 11, false);
+
+    g_chPskTa = make_field(content, "Pre-shared key (PSK Base64)", 44, false);
+
+    make_action_button(content, "Generate Random Key (AES-256)", ch_gen_psk_cb);
+
+    make_action_button(content, "Reset to Default Public (AQ==)", ch_default_psk_cb);
+
+    g_chRoleDd = make_dropdown(content, "Channel role", "Primary\nSecondary\nDisabled");
+
+
+
+    make_section_header(content, "MQTT & ROUTING");
+
+    g_chSwUplink = make_switch_row(content, "MQTT Uplink Enabled");
+
+    g_chSwDownlink = make_switch_row(content, "MQTT Downlink Enabled");
+
+
+
+    make_section_header(content, "POSITION & PRIVACY");
+
+    g_chSwPosition = make_switch_row(content, "Position enabled");
+
+    lv_obj_add_event_cb(g_chSwPosition, ch_pos_sw_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
+
+
+    g_chSwPrecise = make_switch_row(content, "Precise location");
+
+    lv_obj_add_event_cb(g_chSwPrecise, ch_precise_sw_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
+
+
+    g_chSwMute = make_switch_row(content, "Mute channel notifications");
+
+
+
+    g_chStatus = make_status(content);
+
+    make_save_cancel(content, ch_save_cb, ch_back_cb);
+
+
+
+    lv_obj_t *pad = lv_obj_create(content);
+
+    lv_obj_remove_style_all(pad);
+
+    lv_obj_set_size(pad, 10, 150);
+
+}
+
+
+
+extern "C" void emoji_channel_open_index(int idx)
+
+{
+
+    if (!g_chPanel)
+
+        build_ch_panel();
+
+    if (idx < 0) idx = 0;
+
+    if (idx > 7) idx = 7;
+
+    lv_dropdown_set_selected(g_chDd, idx);
+
+    ch_load_idx(idx);
+
+    open_panel(g_chPanel);
+
+}
+
+
+
+static void ch_open_cb(lv_event_t *e)
+
+{
+
+    emoji_channel_open_index(0);
+
+}
+
+
+
+
+
+#if defined(ARCH_PORTDUINO)
+
+static lv_obj_t *g_radioPanel = nullptr, *g_radioStatus = nullptr, *g_radioDd = nullptr;
+
+static lv_obj_t *g_taRadioUsb = nullptr, *g_taRadioWifi = nullptr;
+
+
+
+static void radio_back_cb(lv_event_t *e) {
+
+    close_panel(g_radioPanel);
+
+}
+
+
+
+static void radio_save_cb(lv_event_t *e) {
+
+    if (!g_radioDd) return;
+
+    int sel = (int)lv_dropdown_get_selected(g_radioDd);
+
+    FILE *fp = fopen("/usr/data/radio_mode.txt", "w");
+
+    if (fp) {
+
+        if (sel == 0) fputs("sim\n", fp);
+
+        else if (sel == 1) fputs("usb\n", fp);
+
+        else if (sel == 2) fputs("wifi\n", fp);
+
+        fclose(fp);
+
+    }
+
+    lv_label_set_text(g_radioStatus, "Radio mode saved! Restart daemon to apply.");
+
+}
+
+
+
+static void build_radio_panel(void) {
+
+    lv_obj_t *content;
+
+    g_radioPanel = make_panel("Radio Interface", radio_back_cb, &content);
+
+
+
+    make_section_header(content, "SELECT RADIO HARDWARE");
+
+    g_radioDd = make_dropdown(content, "Radio Type", "Simulated (sim)\nUSB LoRa Dongle (SX1262/CH341)\nWi-Fi / TCP Remote Radio");
+
+
+
+    make_section_header(content, "HARDWARE OPTIONS");
+
+    g_taRadioUsb = make_field(content, "USB Device (/dev/ttyUSB0 or ch341)", 31, false);
+
+    g_taRadioWifi = make_field(content, "Remote Radio IP (e.g. 192.168.4.1:4403)", 31, false);
+
+
+
+    // Read current mode
+
+    FILE *fp = fopen("/usr/data/radio_mode.txt", "r");
+
+    if (fp) {
+
+        char buf[32] = {0};
+
+        if (fgets(buf, sizeof(buf), fp)) {
+
+            if (strstr(buf, "usb")) lv_dropdown_set_selected(g_radioDd, 1);
+
+            else if (strstr(buf, "wifi")) lv_dropdown_set_selected(g_radioDd, 2);
+
+            else lv_dropdown_set_selected(g_radioDd, 0);
+
+        }
+
+        fclose(fp);
+
+    }
+
+
+
+    g_radioStatus = make_status(content);
+
+    make_save_cancel(content, radio_save_cb, radio_back_cb);
+
+
+
+    lv_obj_t *pad = lv_obj_create(content);
+
+    lv_obj_remove_style_all(pad);
+
+    lv_obj_set_size(pad, 10, 150);
+
+}
+
+
+
+static void radio_open_cb(lv_event_t *e) {
+
+    if (!g_radioPanel)
+
+        build_radio_panel();
+
+    open_panel(g_radioPanel);
+
+}
+
+#endif
+
+
 
 // LoRa
-static lv_obj_t *g_loraPanel = nullptr, *g_loraStatus, *g_swTx, *g_ddHop, *g_ddPower;
+
+static lv_obj_t *g_loraPanel = nullptr, *g_loraStatus, *g_swTx, *g_swIgnoreMqtt = nullptr, *g_swOkToMqtt = nullptr, *g_ddHop, *g_ddPower;
+
 static void lora_back_cb(lv_event_t *e)
+
 {
+
     close_panel(g_loraPanel);
+
 }
+
 static void lora_save_cb(lv_event_t *e)
+
 {
+
     meshtastic_Config_LoRaConfig *c = (meshtastic_Config_LoRaConfig *)g_loraCfg();
+
     c->tx_enabled = lv_obj_has_state(g_swTx, LV_STATE_CHECKED);
+
+    if (g_swIgnoreMqtt)
+
+        c->ignore_mqtt = lv_obj_has_state(g_swIgnoreMqtt, LV_STATE_CHECKED);
+
+    if (g_swOkToMqtt)
+
+        c->config_ok_to_mqtt = lv_obj_has_state(g_swOkToMqtt, LV_STATE_CHECKED);
+
     c->hop_limit = lv_dropdown_get_selected(g_ddHop) + 1;
+
     c->tx_power = lv_dropdown_get_selected(g_ddPower);
+
     g_sendLora();
+
     lv_label_set_text(g_loraStatus, "Saved, the node applies it after a restart");
+
 }
+
 static void lora_open_cb(lv_event_t *e)
+
 {
+
     if (!g_loraPanel) {
+
         lv_obj_t *content;
-        g_loraPanel = make_panel("LoRa extras", lora_back_cb, &content);
-        g_swTx = make_switch_row(content, "TX enabled");
+
+        g_loraPanel = make_panel("LoRa Config", lora_back_cb, &content);
+
+        make_section_header(content, "MQTT & ROUTING");
+
+        g_swIgnoreMqtt = make_switch_row(content, "Ignore MQTT");
+
+        g_swOkToMqtt = make_switch_row(content, "Ok to MQTT");
+
+        g_swTx = make_switch_row(content, "Transmit Enabled");
+
+        make_section_header(content, "RADIO PARAMETERS");
+
         g_ddHop = make_dropdown(content, "Hop limit", "1\n2\n3\n4\n5\n6\n7");
+
         g_ddPower = make_dropdown(content, "TX power in dBm, 0 is the region maximum",
+
                                   "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30");
+
         g_loraStatus = make_status(content);
+
         make_save_cancel(content, lora_save_cb, lora_back_cb);
+
     }
+
     meshtastic_Config_LoRaConfig *c = (meshtastic_Config_LoRaConfig *)g_loraCfg();
+
     set_switch(g_swTx, c->tx_enabled);
+
+    if (g_swIgnoreMqtt)
+
+        set_switch(g_swIgnoreMqtt, c->ignore_mqtt);
+
+    if (g_swOkToMqtt)
+
+        set_switch(g_swOkToMqtt, c->config_ok_to_mqtt);
+
     lv_dropdown_set_selected(g_ddHop, (c->hop_limit >= 1 && c->hop_limit <= 7) ? c->hop_limit - 1 : 2);
+
     lv_dropdown_set_selected(g_ddPower, c->tx_power <= 30 ? c->tx_power : 0);
+
     lv_label_set_text(g_loraStatus, "");
+
     open_panel(g_loraPanel);
+
 }
+
+
 
 // position
+
 static const uint32_t POS_SECS[] = {0, 900, 1800, 3600, 7200, 21600, 43200, 86400};
+
 static lv_obj_t *g_posPanel = nullptr, *g_posStatus, *g_ddGps, *g_ddInt;
+
 static void pos_back_cb(lv_event_t *e)
+
 {
+
     close_panel(g_posPanel);
+
 }
+
 static void pos_save_cb(lv_event_t *e)
+
 {
+
     meshtastic_Config_PositionConfig *c = (meshtastic_Config_PositionConfig *)g_posCfg();
+
     c->gps_mode = (meshtastic_Config_PositionConfig_GpsMode)lv_dropdown_get_selected(g_ddGps);
+
     c->position_broadcast_secs = POS_SECS[lv_dropdown_get_selected(g_ddInt)];
+
     g_sendPos();
+
     lv_label_set_text(g_posStatus, "Saved");
+
 }
+
 static void pos_open_cb(lv_event_t *e)
+
 {
+
     if (!g_posPanel) {
+
         lv_obj_t *content;
+
         g_posPanel = make_panel("Position", pos_back_cb, &content);
+
         g_ddGps = make_dropdown(content, "GPS mode", "Disabled\nEnabled\nNot present");
+
         g_ddInt = make_dropdown(content, "Position broadcast interval",
+
                                 "Default\n15 minutes\n30 minutes\n1 hour\n2 hours\n6 hours\n12 hours\n24 hours");
+
         g_posStatus = make_status(content);
+
         make_save_cancel(content, pos_save_cb, pos_back_cb);
+
     }
+
     meshtastic_Config_PositionConfig *c = (meshtastic_Config_PositionConfig *)g_posCfg();
+
     lv_dropdown_set_selected(g_ddGps, (uint32_t)c->gps_mode <= 2 ? (uint32_t)c->gps_mode : 0);
+
     uint32_t idx = 0;
+
     for (uint32_t i = 0; i < sizeof(POS_SECS) / sizeof(POS_SECS[0]); i++)
+
         if (POS_SECS[i] == c->position_broadcast_secs)
+
             idx = i;
+
     lv_dropdown_set_selected(g_ddInt, idx);
+
     lv_label_set_text(g_posStatus, "");
+
     open_panel(g_posPanel);
+
 }
+
+
 
 // quiet hours, kept on the device
+
 static bool qh_on(void)
+
 {
+
     Preferences p;
+
     p.begin("chatui", true);
+
     bool v = p.getBool("qhon", false);
+
     p.end();
+
     return v;
+
 }
+
 static int qh_hour(const char *key, int def)
+
 {
+
     Preferences p;
+
     p.begin("chatui", true);
+
     int v = p.getInt(key, def);
+
     p.end();
+
     return v;
+
 }
+
 extern "C" bool emoji_quiet_now(void)
+
 {
+
     if (!qh_on())
+
         return false;
+
     time_t now = time(nullptr);
+
     if (now < 1700000000)
+
         return false; // clock not set
+
     struct tm t;
+
     localtime_r(&now, &t);
+
     int from = qh_hour("qhfrom", 22), to = qh_hour("qhto", 6), h = t.tm_hour;
+
     if (from == to)
+
         return false;
+
     return from < to ? (h >= from && h < to) : (h >= from || h < to);
+
 }
+
 static lv_obj_t *g_qhPanel = nullptr, *g_qhStatus, *g_swQh, *g_ddFrom, *g_ddTo;
+
 static void qh_back_cb(lv_event_t *e)
+
 {
+
     close_panel(g_qhPanel);
+
 }
+
 static void qh_save_cb(lv_event_t *e)
+
 {
+
     Preferences p;
+
     p.begin("chatui", false);
+
     p.putBool("qhon", lv_obj_has_state(g_swQh, LV_STATE_CHECKED));
+
     p.putInt("qhfrom", lv_dropdown_get_selected(g_ddFrom));
+
     p.putInt("qhto", lv_dropdown_get_selected(g_ddTo));
+
     p.end();
+
     lv_label_set_text(g_qhStatus, "Saved");
+
 }
+
 static void qh_open_cb(lv_event_t *e)
+
 {
+
     if (!g_qhPanel) {
+
         static char hours[24 * 6 + 1];
+
         hours[0] = 0;
+
         for (int i = 0; i < 24; i++)
+
             sprintf(hours + strlen(hours), "%02d:00%s", i, i < 23 ? "\n" : "");
+
         lv_obj_t *content;
+
         g_qhPanel = make_panel("Quiet hours", qh_back_cb, &content);
+
         g_swQh = make_switch_row(content, "Quiet hours on");
+
         g_ddFrom = make_dropdown(content, "From", hours);
+
         g_ddTo = make_dropdown(content, "To", hours);
+
         lv_obj_t *n = make_status(content);
+
         lv_label_set_text(n, "A received message does not wake the screen in this window. Needs the clock to be set.");
+
         lv_obj_set_style_text_color(n, lv_color_hex(0xB8BEE6), 0);
+
         g_qhStatus = make_status(content);
+
         make_save_cancel(content, qh_save_cb, qh_back_cb);
+
     }
+
     set_switch(g_swQh, qh_on());
+
     lv_dropdown_set_selected(g_ddFrom, qh_hour("qhfrom", 22));
+
     lv_dropdown_set_selected(g_ddTo, qh_hour("qhto", 6));
+
     lv_label_set_text(g_qhStatus, "");
+
     open_panel(g_qhPanel);
+
 }
+
+
 
 // security: new private key
+
 static lv_obj_t *g_secPanel = nullptr, *g_secStatus, *g_regenBtn;
+
 static bool g_regenArmed = false;
+
 static void sec_back_cb(lv_event_t *e)
+
 {
+
     g_regenArmed = false;
+
     lv_label_set_text(lv_obj_get_child(g_regenBtn, 0), "Regenerate private key");
+
     close_panel(g_secPanel);
+
 }
+
 static void regen_cb(lv_event_t *e)
+
 {
+
     if (!g_regenArmed) {
+
         g_regenArmed = true;
+
         lv_label_set_text(lv_obj_get_child(g_regenBtn, 0), "Tap again to confirm");
+
         lv_label_set_text(g_secStatus, "New identity key, the node restarts. Nodes that cached the old key must see your nodeinfo again before direct messages work.");
+
         return;
+
     }
+
     g_regenArmed = false;
+
     meshtastic_Config_SecurityConfig *c = (meshtastic_Config_SecurityConfig *)g_secCfg();
+
+#if defined(ARCH_ESP32) || defined(ARDUINO_ARCH_ESP32) || defined(ESP32)
+
     esp_fill_random(c->private_key.bytes, 32);
-    c->private_key.bytes[0] &= 248;
-    c->private_key.bytes[31] &= 127;
-    c->private_key.bytes[31] |= 64;
-    c->private_key.size = 32;
-    c->public_key.size = 0;
-    g_sendSec();
-    lv_label_set_text(lv_obj_get_child(g_regenBtn, 0), "Regenerate private key");
-    lv_label_set_text(g_secStatus, "Sent, the node restarts");
-}
-static void sec_open_cb(lv_event_t *e)
-{
-    if (!g_secPanel) {
-        lv_obj_t *content;
-        g_secPanel = make_panel("Security", sec_back_cb, &content);
-        g_regenBtn = make_label_button(content, "Regenerate private key", 0x8A2F36, regen_cb);
-        lv_obj_set_width(g_regenBtn, lv_pct(100));
-        g_secStatus = make_status(content);
-        lv_obj_set_style_text_color(g_secStatus, lv_color_hex(0xF2A0A0), 0);
+
+#else
+
+    for (size_t i = 0; i < 32; i++) {
+
+        c->private_key.bytes[i] = (uint8_t)(rand() & 0xFF);
+
     }
-    lv_label_set_text(g_secStatus, "");
-    open_panel(g_secPanel);
+
+#endif
+
+    c->private_key.bytes[0] &= 248;
+
+    c->private_key.bytes[31] &= 127;
+
+    c->private_key.bytes[31] |= 64;
+
+    c->private_key.size = 32;
+
+    c->public_key.size = 0;
+
+    g_sendSec();
+
+    lv_label_set_text(lv_obj_get_child(g_regenBtn, 0), "Regenerate private key");
+
+    lv_label_set_text(g_secStatus, "Sent, the node restarts");
+
 }
+
+static void sec_open_cb(lv_event_t *e)
+
+{
+
+    if (!g_secPanel) {
+
+        lv_obj_t *content;
+
+        g_secPanel = make_panel("Security", sec_back_cb, &content);
+
+        g_regenBtn = make_action_button(content, "Regenerate private key", regen_cb, 0x8A2F36);
+
+        g_secStatus = make_status(content);
+
+        lv_obj_set_style_text_color(g_secStatus, lv_color_hex(0xF2A0A0), 0);
+
+    }
+
+    lv_label_set_text(g_secStatus, "");
+
+    open_panel(g_secPanel);
+
+}
+
+
 
 // GPS status from our own node's position reports
+
 struct GpsSnap {
+
     bool valid;
+
     uint32_t at, sats, fixType, time;
+
     float hdop, pdop, vdop, speedKmh, heading;
+
     int32_t alt, lat, lon;
+
 };
+
 static GpsSnap g_gps = {};
+
 extern "C" void emoji_gps_record(const void *pp)
+
 {
+
     const meshtastic_Position *p = (const meshtastic_Position *)pp;
+
     g_gps.valid = true;
+
     g_gps.at = millis();
+
     g_gps.sats = p->sats_in_view;
+
     g_gps.fixType = p->fix_type;
+
     g_gps.hdop = p->HDOP / 100.0f;
+
     g_gps.pdop = p->PDOP / 100.0f;
+
     g_gps.vdop = p->VDOP / 100.0f;
+
     g_gps.speedKmh = p->ground_speed * 3.6f;
+
     g_gps.heading = p->ground_track / 100000.0f;
+
     g_gps.alt = p->altitude;
+
     g_gps.lat = p->latitude_i;
+
     g_gps.lon = p->longitude_i;
+
     g_gps.time = p->time;
+
 }
+
+
 
 extern "C" bool emoji_gps_snapshot(uint32_t *sats, uint32_t *fix, float *hdop)
+
 {
+
     if (!g_gps.valid || millis() - g_gps.at > 1800000)
+
         return false; // no report for 30 minutes
+
     *sats = g_gps.sats;
+
     *fix = g_gps.fixType;
+
     *hdop = g_gps.hdop;
+
     return true;
+
 }
+
+
 
 static lv_obj_t *g_gpsPanel = nullptr, *g_gpsText = nullptr;
+
 static void gps_refresh(void)
+
 {
+
     if (!g_gpsText)
+
         return;
+
     if (!g_gps.valid) {
+
         lv_label_set_text(g_gpsText, "No position received from the node yet.\nThe node reports its position on the broadcast interval, wait for a fix.");
+
         return;
+
     }
+
     const char *fix = g_gps.fixType == 3 ? "3D" : (g_gps.fixType == 2 ? "2D" : (g_gps.fixType == 1 ? "none" : "unknown"));
+
     char buf[320];
+
     uint32_t t = g_gps.time;
+
     snprintf(buf, sizeof(buf),
+
              "Satellites: %u\nFix: %s\nHDOP: %.1f   PDOP: %.1f   VDOP: %.1f\nSpeed: %.1f km/h\nHeading: %.0f deg\nAltitude: %d m\n"
+
              "Position: %.5f %.5f\nGPS time (UTC): %02u:%02u:%02u\nReported %u s ago",
+
              (unsigned)g_gps.sats, fix, g_gps.hdop, g_gps.pdop, g_gps.vdop, g_gps.speedKmh, g_gps.heading, (int)g_gps.alt,
+
              g_gps.lat * 1e-7, g_gps.lon * 1e-7, (unsigned)((t / 3600) % 24), (unsigned)((t / 60) % 60), (unsigned)(t % 60),
+
              (unsigned)((millis() - g_gps.at) / 1000));
+
     lv_label_set_text(g_gpsText, buf);
+
 }
+
 static void gps_timer_cb(lv_timer_t *tm)
+
 {
+
     if (g_gpsPanel && !lv_obj_has_flag(g_gpsPanel, LV_OBJ_FLAG_HIDDEN))
+
         gps_refresh();
+
 }
+
 static void gps_back_cb(lv_event_t *e)
+
 {
+
     close_panel(g_gpsPanel);
+
 }
+
 static void gps_open_cb(lv_event_t *e)
+
 {
+
     if (!g_gpsPanel) {
+
         lv_obj_t *content;
+
         g_gpsPanel = make_panel("GPS status", gps_back_cb, &content);
+
         g_gpsText = lv_label_create(content);
+
         lv_label_set_long_mode(g_gpsText, LV_LABEL_LONG_WRAP);
+
         lv_obj_set_width(g_gpsText, lv_pct(100));
+
         lv_obj_set_style_text_color(g_gpsText, lv_color_hex(0xFFFFFF), 0);
+
         lv_timer_create(gps_timer_cb, 1000, nullptr);
+
     }
+
     gps_refresh();
+
     open_panel(g_gpsPanel);
+
 }
+
+
 
 // set clock: the GPS time, NTP, the time zone, and a time set by hand
+
 enum RTCQuality { RTCQualityNone = 0, RTCQualityDevice = 1, RTCQualityFromNet = 2, RTCQualityNTP = 3, RTCQualityGPS = 4 };
+
 enum RTCSetResult { RTCSetResultNotSet = 0, RTCSetResultSuccess = 1, RTCSetResultInvalidTime = 3, RTCSetResultError = 4 };
+
 RTCQuality getRTCQuality();
+
 RTCSetResult perhapsSetRTC(RTCQuality q, const struct timeval *tv, bool forceUpdate);
 
+
+
 static CfgFn g_netCfg = nullptr, g_devCfg = nullptr;
+
 static VoidFn g_sendNet = nullptr, g_sendDev = nullptr;
+
 extern "C" void emoji_settings_host3(void *(*net)(void), void (*sendNet)(void), void *(*dev)(void), void (*sendDev)(void))
+
 {
+
     g_netCfg = net;
+
     g_sendNet = sendNet;
+
     g_devCfg = dev;
+
     g_sendDev = sendDev;
+
 }
+
+
 
 static lv_obj_t *g_ckPanel = nullptr, *g_ckNow = nullptr, *g_ckGps = nullptr, *g_ckNtp = nullptr, *g_ckTz = nullptr, *g_ckMsg = nullptr;
+
 static lv_obj_t *g_ckVal[5];
+
 static int g_ck[5]; // year, month, day, hour, minute of the time set by hand
+
 static const int CK_TZ[] = {-660, -600, -540, -480, -420, -360, -300, -240, -180, -120, -60, 0,   60,  120, 180, 210,
+
                             240,  270,  300,  330,  345,  360,  390,  420,  480,  540,  570, 600, 660, 720, 780, 840};
+
 static const int CK_TZ_N = sizeof(CK_TZ) / sizeof(CK_TZ[0]);
+
 static bool g_ckTzExtra = false; // the list starts with "Current setting" when the node has a time zone that is not in the list
 
+
+
 static void ck_tz_posix(int min, char *out, size_t n)
+
 {
+
     if (min == 0) {
+
         snprintf(out, n, "UTC0");
+
         return;
+
     }
+
     int a = min < 0 ? -min : min, h = a / 60, m = a % 60;
+
     char name[16], off[16];
+
     if (m)
+
         snprintf(name, sizeof(name), "%c%02d%02d", min < 0 ? '-' : '+', h, m);
+
     else
+
         snprintf(name, sizeof(name), "%c%02d", min < 0 ? '-' : '+', h);
+
     if (m)
+
         snprintf(off, sizeof(off), "%s%d:%02d", min < 0 ? "" : "-", h, m);
+
     else
+
         snprintf(off, sizeof(off), "%s%d", min < 0 ? "" : "-", h);
+
     snprintf(out, n, "<%s>%s", name, off);
+
 }
+
+
 
 static bool ck_gps_time(uint32_t *t, uint32_t *ageS)
+
 {
+
     if (!g_gps.valid || g_gps.time < 1700000000)
+
         return false;
+
     uint32_t a = (millis() - g_gps.at) / 1000;
+
     if (a > 1800)
+
         return false;
+
     *t = g_gps.time + a;
+
     *ageS = a;
+
     return true;
+
 }
+
+
 
 static int ck_dim(int y, int m)
+
 {
+
     static const int D[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+
     if (m == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0))
+
         return 29;
+
     return D[(m - 1) % 12];
+
 }
+
+
 
 static void ck_show_fields(void)
+
 {
+
     char t[8];
+
     for (int i = 0; i < 5; i++) {
+
         snprintf(t, sizeof(t), i == 0 ? "%04d" : "%02d", g_ck[i]);
+
         if (g_ckVal[i])
+
             lv_label_set_text(g_ckVal[i], t);
+
     }
+
 }
+
+
 
 static void ck_msg(const char *m)
+
 {
+
     if (g_ckMsg)
+
         lv_label_set_text(g_ckMsg, m);
+
 }
+
+
 
 static void ck_refresh(void)
+
 {
+
     if (!g_ckNow)
+
         return;
+
     char buf[200];
+
     RTCQuality q = getRTCQuality();
+
     if (q == RTCQualityNone) {
+
         snprintf(buf, sizeof(buf), "--:--:--\nsource: not set");
+
     } else {
+
         time_t now = time(nullptr);
+
         struct tm t;
+
         localtime_r(&now, &t);
+
         const char *src = q == RTCQualityGPS ? "GPS" : (q == RTCQualityNTP ? "NTP" : (q == RTCQualityFromNet ? "another node" : "by hand"));
+
         snprintf(buf, sizeof(buf), "%04d-%02d-%02d  %02d:%02d:%02d\nsource: %s", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min,
+
                  t.tm_sec, src);
+
     }
+
     lv_label_set_text(g_ckNow, buf);
+
     uint32_t gt, age;
+
     if (ck_gps_time(&gt, &age))
+
         snprintf(buf, sizeof(buf), "%02u:%02u:%02u UTC\nreported %u min ago", (unsigned)((gt / 3600) % 24), (unsigned)((gt / 60) % 60),
+
                  (unsigned)(gt % 60), (unsigned)(age / 60));
+
     else
+
         snprintf(buf, sizeof(buf), "--:--:--\nno GPS time yet, the node sends its position on the broadcast interval");
+
     lv_label_set_text(g_ckGps, buf);
+
 }
+
+
 
 static void ck_timer_cb(lv_timer_t *tm)
+
 {
+
     if (g_ckPanel && !lv_obj_has_flag(g_ckPanel, LV_OBJ_FLAG_HIDDEN))
+
         ck_refresh();
+
 }
+
+
 
 static void ck_use_gps_cb(lv_event_t *e)
+
 {
+
     uint32_t gt, age;
+
     if (!ck_gps_time(&gt, &age)) {
+
         ck_msg("No GPS time yet. Wait for a fix, and check that the GPS is on.");
+
         return;
+
     }
+
     struct timeval tv = {(time_t)gt, 0};
+
     perhapsSetRTC(RTCQualityGPS, &tv, true);
+
     ck_msg("Clock set from the GPS time.");
+
     ck_refresh();
+
 }
+
+
 
 static void ck_ntp_cb(lv_event_t *e)
+
 {
-    if (WiFi.status() != WL_CONNECTED) {
-        ck_msg("Wi-Fi is not connected. Turn it on in the network settings first.");
-        return;
-    }
+
     const char *srv = lv_textarea_get_text(g_ckNtp);
+
     if (!srv || !srv[0])
-        srv = "meshtastic.pool.ntp.org";
+
+        srv = "pool.ntp.org";
+
     if (g_netCfg) {
+
         meshtastic_Config_NetworkConfig *nc = (meshtastic_Config_NetworkConfig *)g_netCfg();
+
         if (nc && strncmp(nc->ntp_server, srv, sizeof(nc->ntp_server) - 1) != 0) {
+
             strncpy(nc->ntp_server, srv, sizeof(nc->ntp_server) - 1);
+
             nc->ntp_server[sizeof(nc->ntp_server) - 1] = 0;
+
             if (g_sendNet)
+
                 g_sendNet();
+
         }
+
     }
-    WiFiUDP udp;
-    NTPClient client(udp, srv);
-    client.begin();
-    bool ok = client.forceUpdate();
-    unsigned long epoch = client.getEpochTime();
-    client.end();
-    if (!ok || epoch < 1700000000) {
-        ck_msg("No answer from the NTP server. Check the address and the internet connection.");
+
+#if defined(HAS_POSIX_SOCKETS)
+
+    struct addrinfo hints, *res = nullptr;
+
+    memset(&hints, 0, sizeof(hints));
+
+    hints.ai_family = AF_INET;
+
+    hints.ai_socktype = SOCK_DGRAM;
+
+    if (getaddrinfo(srv, "123", &hints, &res) != 0 || !res) {
+
+        ck_msg("NTP DNS lookup failed. Check server address or internet connection.");
+
         return;
+
     }
-    struct timeval tv = {(time_t)epoch, 0};
+
+    int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+
+    if (sock < 0) {
+
+        freeaddrinfo(res);
+
+        ck_msg("Could not create UDP socket.");
+
+        return;
+
+    }
+
+    struct timeval tv_timeout = {3, 0};
+
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv_timeout, sizeof(tv_timeout));
+
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv_timeout, sizeof(tv_timeout));
+
+
+
+    uint8_t packet[48];
+
+    memset(packet, 0, sizeof(packet));
+
+    packet[0] = 0x1B; // LI 0, VN 3, Mode 3 (Client)
+
+
+
+    if (sendto(sock, packet, sizeof(packet), 0, res->ai_addr, res->ai_addrlen) < 0) {
+
+        close(sock);
+
+        freeaddrinfo(res);
+
+        ck_msg("Failed to send NTP request packet.");
+
+        return;
+
+    }
+
+    freeaddrinfo(res);
+
+
+
+    int rec = recv(sock, packet, sizeof(packet), 0);
+
+    close(sock);
+
+    if (rec < 48) {
+
+        ck_msg("No answer from NTP server. Check internet connection.");
+
+        return;
+
+    }
+
+
+
+    uint32_t secs = ((uint32_t)packet[40] << 24) | ((uint32_t)packet[41] << 16) |
+
+                    ((uint32_t)packet[42] << 8) | ((uint32_t)packet[43]);
+
+    if (secs < 2208988800UL) {
+
+        ck_msg("Invalid NTP timestamp received.");
+
+        return;
+
+    }
+
+    time_t epoch = (time_t)(secs - 2208988800UL);
+
+    struct timeval tv = {epoch, 0};
+
     perhapsSetRTC(RTCQualityNTP, &tv, true);
-    ck_msg("Clock set from the NTP server.");
+
+    ck_msg("Clock set from NTP server.");
+
     ck_refresh();
+
+#elif defined(HAS_WIFI_NTP)
+
+    if (WiFi.status() != WL_CONNECTED) {
+
+        ck_msg("Wi-Fi is not connected. Turn it on in the network settings first.");
+
+        return;
+
+    }
+
+    WiFiUDP udp;
+
+    NTPClient client(udp, srv);
+
+    client.begin();
+
+    bool ok = client.forceUpdate();
+
+    unsigned long epoch = client.getEpochTime();
+
+    client.end();
+
+    if (!ok || epoch < 1700000000) {
+
+        ck_msg("No answer from the NTP server. Check the address and the internet connection.");
+
+        return;
+
+    }
+
+    struct timeval tv = {(time_t)epoch, 0};
+
+    perhapsSetRTC(RTCQualityNTP, &tv, true);
+
+    ck_msg("Clock set from the NTP server.");
+
+    ck_refresh();
+
+#else
+
+    ck_msg("Wi-Fi NTP is not available on this platform.");
+
+#endif
+
 }
+
+
 
 static void ck_step_cb(lv_event_t *e)
+
 {
+
     intptr_t u = (intptr_t)lv_event_get_user_data(e);
+
     int f = (int)(u >> 1), d = (u & 1) ? 1 : -1;
+
     int lo = f == 0 ? 2024 : (f == 1 || f == 2 ? 1 : 0);
+
     int hi = f == 0 ? 2099 : (f == 1 ? 12 : (f == 2 ? ck_dim(g_ck[0], g_ck[1]) : (f == 3 ? 23 : 59)));
+
     int v = g_ck[f] + d;
+
     if (v > hi)
+
         v = lo;
+
     if (v < lo)
+
         v = hi;
+
     g_ck[f] = v;
+
     if (g_ck[2] > ck_dim(g_ck[0], g_ck[1]))
+
         g_ck[2] = ck_dim(g_ck[0], g_ck[1]);
+
     ck_show_fields();
+
     ck_msg("");
+
 }
+
+
 
 static void ck_set_cb(lv_event_t *e)
+
 {
+
     struct tm t;
+
     memset(&t, 0, sizeof(t));
+
     t.tm_year = g_ck[0] - 1900;
+
     t.tm_mon = g_ck[1] - 1;
+
     t.tm_mday = g_ck[2];
+
     t.tm_hour = g_ck[3];
+
     t.tm_min = g_ck[4];
+
     t.tm_isdst = -1;
+
     time_t secs = mktime(&t);
+
     struct timeval tv = {secs, 0};
+
     perhapsSetRTC(RTCQualityDevice, &tv, true);
+
     ck_msg("Clock set. A GPS or NTP time will replace it.");
+
     ck_refresh();
+
 }
+
+
 
 static void ck_tz_cb(lv_event_t *e)
+
 {
+
     int sel = (int)lv_dropdown_get_selected(g_ckTz);
+
     if (g_ckTzExtra) {
+
         if (sel == 0)
+
             return; // the current setting stays
+
         sel--;
+
     }
+
     if (sel < 0 || sel >= CK_TZ_N)
+
         return;
+
     char tz[24];
+
     ck_tz_posix(CK_TZ[sel], tz, sizeof(tz));
+
     setenv("TZ", tz, 1);
+
     tzset();
+
     if (g_devCfg) {
+
         meshtastic_Config_DeviceConfig *dc = (meshtastic_Config_DeviceConfig *)g_devCfg();
+
         if (dc) {
+
             strncpy(dc->tzdef, tz, sizeof(dc->tzdef) - 1);
+
             dc->tzdef[sizeof(dc->tzdef) - 1] = 0;
+
             if (g_sendDev)
+
                 g_sendDev();
+
         }
+
     }
+
     ck_msg("Time zone set.");
+
     ck_refresh();
+
 }
+
+
 
 static void ck_back_cb(lv_event_t *e)
+
 {
+
     close_panel(g_ckPanel);
+
 }
+
+
 
 static lv_obj_t *ck_heading(lv_obj_t *content, const char *text)
+
 {
+
     lv_obj_t *l = lv_label_create(content);
+
     lv_label_set_text(l, text);
+
     lv_obj_set_style_text_color(l, lv_color_hex(0xB8BEE6), 0);
+
     return l;
+
 }
+
+
 
 static lv_obj_t *ck_value_label(lv_obj_t *content)
+
 {
+
     lv_obj_t *l = lv_label_create(content);
+
     lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+
     lv_obj_set_width(l, lv_pct(100));
+
     lv_obj_set_style_text_color(l, lv_color_hex(0xFFFFFF), 0);
+
     lv_obj_set_style_bg_color(l, lv_color_hex(0x2A2E4D), 0);
+
     lv_obj_set_style_bg_opa(l, LV_OPA_COVER, 0);
+
     lv_obj_set_style_radius(l, 8, 0);
+
     lv_obj_set_style_pad_all(l, 8, 0);
+
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+
     return l;
+
 }
+
+
 
 static void ck_open_cb(lv_event_t *e)
+
 {
+
     if (!g_ckPanel) {
+
         lv_obj_t *content;
+
         g_ckPanel = make_panel("Set clock", ck_back_cb, &content);
+
         ck_heading(content, "Time now");
+
         g_ckNow = ck_value_label(content);
+
         ck_heading(content, "GPS time");
+
         g_ckGps = ck_value_label(content);
-        lv_obj_t *useGps = make_label_button(content, "Use GPS time", 0x2F7D4F, ck_use_gps_cb);
-        lv_obj_set_width(useGps, lv_pct(100));
+
+        make_action_button(content, "Use GPS time", ck_use_gps_cb, 0x216ad8);
+
         g_ckNtp = make_field(content, "NTP server", 32, false);
-        lv_obj_t *useNtp = make_label_button(content, "Sync from NTP (needs Wi-Fi)", 0x2F7D4F, ck_ntp_cb);
-        lv_obj_set_width(useNtp, lv_pct(100));
+
+        make_action_button(content, "Sync from NTP (needs Wi-Fi)", ck_ntp_cb, 0x216ad8);
+
         // the time zone, the list starts with the current setting when it is not one of the whole offsets
+
         const char *cur = "";
+
         if (g_devCfg) {
+
             meshtastic_Config_DeviceConfig *dc = (meshtastic_Config_DeviceConfig *)g_devCfg();
+
             if (dc)
+
                 cur = dc->tzdef;
+
         }
+
         char opts[900], one[24];
+
         opts[0] = 0;
+
         int sel = -1;
+
         for (int i = 0; i < CK_TZ_N; i++) {
+
             ck_tz_posix(CK_TZ[i], one, sizeof(one));
+
             if (strcmp(cur, one) == 0)
+
                 sel = i;
+
         }
+
         g_ckTzExtra = sel < 0;
+
         if (g_ckTzExtra)
+
             strcat(opts, "Current setting\n");
+
         for (int i = 0; i < CK_TZ_N; i++) {
+
             int a = CK_TZ[i] < 0 ? -CK_TZ[i] : CK_TZ[i];
+
             char lab[24];
+
             snprintf(lab, sizeof(lab), "UTC%c%02d:%02d%s", CK_TZ[i] < 0 ? '-' : '+', a / 60, a % 60, i + 1 < CK_TZ_N ? "\n" : "");
+
             strcat(opts, lab);
+
         }
+
         g_ckTz = make_dropdown(content, "Time zone", opts);
+
         lv_dropdown_set_selected(g_ckTz, g_ckTzExtra ? 0 : (uint32_t)sel);
+
         lv_obj_add_event_cb(g_ckTz, ck_tz_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
         ck_heading(content, "Or set by hand");
+
         lv_obj_t *row = lv_obj_create(content);
+
         lv_obj_remove_style_all(row);
+
         lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
         lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
         static const char *const CAP[5] = {"year", "month", "day", "hour", "min"};
+
         for (int i = 0; i < 5; i++) {
+
             lv_obj_t *col = lv_obj_create(row);
+
             lv_obj_remove_style_all(col);
+
             lv_obj_set_size(col, lv_pct(19), LV_SIZE_CONTENT);
+
             lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+
             lv_obj_set_flex_align(col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
             lv_obj_set_style_pad_row(col, 3, 0);
+
             lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_t *plus = make_label_button(col, "+", COL_BTN, nullptr);
-            lv_obj_set_width(plus, lv_pct(100));
-            lv_obj_set_style_pad_hor(plus, 0, 0);
+
+            lv_obj_t *plus = lv_button_create(col);
+
+            lv_obj_set_size(plus, lv_pct(100), 28);
+
+            add_style_settings_button_style(plus);
+
+            lv_obj_set_style_shadow_width(plus, 0, 0);
+
+            lv_obj_set_style_pad_all(plus, 0, 0);
+
             lv_obj_add_event_cb(plus, ck_step_cb, LV_EVENT_CLICKED, (void *)(intptr_t)((i << 1) | 1));
+
+            lv_obj_t *pl = lv_label_create(plus);
+
+            lv_label_set_text(pl, "+");
+
+            lv_obj_center(pl);
+
             g_ckVal[i] = lv_label_create(col);
+
             lv_obj_set_style_text_color(g_ckVal[i], lv_color_hex(0xFFFFFF), 0);
-            lv_obj_t *minus = make_label_button(col, "-", COL_BTN, nullptr);
-            lv_obj_set_width(minus, lv_pct(100));
-            lv_obj_set_style_pad_hor(minus, 0, 0);
+
+            lv_obj_t *minus = lv_button_create(col);
+
+            lv_obj_set_size(minus, lv_pct(100), 28);
+
+            add_style_settings_button_style(minus);
+
+            lv_obj_set_style_shadow_width(minus, 0, 0);
+
+            lv_obj_set_style_pad_all(minus, 0, 0);
+
             lv_obj_add_event_cb(minus, ck_step_cb, LV_EVENT_CLICKED, (void *)(intptr_t)(i << 1));
+
+            lv_obj_t *ml = lv_label_create(minus);
+
+            lv_label_set_text(ml, "-");
+
+            lv_obj_center(ml);
+
             lv_obj_t *cap = lv_label_create(col);
+
             lv_label_set_text(cap, CAP[i]);
+
             lv_obj_set_style_text_color(cap, lv_color_hex(0xB8BEE6), 0);
+
         }
-        lv_obj_t *set = make_label_button(content, "Set clock", COL_BTN, ck_set_cb);
-        lv_obj_set_width(set, lv_pct(100));
+
+        make_action_button(content, "Set clock", ck_set_cb, 0x216ad8);
+
         g_ckMsg = make_status(content);
+
         lv_timer_create(ck_timer_cb, 1000, nullptr);
+
     }
+
     // the fields start from the time the node has now
+
     time_t now = time(nullptr);
+
     struct tm t;
+
     if (getRTCQuality() == RTCQualityNone) {
+
         t = {};
+
         t.tm_year = 2026 - 1900;
+
         t.tm_mon = 0;
+
         t.tm_mday = 1;
+
         t.tm_hour = 12;
+
     } else {
+
         localtime_r(&now, &t);
+
     }
+
     g_ck[0] = t.tm_year + 1900;
+
     g_ck[1] = t.tm_mon + 1;
+
     g_ck[2] = t.tm_mday;
+
     g_ck[3] = t.tm_hour;
+
     g_ck[4] = t.tm_min;
+
     ck_show_fields();
+
     if (g_netCfg) {
+
         meshtastic_Config_NetworkConfig *nc = (meshtastic_Config_NetworkConfig *)g_netCfg();
+
         lv_textarea_set_text(g_ckNtp, nc && nc->ntp_server[0] ? nc->ntp_server : "meshtastic.pool.ntp.org");
+
     }
+
     ck_msg("");
+
     ck_refresh();
+
     open_panel(g_ckPanel);
+
 }
+
+
 
 // screensaver settings
+
 extern "C" int emoji_ss_cfg_get(int key) __attribute__((weak));
+
 extern "C" void emoji_ss_cfg_set(int key, int val) __attribute__((weak));
+
 extern "C" void emoji_led_set_pin(int pin) __attribute__((weak));
+
 #ifdef HAS_SDCARD
+
 extern SdFs SDFs;
+
 #endif
+
 extern "C" bool emoji_sd_ready(void) __attribute__((weak));
+
 extern "C" void emoji_ss_img_get(char *out, size_t size) __attribute__((weak));
+
 extern "C" void emoji_ss_img_set(const char *path) __attribute__((weak));
+
 extern "C" void emoji_ss_preview(void) __attribute__((weak));
 
+
+
 // image picker: the JPEG files in the /screensaver folder of the SD card
+
 static bool img_name(const char *nm)
+
 {
+
     size_t l = strlen(nm);
+
     if (l > 4 && strcasecmp(nm + l - 4, ".jpg") == 0)
+
         return true;
+
     return l > 5 && strcasecmp(nm + l - 5, ".jpeg") == 0;
+
 }
+
+
 
 static lv_obj_t *g_pickPanel = nullptr, *g_pickList = nullptr, *g_ssImgBtn = nullptr;
+
 static char g_pickNames[60][44];
+
 static int g_pickCount = 0;
+
 static void pick_back_cb(lv_event_t *e)
+
 {
+
     close_panel(g_pickPanel);
+
 }
+
 static lv_obj_t *g_ssSlidePtr = nullptr;
+
 static void ss_img_label(const char *name)
+
 {
+
     if (!g_ssImgBtn)
+
         return;
+
     char label[100];
+
     snprintf(label, sizeof(label), "Image: %s", name[0] ? name : "first one in /screensaver");
+
     lv_label_set_text(lv_obj_get_child(g_ssImgBtn, 0), label);
+
 }
+
 static void pick_entry_cb(lv_event_t *e)
+
 {
+
     int idx = (int)(uintptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+
     if (idx < 0 || idx >= g_pickCount)
+
         return;
+
     if (emoji_ss_img_set)
+
         emoji_ss_img_set(g_pickNames[idx]);
+
     // picking one picture means one picture, the slideshow is only ever the whole folder
+
     if (emoji_ss_cfg_set)
+
         emoji_ss_cfg_set(16, 0);
+
     if (g_ssSlidePtr)
+
         lv_dropdown_set_selected(g_ssSlidePtr, 0);
+
     ss_img_label(g_pickNames[idx]);
+
     close_panel(g_pickPanel);
+
 }
+
 static void pick_fill(void)
+
 {
+
     lv_obj_clean(g_pickList);
+
     g_pickCount = 0;
+
     lv_obj_t *h = lv_label_create(g_pickList);
+
     lv_label_set_long_mode(h, LV_LABEL_LONG_WRAP);
+
     lv_obj_set_width(h, lv_pct(100));
+
     lv_obj_set_style_text_color(h, lv_color_hex(0xB8BEE6), 0);
+
     lv_label_set_text(h, "JPEG files in the /screensaver folder of the SD card, 320 x 480 pixels");
+
 #ifdef HAS_SDCARD
+
     if (!emoji_sd_ready || !emoji_sd_ready()) {
+
         lv_obj_t *m = lv_label_create(g_pickList);
+
         lv_label_set_text(m, "No SD card found. Insert one and restart.");
+
         lv_obj_set_style_text_color(m, lv_color_hex(0xF2A0A0), 0);
+
         return;
+
     }
+
     ISpiLock::Guard bus; // the SD card shares its SPI bus with the screen and the radio, take the host's lock like the display library does
+
     if (!SDFs.exists("/screensaver"))
+
         SDFs.mkdir("/screensaver");
+
     FsFile d = SDFs.open("/screensaver");
+
     if (!d || !d.isDir()) {
+
         lv_obj_t *m = lv_label_create(g_pickList);
+
         lv_label_set_text(m, "Cannot open /screensaver");
+
         return;
+
     }
+
     FsFile e;
+
     while (g_pickCount < 60 && e.openNext(&d, O_RDONLY)) {
+
         char nm[44];
+
         e.getName(nm, sizeof(nm));
+
         bool dir = e.isDir();
+
         e.close();
+
         if (dir || nm[0] == '.' || !img_name(nm))
+
             continue;
+
         snprintf(g_pickNames[g_pickCount], sizeof(g_pickNames[0]), "%s", nm);
+
         char label[60];
+
         snprintf(label, sizeof(label), LV_SYMBOL_IMAGE " %s", nm);
-        lv_obj_t *b = make_label_button(g_pickList, label, 0x2F7D4F, pick_entry_cb);
-        lv_obj_set_width(b, lv_pct(100));
-        lv_obj_set_width(lv_obj_get_child(b, 0), lv_pct(100));
-        lv_label_set_long_mode(lv_obj_get_child(b, 0), LV_LABEL_LONG_DOT);
+
+        lv_obj_t *b = make_action_button(g_pickList, label, pick_entry_cb);
+
         lv_obj_set_user_data(b, (void *)(uintptr_t)g_pickCount);
+
         g_pickCount++;
+
     }
+
     d.close();
+
     if (g_pickCount == 0) {
+
         lv_obj_t *m = lv_label_create(g_pickList);
+
         lv_label_set_text(m, "No pictures yet. Copy baseline JPEG files into /screensaver on the SD card.");
+
     }
+
 #else
+
     lv_obj_t *m = lv_label_create(g_pickList);
+
     lv_label_set_text(m, "This build has no SD card support.");
+
 #endif
+
 }
+
 static void pick_open_cb(lv_event_t *e)
+
 {
+
     if (!g_pickPanel) {
+
         lv_obj_t *content;
+
         g_pickPanel = make_panel("Choose image", pick_back_cb, &content);
+
         g_pickList = content;
+
     }
+
     pick_fill();
+
     open_panel(g_pickPanel);
+
 }
+
 static void preview_cb(lv_event_t *e)
+
 {
+
     if (emoji_ss_preview)
+
         emoji_ss_preview();
+
 }
+
 static lv_obj_t *g_ssPanel = nullptr, *g_ssStatus, *g_ssSw[12], *g_ssDim, *g_ssOff, *g_ssTap, *g_ssLook, *g_ssClock, *g_ssSecs, *g_ssSlide,
+
                 *g_ssSlideT;
+
 static void ss_back_cb(lv_event_t *e)
+
 {
+
     close_panel(g_ssPanel);
+
 }
+
 static void ss_save_cb(lv_event_t *e)
+
 {
+
     if (!emoji_ss_cfg_set)
+
         return;
+
     for (int k = 0; k < 12; k++)
+
         if (g_ssSw[k])
+
             emoji_ss_cfg_set(k, lv_obj_has_state(g_ssSw[k], LV_STATE_CHECKED) ? 1 : 0);
+
     emoji_ss_cfg_set(1, lv_dropdown_get_selected(g_ssDim));
+
     emoji_ss_cfg_set(2, lv_dropdown_get_selected(g_ssOff));
+
     emoji_ss_cfg_set(3, lv_dropdown_get_selected(g_ssTap) == 0 ? 1 : 2); // 1 single tap, 2 long press
+
     emoji_ss_cfg_set(13, lv_dropdown_get_selected(g_ssLook));
+
     emoji_ss_cfg_set(14, lv_dropdown_get_selected(g_ssClock));
+
     emoji_ss_cfg_set(15, lv_obj_has_state(g_ssSecs, LV_STATE_CHECKED) ? 1 : 0);
+
     emoji_ss_cfg_set(16, lv_dropdown_get_selected(g_ssSlide));
+
     emoji_ss_cfg_set(17, lv_dropdown_get_selected(g_ssSlideT));
+
     lv_label_set_text(g_ssStatus, "Saved");
+
 }
+
 static void ss_open_cb(lv_event_t *e)
+
 {
+
     if (!emoji_ss_cfg_get)
+
         return;
+
     crumb("ss_open start");
+
     if (!g_ssPanel) {
+
         lv_obj_t *content;
+
         g_ssPanel = make_panel("Screensaver", ss_back_cb, &content);
+
         static const char *const names[12] = {"Screensaver on", "", "", "", "Battery", "Nodes online", "Unread badge", "Last message (privacy)",
+
                                               "GPS (sats, fix)", "Channel use bar", "MQTT / Wi-Fi status", "Uptime"};
+
+        make_section_header(content, "GENERAL");
+
         g_ssSw[0] = make_switch_row(content, names[0]);
-        g_ssDim = make_dropdown(content, "Dim level (of the normal brightness, at least 40 of 255)", "10%\n25%\n50%");
-        g_ssOff = make_dropdown(content, "Backlight off after the dim time", "5 seconds\n10 seconds\n30 seconds\n1 minute\n2 minutes\nNever");
+
+        g_ssLook = make_dropdown(content, "Style", "Clock page\nImage and clock\nImage only\nStickman arena (plugged in)");
+
         g_ssTap = make_dropdown(content, "Unlock", "Single tap\nLong press (0.8 s)");
-        g_ssImgBtn = make_label_button(content, "Image: first one in /screensaver", COL_BTN, pick_open_cb);
-        lv_obj_set_width(g_ssImgBtn, lv_pct(100));
-        lv_obj_set_width(lv_obj_get_child(g_ssImgBtn, 0), lv_pct(100));
-        lv_label_set_long_mode(lv_obj_get_child(g_ssImgBtn, 0), LV_LABEL_LONG_DOT);
-        lv_obj_t *prev = make_label_button(content, "Preview now", 0x2F7D4F, preview_cb);
-        lv_obj_set_width(prev, lv_pct(100));
-        g_ssLook = make_dropdown(content, "Style (images come from the SD card)", "Clock page\nImage and clock\nImage only\nStickman arena (plugged in)");
-        g_ssSlide = make_dropdown(content, "Image", "Selected image only\nSlideshow of all pictures in /screensaver");
-        g_ssSlidePtr = g_ssSlide;
-        g_ssSlideT = make_dropdown(content, "Slideshow: change picture every", "5 seconds\n10 seconds\n30 seconds\n1 minute");
-        g_ssClock = make_dropdown(content, "Clock", "Digital\nAnalog\nAnalog and digital");
+
+        lv_obj_t *prev = make_action_button(content, "Preview screensaver", preview_cb);
+
+
+
+        make_section_header(content, "DIMMING & TIMEOUT");
+
+        g_ssDim = make_dropdown(content, "Dim brightness", "10%\n25%\n50%");
+
+        g_ssOff = make_dropdown(content, "Turn off backlight after", "5 seconds\n10 seconds\n30 seconds\n1 minute\n2 minutes\nNever");
+
+
+
+        make_section_header(content, "CLOCK DISPLAY");
+
+        g_ssClock = make_dropdown(content, "Clock style", "Digital\nAnalog\nAnalog and digital");
+
         g_ssSecs = make_switch_row(content, "Seconds hand");
+
+
+
+        make_section_header(content, "WALLPAPER & SLIDESHOW");
+
+        g_ssImgBtn = make_action_button(content, "Image: first one in /screensaver", pick_open_cb);
+
+        g_ssSlide = make_dropdown(content, "Image selection", "Selected image only\nSlideshow of all pictures in /screensaver");
+
+        g_ssSlidePtr = g_ssSlide;
+
+        g_ssSlideT = make_dropdown(content, "Slideshow interval", "5 seconds\n10 seconds\n30 seconds\n1 minute");
+
+
+
+        make_section_header(content, "STATUS OVERLAYS");
+
         for (int k = 4; k < 12; k++)
+
             g_ssSw[k] = make_switch_row(content, names[k]);
+
         g_ssStatus = make_status(content);
+
         make_save_cancel(content, ss_save_cb, ss_back_cb);
+
         lv_obj_t *pad = lv_obj_create(content);
+
         lv_obj_remove_style_all(pad);
-        lv_obj_set_size(pad, 10, 20);
+
+        lv_obj_set_size(pad, 10, 150);
+
     }
+
     crumb("ss_open panel built");
+
     for (int k = 0; k < 12; k++)
+
         if (g_ssSw[k])
+
             set_switch(g_ssSw[k], emoji_ss_cfg_get(k) != 0);
+
     lv_dropdown_set_selected(g_ssDim, emoji_ss_cfg_get(1));
+
     lv_dropdown_set_selected(g_ssOff, emoji_ss_cfg_get(2));
+
     lv_dropdown_set_selected(g_ssTap, emoji_ss_cfg_get(3) == 2 ? 1 : 0);
+
     lv_dropdown_set_selected(g_ssLook, emoji_ss_cfg_get(13));
+
     if (emoji_ss_img_get) {
+
         char cur[96];
+
         emoji_ss_img_get(cur, sizeof(cur));
+
         ss_img_label(cur);
+
     }
+
     lv_dropdown_set_selected(g_ssSlide, emoji_ss_cfg_get(16));
+
     lv_dropdown_set_selected(g_ssSlideT, emoji_ss_cfg_get(17));
+
     lv_dropdown_set_selected(g_ssClock, emoji_ss_cfg_get(14));
+
     set_switch(g_ssSecs, emoji_ss_cfg_get(15) != 0);
+
     crumb("ss_open fields filled");
+
     lv_label_set_text(g_ssStatus, "The dim time is the normal screen timeout in Settings");
+
     open_panel(g_ssPanel);
+
     crumb("ss_open done");
+
 }
+
+
 
 // RTTTL ringtone: presets, a small player for the test button
+
 // RTTTL ringtone presets
+
 static const char *const RING_NAME[17] = {"Beep", "Alert", "Chime", "Siren", "Knock", "Ping", "Doorbell", "SOS", "Rising", "Falling", "Arpeggio", "Cuckoo", "Ode to Joy", "Twinkle", "Fur Elise", "Jingle Bells", "Custom"};
+
 static const char *const RING_TUNE[16] = {
+
     "beep:d=16,o=6,b=200:c,e,g,c7",
+
     "alert:d=8,o=6,b=180:a,p,a,p,a",
+
     "chime:d=8,o=6,b=140:e,c,g5,2c",
+
     "siren:d=8,o=5,b=160:a,d6,a,d6,a,d6",
+
     "knock:d=16,o=5,b=200:8c,p,8c,p,4c",
+
     "ping:d=16,o=7,b=240:e,8p,e6",
+
     "bell:d=4,o=6,b=120:e,2c",
+
     "sos:d=16,o=6,b=200:c,p,c,p,c,8p,8c,p,8c,p,8c,8p,c,p,c,p,c",
+
     "rise:d=16,o=5,b=200:c,d,e,f,g,a,b,c6",
+
     "fall:d=16,o=6,b=200:c,b5,a5,g5,f5,e5,d5,c5",
+
     "arp:d=16,o=5,b=180:c,e,g,c6,g,e,c",
+
     "cuckoo:d=4,o=6,b=100:g,e",
+
     "joy:d=4,o=5,b=140:e,e,f,g,g,f,e,d,c,c,d,e,8e.,16d,2d",
+
     "twinkle:d=4,o=5,b=120:c,c,g,g,a,a,2g,f,f,e,e,d,d,2c",
+
     "elise:d=16,o=6,b=125:e,d#,e,d#,e,b5,d,c,8a5",
+
     "jingle:d=8,o=5,b=180:e,e,4e,e,e,4e,e,g,c.,16d,2e"};
 
+
+
 static void tone_pin(int pin, float freq, uint32_t ms)
+
 {
+
     if (freq < 50.0f) {
+
         delay(ms);
+
         return;
+
     }
+
     uint32_t halfUs = (uint32_t)(500000.0f / freq);
+
     uint32_t cycles = (uint32_t)((float)ms * 1000.0f / (2.0f * (float)halfUs));
+
     for (uint32_t i = 0; i < cycles; i++) {
+
         digitalWrite(pin, HIGH);
+
         delayMicroseconds(halfUs);
+
         digitalWrite(pin, LOW);
+
         delayMicroseconds(halfUs);
+
     }
+
 }
+
+
 
 static void rtttl_play(const char *s, int pin)
+
 {
+
     int d = 4, o = 6, b = 63;
+
     const char *p = strchr(s, ':');
+
     if (!p)
+
         return;
+
     p++;
+
     while (*p && *p != ':') {
+
         char k = *p++;
+
         if (*p == '=')
+
             p++;
+
         int v = 0;
+
         while (*p >= '0' && *p <= '9')
+
             v = v * 10 + (*p++ - '0');
+
         if (k == 'd')
+
             d = v;
+
         else if (k == 'o')
+
             o = v;
+
         else if (k == 'b')
+
             b = v;
+
         if (*p == ',')
+
             p++;
+
     }
+
     if (*p == ':')
+
         p++;
+
     if (b <= 0 || d <= 0)
+
         return;
+
     uint32_t whole = 240000 / (uint32_t)b;
+
     for (int count = 0; *p && count < 60; count++) {
+
         int dur = 0;
+
         while (*p >= '0' && *p <= '9')
+
             dur = dur * 10 + (*p++ - '0');
+
         if (dur == 0)
+
             dur = d;
+
         int note = -1;
+
         switch (*p) {
+
         case 'c': note = 0; break;
+
         case 'd': note = 2; break;
+
         case 'e': note = 4; break;
+
         case 'f': note = 5; break;
+
         case 'g': note = 7; break;
+
         case 'a': note = 9; break;
+
         case 'b': note = 11; break;
+
         default: break; // p is a pause
+
         }
+
         if (*p)
+
             p++;
+
         if (*p == '#') {
+
             note++;
+
             p++;
+
         }
+
         bool dotted = false;
+
         if (*p == '.') {
+
             dotted = true;
+
             p++;
+
         }
+
         int oct = o;
+
         if (*p >= '0' && *p <= '9')
+
             oct = *p++ - '0';
+
         if (*p == '.') {
+
             dotted = true;
+
             p++;
+
         }
+
         uint32_t ms = whole / (uint32_t)dur;
+
         if (dotted)
+
             ms += ms / 2;
+
         if (note >= 0) {
+
             float freq = 440.0f * powf(2.0f, (float)((oct + 1) * 12 + note - 69) / 12.0f);
+
             tone_pin(pin, freq, ms * 9 / 10);
+
             delay(ms / 10);
+
         } else {
+
             delay(ms);
+
         }
+
         while (*p && *p != ',')
+
             p++;
+
         if (*p == ',')
+
             p++;
+
     }
+
 }
+
+
 
 // notification output on one GPIO: LED or buzzer, written to the External Notification config
+
 static CfgFn g_extCfg = nullptr;
+
 static VoidFn g_sendExt = nullptr;
+
 typedef void (*RingFn)(const char *);
+
 static RingFn g_sendRing = nullptr;
+
 static lv_obj_t *g_ntRingDd = nullptr, *g_ntRingTa = nullptr;
+
 static int g_extPin = 48;
 
+
+
 // welcome sound: a ringtone at boot, played from its own task so the screen does not wait for it
+
 #define RING_COUNT ((int)(sizeof(RING_TUNE) / sizeof(RING_TUNE[0])))
+
 static char g_welTune[232];
+
+#if defined(ARCH_ESP32) || defined(ARDUINO_ARCH_ESP32) || defined(ESP32)
+
 static void welcome_task(void *arg)
+
 {
+
     pinMode(g_extPin, OUTPUT);
+
     rtttl_play(g_welTune, g_extPin);
+
     digitalWrite(g_extPin, LOW);
+
     vTaskDelete(NULL);
+
 }
-static void welcome_start(void)
+
+#else
+
+#include <thread>
+
+static void welcome_task()
+
 {
-    Preferences wp;
-    wp.begin("chatui", true);
-    int idx = wp.getInt("welidx", 0);
-    bool buz = wp.getBool("welbuz", false);
-    String txt = wp.getString("weltxt", "");
-    wp.end();
-    if (idx <= 0 || !buz)
-        return;
-    snprintf(g_welTune, sizeof(g_welTune), "%s", idx <= RING_COUNT ? RING_TUNE[idx - 1] : txt.c_str());
-    xTaskCreate(welcome_task, "welcome", 4096, NULL, 1, NULL);
-}
-static lv_obj_t *g_ntWelDd = nullptr;
-static lv_obj_t *g_ntPanel = nullptr, *g_ntStatus, *g_ntMode, *g_ntMsg, *g_ntBell, *g_ntLed;
-static void nt_back_cb(lv_event_t *e)
-{
-    close_panel(g_ntPanel);
-}
-static void nt_ring_cb(lv_event_t *e)
-{
-    uint32_t sel = lv_dropdown_get_selected(g_ntRingDd);
-    if (sel < 16)
-        lv_textarea_set_text(g_ntRingTa, RING_TUNE[sel]);
-}
-static void nt_save_cb(lv_event_t *e)
-{
-    meshtastic_ModuleConfig_ExternalNotificationConfig *c = (meshtastic_ModuleConfig_ExternalNotificationConfig *)g_extCfg();
-    uint32_t mode = lv_dropdown_get_selected(g_ntMode);
-    bool msg = lv_obj_has_state(g_ntMsg, LV_STATE_CHECKED), bell = lv_obj_has_state(g_ntBell, LV_STATE_CHECKED);
-    if (mode == 0) {
-        if (c->output == (uint32_t)g_extPin)
-            c->output = 0;
-        if (c->output_buzzer == (uint32_t)g_extPin)
-            c->output_buzzer = 0;
-        c->enabled = (c->output || c->output_buzzer || c->output_vibra);
-    } else if (mode == 1 && lv_dropdown_get_selected(g_ntLed) > 0) {
-        // the display firmware drives the LED itself, the module leaves the pin alone
-        if (c->output == (uint32_t)g_extPin)
-            c->output = 0;
-        if (c->output_buzzer == (uint32_t)g_extPin)
-            c->output_buzzer = 0;
-        c->enabled = (c->output || c->output_buzzer || c->output_vibra);
-    } else if (mode == 1) {
-        c->output = g_extPin;
-        if (c->output_buzzer == (uint32_t)g_extPin)
-            c->output_buzzer = 0;
-        c->use_pwm = false;
-        c->active = true;
-        c->enabled = true;
-        c->alert_message = msg;
-        c->alert_bell = bell;
-        c->alert_message_buzzer = false;
-        c->alert_bell_buzzer = false;
-        if (c->output_ms == 0)
-            c->output_ms = 1000;
-    } else {
-        c->output_buzzer = g_extPin;
-        if (c->output == (uint32_t)g_extPin)
-            c->output = 0;
-        c->use_pwm = true;
-        c->enabled = true;
-        c->alert_message_buzzer = msg;
-        c->alert_bell_buzzer = bell;
-        c->alert_message = false;
-        c->alert_bell = false;
-        if (c->output_ms == 0)
-            c->output_ms = 1000;
-    }
-    if (emoji_ss_cfg_set)
-        emoji_ss_cfg_set(12, (mode == 1) ? (int)lv_dropdown_get_selected(g_ntLed) : 0);
-    {
-        Preferences wp;
-        wp.begin("chatui", false);
-        uint32_t wsel = lv_dropdown_get_selected(g_ntWelDd);
-        wp.putInt("welidx", (int)wsel);
-        wp.putBool("welbuz", mode == 2);
-        if ((int)wsel > RING_COUNT)
-            wp.putString("weltxt", lv_textarea_get_text(g_ntRingTa));
-        wp.end();
-    }
-    g_sendExt();
-    if (mode == 2 && g_sendRing && lv_textarea_get_text(g_ntRingTa)[0]) {
-        g_sendRing(lv_textarea_get_text(g_ntRingTa));
-        Preferences rp;
-        rp.begin("chatui", false);
-        rp.putString("ring", lv_textarea_get_text(g_ntRingTa));
-        rp.end();
-    }
-    lv_label_set_text(g_ntStatus, "Saved, the node restarts to apply it");
-}
-static void nt_test_cb(lv_event_t *e)
-{
-    uint32_t mode = lv_dropdown_get_selected(g_ntMode);
-    if (mode == 0 || (mode == 1 && lv_dropdown_get_selected(g_ntLed) > 0))
-        return; // the status LED modes need no test
+
     pinMode(g_extPin, OUTPUT);
-    if (mode == 1) {
-        digitalWrite(g_extPin, HIGH);
-        delay(400);
-        digitalWrite(g_extPin, LOW);
-    } else {
-        rtttl_play(lv_textarea_get_text(g_ntRingTa), g_extPin);
-        digitalWrite(g_extPin, LOW);
-    }
+
+    rtttl_play(g_welTune, g_extPin);
+
+    digitalWrite(g_extPin, LOW);
+
 }
+
+#endif
+
+static void welcome_start(void)
+
+{
+
+    Preferences wp;
+
+    wp.begin("chatui", true);
+
+    int idx = wp.getInt("welidx", 0);
+
+    bool buz = wp.getBool("welbuz", false);
+
+    String txt = wp.getString("weltxt", "");
+
+    wp.end();
+
+    if (idx <= 0 || !buz)
+
+        return;
+
+    snprintf(g_welTune, sizeof(g_welTune), "%s", idx <= RING_COUNT ? RING_TUNE[idx - 1] : txt.c_str());
+
+#if defined(ARCH_ESP32) || defined(ARDUINO_ARCH_ESP32) || defined(ESP32)
+
+    xTaskCreate(welcome_task, "welcome", 4096, NULL, 1, NULL);
+
+#else
+
+    std::thread(welcome_task).detach();
+
+#endif
+
+}
+
+static lv_obj_t *g_ntWelDd = nullptr;
+
+static lv_obj_t *g_ntPanel = nullptr, *g_ntStatus, *g_ntMode, *g_ntMsg, *g_ntBell, *g_ntLed, *g_ntPinTa = nullptr;
+
+static void nt_back_cb(lv_event_t *e)
+
+{
+
+    close_panel(g_ntPanel);
+
+}
+
+static void nt_ring_cb(lv_event_t *e)
+
+{
+
+    uint32_t sel = lv_dropdown_get_selected(g_ntRingDd);
+
+    if (sel < 16)
+
+        lv_textarea_set_text(g_ntRingTa, RING_TUNE[sel]);
+
+}
+
+static void nt_save_cb(lv_event_t *e)
+
+{
+
+    if (g_ntPinTa) {
+
+        const char *pStr = lv_textarea_get_text(g_ntPinTa);
+
+        if (pStr && pStr[0]) {
+
+            int p = atoi(pStr);
+
+            if (p >= 0 && p <= 255) {
+
+                g_extPin = p;
+
+                Preferences rp;
+
+                rp.begin("chatui", false);
+
+                rp.putInt("extpin", g_extPin);
+
+                rp.end();
+
+                if (emoji_led_set_pin)
+
+                    emoji_led_set_pin(g_extPin);
+
+            }
+
+        }
+
+    }
+
+    meshtastic_ModuleConfig_ExternalNotificationConfig *c = (meshtastic_ModuleConfig_ExternalNotificationConfig *)g_extCfg();
+
+    uint32_t mode = lv_dropdown_get_selected(g_ntMode);
+
+    bool msg = lv_obj_has_state(g_ntMsg, LV_STATE_CHECKED), bell = lv_obj_has_state(g_ntBell, LV_STATE_CHECKED);
+
+    if (mode == 0) {
+
+        if (c->output == (uint32_t)g_extPin)
+
+            c->output = 0;
+
+        if (c->output_buzzer == (uint32_t)g_extPin)
+
+            c->output_buzzer = 0;
+
+        c->enabled = (c->output || c->output_buzzer || c->output_vibra);
+
+    } else if (mode == 1 && lv_dropdown_get_selected(g_ntLed) > 0) {
+
+        // the display firmware drives the LED itself, the module leaves the pin alone
+
+        if (c->output == (uint32_t)g_extPin)
+
+            c->output = 0;
+
+        if (c->output_buzzer == (uint32_t)g_extPin)
+
+            c->output_buzzer = 0;
+
+        c->enabled = (c->output || c->output_buzzer || c->output_vibra);
+
+    } else if (mode == 1) {
+
+        c->output = g_extPin;
+
+        if (c->output_buzzer == (uint32_t)g_extPin)
+
+            c->output_buzzer = 0;
+
+        c->use_pwm = false;
+
+        c->active = true;
+
+        c->enabled = true;
+
+        c->alert_message = msg;
+
+        c->alert_bell = bell;
+
+        c->alert_message_buzzer = false;
+
+        c->alert_bell_buzzer = false;
+
+        if (c->output_ms == 0)
+
+            c->output_ms = 1000;
+
+    } else {
+
+        c->output_buzzer = g_extPin;
+
+        if (c->output == (uint32_t)g_extPin)
+
+            c->output = 0;
+
+        c->use_pwm = true;
+
+        c->enabled = true;
+
+        c->alert_message_buzzer = msg;
+
+        c->alert_bell_buzzer = bell;
+
+        c->alert_message = false;
+
+        c->alert_bell = false;
+
+        if (c->output_ms == 0)
+
+            c->output_ms = 1000;
+
+    }
+
+    if (emoji_ss_cfg_set)
+
+        emoji_ss_cfg_set(12, (mode == 1) ? (int)lv_dropdown_get_selected(g_ntLed) : 0);
+
+    {
+
+        Preferences wp;
+
+        wp.begin("chatui", false);
+
+        uint32_t wsel = lv_dropdown_get_selected(g_ntWelDd);
+
+        wp.putInt("welidx", (int)wsel);
+
+        wp.putBool("welbuz", mode == 2);
+
+        if ((int)wsel > RING_COUNT)
+
+            wp.putString("weltxt", lv_textarea_get_text(g_ntRingTa));
+
+        wp.end();
+
+    }
+
+    g_sendExt();
+
+    if (mode == 2 && g_sendRing && lv_textarea_get_text(g_ntRingTa)[0]) {
+
+        g_sendRing(lv_textarea_get_text(g_ntRingTa));
+
+        Preferences rp;
+
+        rp.begin("chatui", false);
+
+        rp.putString("ring", lv_textarea_get_text(g_ntRingTa));
+
+        rp.end();
+
+    }
+
+    lv_label_set_text(g_ntStatus, "Saved, the node restarts to apply it");
+
+}
+
+static void nt_test_cb(lv_event_t *e)
+
+{
+
+    uint32_t mode = lv_dropdown_get_selected(g_ntMode);
+
+    if (mode == 0 || (mode == 1 && lv_dropdown_get_selected(g_ntLed) > 0))
+
+        return; // the status LED modes need no test
+
+    pinMode(g_extPin, OUTPUT);
+
+    if (mode == 1) {
+
+        digitalWrite(g_extPin, HIGH);
+
+        delay(400);
+
+        digitalWrite(g_extPin, LOW);
+
+    } else {
+
+        rtttl_play(lv_textarea_get_text(g_ntRingTa), g_extPin);
+
+        digitalWrite(g_extPin, LOW);
+
+    }
+
+}
+
 // ---- ringtone files on the SD card (/rtttl) and the composer ----
+
 static int g_rtTarget = 0; // 0 the Ringtone field, 1 the composer
+
 static lv_obj_t *g_rtPickPanel = nullptr, *g_rtPickList = nullptr;
+
 static char g_rtNames[40][44];
+
 static int g_rtCount = 0;
+
 static void rt_status(const char *t);
 
+
+
 static bool rt_name_ok(const char *nm)
+
 {
+
     size_t l = strlen(nm);
+
     return (l > 4 && strcasecmp(nm + l - 4, ".txt") == 0) || (l > 6 && strcasecmp(nm + l - 6, ".rtttl") == 0);
+
 }
+
 // the tune title (text before the first colon) as a safe file name
+
 static void rt_title(const char *text, char *out, size_t n)
+
 {
+
     size_t o = 0;
+
     for (const char *p = text; *p && *p != ':' && o + 1 < n && o < 20; p++)
+
         if ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || *p == '_' || *p == '-')
+
             out[o++] = *p;
+
     out[o] = 0;
+
     if (o == 0)
+
         snprintf(out, n, "tune");
+
 }
+
 #ifdef HAS_SDCARD
+
 static bool rt_sd_ok(void)
+
 {
+
     return emoji_sd_ready && emoji_sd_ready();
+
 }
+
 static bool rt_save_file(const char *text, char *nameOut, size_t n)
+
 {
+
     if (!rt_sd_ok())
+
         return false;
+
     ISpiLock::Guard bus; // the SD card shares its SPI bus with the screen and the radio, take the host's lock like the display library does
+
     if (!SDFs.exists("/rtttl"))
+
         SDFs.mkdir("/rtttl");
+
     char t[24], path[64];
+
     rt_title(text, t, sizeof(t));
+
     snprintf(path, sizeof(path), "/rtttl/%s.txt", t);
+
     FsFile f = SDFs.open(path, O_WRONLY | O_CREAT | O_TRUNC);
+
     if (!f)
+
         return false;
+
     size_t len = strlen(text);
+
     bool ok = f.write((const uint8_t *)text, len) == len;
+
     f.close();
+
     snprintf(nameOut, n, "%s.txt", t);
+
     return ok;
+
 }
+
 static bool rt_read_file(const char *name, char *out, size_t n)
+
 {
+
     if (!rt_sd_ok())
+
         return false;
+
     ISpiLock::Guard bus; // the SD card shares its SPI bus with the screen and the radio, take the host's lock like the display library does
+
     char path[64];
+
     snprintf(path, sizeof(path), "/rtttl/%s", name);
+
     FsFile f = SDFs.open(path, O_RDONLY);
+
     if (!f)
+
         return false;
+
     int got = f.read((uint8_t *)out, n - 1);
+
     f.close();
+
     if (got <= 0)
+
         return false;
+
     out[got] = 0;
+
     for (char *c = out; *c; c++)
+
         if (*c == '\r' || *c == '\n') { // one tune per file, the first line
+
             *c = 0;
+
             break;
+
         }
+
     return out[0] != 0;
+
 }
+
 #endif
+
+
 
 // ---- composer state ----
+
 struct CpNote {
+
     int8_t semi; // 0..11, -1 for a rest
+
     uint8_t dur;
+
     uint8_t oct;
+
     bool dot;
+
 };
+
 static CpNote g_cpN[60];
+
 static int g_cpCount = 0;
+
 static int g_cpDur = 8, g_cpOct = 5, g_cpBpm = 140;
+
 static bool g_cpDot = false, g_cpBusy = false;
+
 static char g_cpName[16] = "tune";
+
 static lv_obj_t *g_cpPanel = nullptr, *g_cpNameTa = nullptr, *g_cpTextTa = nullptr, *g_cpInfo = nullptr, *g_cpStatus = nullptr;
+
 static lv_obj_t *g_cpDurBtn[6], *g_cpDotBtn = nullptr, *g_cpOctBtn = nullptr, *g_cpBpmBtn = nullptr;
+
 static lv_obj_t *g_cpSeq = nullptr, *g_cpChip[60];
+
 static int g_cpSel = -1;
+
 static void cp_seq_rebuild(void);
+
 static const int CP_DUR[6] = {1, 2, 4, 8, 16, 32};
+
 static const char *const CP_NOTE[12] = {"c", "c#", "d", "d#", "e", "f", "f#", "g", "g#", "a", "a#", "b"};
 
+
+
 static void cp_build(char *out, size_t n)
+
 {
+
     int o = snprintf(out, n, "%s:d=4,o=5,b=%d:", g_cpName, g_cpBpm);
+
     for (int i = 0; i < g_cpCount && o + 12 < (int)n; i++) {
+
         const CpNote &c = g_cpN[i];
+
         if (i)
+
             out[o++] = ',';
+
         if (c.dur != 4)
+
             o += snprintf(out + o, n - o, "%d", c.dur);
+
         if (c.semi < 0)
+
             out[o++] = 'p';
+
         else
+
             o += snprintf(out + o, n - o, "%s", CP_NOTE[c.semi]);
+
         if (c.dot)
+
             out[o++] = '.';
+
         if (c.semi >= 0 && c.oct != 5)
+
             o += snprintf(out + o, n - o, "%d", c.oct);
+
     }
+
     out[o] = 0;
+
 }
+
 static void cp_labels(void)
+
 {
+
     for (int i = 0; i < 6; i++)
+
         lv_obj_set_style_bg_color(g_cpDurBtn[i], lv_color_hex(CP_DUR[i] == g_cpDur ? 0x2F7D4F : COL_BTN), 0);
+
     lv_obj_set_style_bg_color(g_cpDotBtn, lv_color_hex(g_cpDot ? 0x2F7D4F : COL_BTN), 0);
+
     char b[24];
+
     snprintf(b, sizeof(b), "oct %d", g_cpOct);
+
     lv_label_set_text(lv_obj_get_child(g_cpOctBtn, 0), b);
+
     snprintf(b, sizeof(b), "%d +", g_cpBpm);
+
     lv_label_set_text(lv_obj_get_child(g_cpBpmBtn, 0), b);
+
 }
+
 static void cp_refresh(void)
+
 {
+
     char t[300];
+
     cp_build(t, sizeof(t));
+
     g_cpBusy = true;
+
     lv_textarea_set_text(g_cpTextTa, t);
+
     g_cpBusy = false;
+
     char b[64];
+
     snprintf(b, sizeof(b), "%d notes, %d / 230 characters", g_cpCount, (int)strlen(t));
+
     lv_label_set_text(g_cpInfo, b);
+
     lv_obj_set_style_text_color(g_cpInfo, lv_color_hex(strlen(t) > 230 ? 0xF2A0A0 : 0xB8BEE6), 0);
+
     cp_labels();
+
     cp_seq_rebuild();
+
 }
+
 // read an RTTTL line back into the composer
+
 static bool cp_parse(const char *s)
+
 {
+
     const char *p = strchr(s, ':');
+
     if (!p)
+
         return false;
+
     size_t nl = (size_t)(p - s);
+
     int d = 4, o = 5, b = 140;
+
     char name[16];
+
     size_t k = 0;
+
     for (size_t i = 0; i < nl && k + 1 < sizeof(name); i++)
+
         if (s[i] != ' ')
+
             name[k++] = s[i];
+
     name[k] = 0;
+
     p++;
+
     while (*p && *p != ':') {
+
         char key = *p++;
+
         if (*p == '=')
+
             p++;
+
         int v = 0;
+
         while (*p >= '0' && *p <= '9')
+
             v = v * 10 + (*p++ - '0');
+
         if (key == 'd')
+
             d = v;
+
         else if (key == 'o')
+
             o = v;
+
         else if (key == 'b')
+
             b = v;
+
         if (*p == ',')
+
             p++;
+
     }
+
     if (*p == ':')
+
         p++;
+
     CpNote tmp[60];
+
     int n = 0;
+
     while (*p && n < 60) {
+
         while (*p == ' ' || *p == ',')
+
             p++;
+
         if (!*p)
+
             break;
+
         int dur = 0;
+
         while (*p >= '0' && *p <= '9')
+
             dur = dur * 10 + (*p++ - '0');
+
         if (dur == 0)
+
             dur = d;
+
         int semi = -2;
+
         switch (*p) {
+
         case 'c': case 'C': semi = 0; break;
+
         case 'd': case 'D': semi = 2; break;
+
         case 'e': case 'E': semi = 4; break;
+
         case 'f': case 'F': semi = 5; break;
+
         case 'g': case 'G': semi = 7; break;
+
         case 'a': case 'A': semi = 9; break;
+
         case 'b': case 'B': semi = 11; break;
+
         case 'p': case 'P': semi = -1; break;
+
         default: break;
+
         }
+
         if (semi == -2) { // not a note, skip to the next comma
+
             while (*p && *p != ',')
+
                 p++;
+
             continue;
+
         }
+
         p++;
+
         if (*p == '#' && semi >= 0) {
+
             semi++;
+
             p++;
+
         }
+
         bool dot = false;
+
         if (*p == '.') {
+
             dot = true;
+
             p++;
+
         }
+
         int oct = o;
+
         if (*p >= '0' && *p <= '9')
+
             oct = *p++ - '0';
+
         if (*p == '.') {
+
             dot = true;
+
             p++;
+
         }
+
         if (oct < 3)
+
             oct = 3;
+
         if (oct > 7)
+
             oct = 7;
+
         tmp[n].semi = (int8_t)(semi > 11 ? 11 : semi);
+
         tmp[n].dur = (uint8_t)(dur < 1 ? 4 : (dur > 32 ? 32 : dur));
+
         tmp[n].oct = (uint8_t)oct;
+
         tmp[n].dot = dot;
+
         n++;
+
         while (*p && *p != ',')
+
             p++;
+
     }
+
     memcpy(g_cpN, tmp, sizeof(CpNote) * n);
+
     g_cpCount = n;
+
     g_cpBpm = b < 40 ? 40 : (b > 300 ? 300 : b);
+
     snprintf(g_cpName, sizeof(g_cpName), "%s", name[0] ? name : "tune");
+
     return true;
+
 }
+
 static void cp_say(const char *t)
+
 {
+
     lv_label_set_text(g_cpStatus, t);
+
 }
+
 static void cp_back_cb(lv_event_t *e)
+
 {
+
     close_panel(g_cpPanel);
+
 }
+
 static void cp_key_cb(lv_event_t *e)
+
 {
+
     int semi = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+
     if (g_cpCount >= 60)
+
         return;
+
     g_cpN[g_cpCount].semi = (int8_t)semi;
+
     g_cpN[g_cpCount].dur = (uint8_t)g_cpDur;
+
     g_cpN[g_cpCount].oct = (uint8_t)g_cpOct;
+
     g_cpN[g_cpCount].dot = g_cpDot;
+
     g_cpCount++;
+
     if (semi >= 0 && g_extPin >= 0) { // a short preview of the key on the buzzer
+
         char one[40];
+
         snprintf(one, sizeof(one), "k:d=%d,o=%d,b=%d:%s%s", g_cpDur, g_cpOct, g_cpBpm < 140 ? 140 : g_cpBpm, CP_NOTE[semi], g_cpDot ? "." : "");
+
         pinMode(g_extPin, OUTPUT);
+
         rtttl_play(one, g_extPin);
+
         digitalWrite(g_extPin, LOW);
+
     }
+
     cp_refresh();
+
 }
+
 static void cp_dur_cb(lv_event_t *e)
+
 {
+
     g_cpDur = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+
     cp_labels();
+
 }
+
 static void cp_dot_cb(lv_event_t *e)
+
 {
+
     g_cpDot = !g_cpDot;
+
     cp_labels();
+
 }
+
 static void cp_oct_cb(lv_event_t *e)
+
 {
+
     int d = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+
     g_cpOct += d;
+
     if (g_cpOct < 4)
+
         g_cpOct = 4;
+
     if (g_cpOct > 7)
+
         g_cpOct = 7;
+
     cp_labels();
+
 }
+
 static void cp_bpm_cb(lv_event_t *e)
+
 {
+
     int d = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+
     g_cpBpm += d;
+
     if (g_cpBpm < 40)
+
         g_cpBpm = 40;
+
     if (g_cpBpm > 300)
+
         g_cpBpm = 300;
+
     cp_refresh();
+
 }
+
 static void cp_del_cb(lv_event_t *e)
+
 {
+
     if (g_cpSel >= 0 && g_cpSel < g_cpCount) { // the selected note, else the last one
+
         memmove(&g_cpN[g_cpSel], &g_cpN[g_cpSel + 1], sizeof(CpNote) * (g_cpCount - g_cpSel - 1));
+
         g_cpCount--;
+
     } else if (g_cpCount > 0)
+
         g_cpCount--;
+
     g_cpSel = -1;
+
     cp_refresh();
+
 }
+
 static void cp_clear_cb(lv_event_t *e)
+
 {
+
     g_cpCount = 0;
+
     cp_refresh();
+
 }
+
 static void cp_play_cb(lv_event_t *e)
+
 {
+
     if (g_extPin < 0 || g_cpCount == 0)
+
         return;
+
     char t[300];
+
     cp_build(t, sizeof(t));
+
     pinMode(g_extPin, OUTPUT);
+
     rtttl_play(t, g_extPin);
+
     digitalWrite(g_extPin, LOW);
+
 }
+
 static void cp_name_cb(lv_event_t *e)
+
 {
+
     if (g_cpBusy)
+
         return;
+
     char t[24];
+
     rt_title(lv_textarea_get_text(g_cpNameTa), t, sizeof(t));
+
     snprintf(g_cpName, sizeof(g_cpName), "%.12s", t);
+
     char txt[300];
+
     cp_build(txt, sizeof(txt));
+
     g_cpBusy = true;
+
     lv_textarea_set_text(g_cpTextTa, txt);
+
     g_cpBusy = false;
+
 }
+
 static void cp_text_cb(lv_event_t *e)
+
 {
+
     if (g_cpBusy)
+
         return;
+
     if (cp_parse(lv_textarea_get_text(g_cpTextTa))) {
+
         char b[64];
+
         snprintf(b, sizeof(b), "%d notes", g_cpCount);
+
         lv_label_set_text(g_cpInfo, b);
+
         cp_labels();
+
     }
+
 }
+
 static void cp_save_cb(lv_event_t *e)
+
 {
+
     char t[300], nm[40], msg[80];
+
     cp_build(t, sizeof(t));
+
     if (g_cpCount == 0) {
+
         cp_say("Nothing to save yet");
+
         return;
+
     }
+
     if (strlen(t) > 230) {
+
         cp_say("Too long, 230 characters at most");
+
         return;
+
     }
+
 #ifdef HAS_SDCARD
+
     if (!rt_sd_ok()) {
+
         cp_say("No SD card found");
+
         return;
+
     }
+
     if (rt_save_file(t, nm, sizeof(nm))) {
+
         snprintf(msg, sizeof(msg), "Saved /rtttl/%s", nm);
+
         cp_say(msg);
+
     } else
+
         cp_say("Could not write the file");
+
 #else
+
     cp_say("This build has no SD card support");
+
 #endif
+
 }
+
 static void rt_pick_open(int target);
+
 static void cp_load_cb(lv_event_t *e)
+
 {
+
     rt_pick_open(1);
+
 }
+
 static void cp_use_cb(lv_event_t *e)
+
 {
+
     char t[300];
+
     cp_build(t, sizeof(t));
+
     if (g_cpCount == 0 || strlen(t) > 230) {
+
         cp_say(g_cpCount == 0 ? "Nothing to use yet" : "Too long, 230 characters at most");
+
         return;
+
     }
+
     lv_textarea_set_text(g_ntRingTa, t);
+
     rt_status("Tune copied to the Ringtone field, press Save to keep it");
+
     close_panel(g_cpPanel);
+
 }
+
+
 
 static lv_obj_t *rt_row(lv_obj_t *content)
+
 {
+
     lv_obj_t *r = lv_obj_create(content);
+
     lv_obj_remove_style_all(r);
+
     lv_obj_set_size(r, lv_pct(100), LV_SIZE_CONTENT);
+
     lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW_WRAP);
+
     lv_obj_set_style_pad_column(r, 4, 0);
+
     lv_obj_set_style_pad_row(r, 4, 0);
+
     lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE);
+
     return r;
+
 }
+
 static lv_obj_t *cp_btn(lv_obj_t *row, const char *text, uint32_t col, lv_event_cb_t cb, intptr_t ud)
+
 {
+
     lv_obj_t *b = make_label_button(row, text, col, cb);
+
     lv_obj_set_style_pad_hor(b, 7, 0);
+
     lv_obj_set_style_pad_ver(b, 7, 0);
+
     lv_obj_set_user_data(b, (void *)ud);
+
     return b;
+
 }
+
 // a row whose buttons share the width equally, nothing wraps
+
 static lv_obj_t *cp_eq_row(lv_obj_t *content)
+
 {
+
     lv_obj_t *r = lv_obj_create(content);
+
     lv_obj_remove_style_all(r);
+
     lv_obj_set_size(r, lv_pct(100), LV_SIZE_CONTENT);
+
     lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
+
     lv_obj_set_style_pad_column(r, 4, 0);
+
     lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE);
+
     return r;
+
 }
+
 static lv_obj_t *cp_btn_eq(lv_obj_t *row, const char *text, uint32_t col, lv_event_cb_t cb, intptr_t ud)
+
 {
+
     lv_obj_t *b = make_label_button(row, text, col, cb);
+
     lv_obj_set_style_pad_hor(b, 2, 0);
+
     lv_obj_set_style_pad_ver(b, 9, 0);
+
     lv_obj_set_width(b, 1);
+
     lv_obj_set_flex_grow(b, 1);
+
     lv_obj_set_user_data(b, (void *)ud);
+
     lv_obj_center(lv_obj_get_child(b, 0));
+
     return b;
+
 }
+
 static void cp_chip_cb(lv_event_t *e)
+
 {
+
     int idx = (int)(intptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+
     g_cpSel = (g_cpSel == idx) ? -1 : idx;
+
     for (int i = 0; i < g_cpCount; i++)
+
         lv_obj_set_style_bg_color(g_cpChip[i], lv_color_hex(i == g_cpSel ? 0x4A73D6 : 0x2A3B66), 0);
+
 }
+
 // the notes as chips, tap one to select it for Del
+
 static void cp_seq_rebuild(void)
+
 {
+
     if (!g_cpSeq)
+
         return;
+
     g_cpSel = -1;
+
     lv_obj_clean(g_cpSeq);
+
     if (g_cpCount == 0) {
+
         lv_obj_t *l = lv_label_create(g_cpSeq);
+
         lv_label_set_text(l, "no notes yet, tap a key");
+
         lv_obj_set_style_text_color(l, lv_color_hex(0x7F89B5), 0);
+
         return;
+
     }
+
     for (int i = 0; i < g_cpCount; i++) {
+
         char t[20];
+
         const CpNote &c = g_cpN[i];
+
         if (c.semi < 0)
+
             snprintf(t, sizeof(t), "rest 1/%d%s", c.dur, c.dot ? "." : "");
+
         else {
+
             snprintf(t, sizeof(t), "%s%d 1/%d%s", CP_NOTE[c.semi], c.oct, c.dur, c.dot ? "." : "");
+
             if (t[0] >= 'a' && t[0] <= 'z')
+
                 t[0] -= 32;
+
         }
+
         lv_obj_t *b = make_label_button(g_cpSeq, t, 0x2A3B66, cp_chip_cb);
+
         lv_obj_set_style_pad_hor(b, 6, 0);
+
         lv_obj_set_style_pad_ver(b, 3, 0);
+
         lv_obj_set_user_data(b, (void *)(intptr_t)i);
+
         g_cpChip[i] = b;
+
     }
+
     lv_group_t *g = lv_group_get_default();
+
     if (g)
+
         panel_group_add(g_cpSeq, g); // the new chips get the focus outline for the joystick
+
 }
+
 // one octave of a piano: white keys side by side, the black keys on top of them
+
 static void cp_piano(lv_obj_t *content)
+
 {
+
     lv_obj_t *piano = lv_obj_create(content);
+
     lv_obj_remove_style_all(piano);
+
     lv_obj_set_size(piano, lv_pct(100), 92);
+
     lv_obj_remove_flag(piano, LV_OBJ_FLAG_SCROLLABLE);
+
     lv_obj_update_layout(piano);
+
     int pw = lv_obj_get_width(piano);
+
     if (pw < 100)
+
         pw = lv_display_get_horizontal_resolution(NULL) - 16;
+
     int kw = pw / 7;
+
     static const char *const wn[7] = {"C", "D", "E", "F", "G", "A", "B"};
+
     static const int ws[7] = {0, 2, 4, 5, 7, 9, 11};
+
     for (int i = 0; i < 7; i++) {
+
         lv_obj_t *k = lv_button_create(piano);
+
         lv_obj_set_size(k, kw - 2, 90);
+
         lv_obj_set_pos(k, i * kw, 0);
+
         lv_obj_set_style_bg_color(k, lv_color_hex(0xE8EEF9), 0);
+
         lv_obj_set_style_bg_color(k, lv_color_hex(0x9FD3FF), LV_STATE_PRESSED);
+
         lv_obj_set_style_bg_opa(k, LV_OPA_COVER, 0);
+
         lv_obj_set_style_radius(k, 6, 0);
+
         lv_obj_set_style_pad_all(k, 0, 0);
+
         lv_obj_set_style_shadow_width(k, 0, 0);
+
         lv_obj_t *l = lv_label_create(k);
+
         lv_label_set_text(l, wn[i]);
+
         lv_obj_set_style_text_color(l, lv_color_hex(0x222222), 0);
+
         lv_obj_align(l, LV_ALIGN_BOTTOM_MID, 0, -4);
+
         lv_obj_set_user_data(k, (void *)(intptr_t)ws[i]);
+
         lv_obj_add_event_cb(k, cp_key_cb, LV_EVENT_CLICKED, nullptr);
+
     }
+
     static const char *const bn[5] = {"C#", "D#", "F#", "G#", "A#"};
+
     static const int bs[5] = {1, 3, 6, 8, 10};
+
     static const int bpos[5] = {1, 2, 4, 5, 6}; // between white key bpos-1 and bpos
+
     int bw = kw * 6 / 10;
+
     for (int i = 0; i < 5; i++) {
+
         lv_obj_t *k = lv_button_create(piano);
+
         lv_obj_set_size(k, bw, 56);
+
         lv_obj_set_pos(k, bpos[i] * kw - bw / 2, 0);
+
         lv_obj_set_style_bg_color(k, lv_color_hex(0x101830), 0);
+
         lv_obj_set_style_bg_color(k, lv_color_hex(0x4A73D6), LV_STATE_PRESSED);
+
         lv_obj_set_style_bg_opa(k, LV_OPA_COVER, 0);
+
         lv_obj_set_style_border_width(k, 1, 0);
+
         lv_obj_set_style_border_color(k, lv_color_hex(0x3A4A74), 0);
+
         lv_obj_set_style_radius(k, 4, 0);
+
         lv_obj_set_style_pad_all(k, 0, 0);
+
         lv_obj_set_style_shadow_width(k, 0, 0);
+
         lv_obj_t *l = lv_label_create(k);
+
         lv_label_set_text(l, bn[i]);
+
         lv_obj_set_style_text_color(l, lv_color_hex(0xCFD8F0), 0);
+
         lv_obj_set_style_text_font(l, &ui_font_montserrat_12, 0);
+
         lv_obj_align(l, LV_ALIGN_BOTTOM_MID, 0, -3);
+
         lv_obj_set_user_data(k, (void *)(intptr_t)bs[i]);
+
         lv_obj_add_event_cb(k, cp_key_cb, LV_EVENT_CLICKED, nullptr);
+
     }
+
 }
+
 static void cp_open_cb(lv_event_t *e)
+
 {
+
     if (!g_cpPanel) {
+
         lv_obj_t *content;
+
         g_cpPanel = make_panel("Ringtone composer", cp_back_cb, &content);
+
         // name and tempo
+
         lv_obj_t *r = cp_eq_row(content);
+
         g_cpNameTa = lv_textarea_create(r);
+
         lv_textarea_set_one_line(g_cpNameTa, true);
+
         lv_textarea_set_max_length(g_cpNameTa, 12);
+
         lv_textarea_set_placeholder_text(g_cpNameTa, "Name");
+
         lv_obj_set_width(g_cpNameTa, 1);
+
         lv_obj_set_flex_grow(g_cpNameTa, 3);
+
         lv_obj_set_style_bg_color(g_cpNameTa, lv_color_hex(COL_FIELD), 0);
+
         lv_obj_set_style_text_color(g_cpNameTa, lv_color_hex(0x1F2937), 0);
+
         lv_obj_add_event_cb(g_cpNameTa, ta_click_cb, LV_EVENT_CLICKED, nullptr);
+
         lv_obj_add_event_cb(g_cpNameTa, cp_name_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
         cp_btn_eq(r, "- bpm", COL_BTN, cp_bpm_cb, -10);
+
         g_cpBpmBtn = cp_btn_eq(r, "140 +", COL_BTN, cp_bpm_cb, 10);
+
         // note length
+
         r = cp_eq_row(content);
+
         for (int i = 0; i < 6; i++) {
+
             char l[8];
+
             snprintf(l, sizeof(l), "1/%d", CP_DUR[i]);
+
             g_cpDurBtn[i] = cp_btn_eq(r, l, COL_BTN, cp_dur_cb, CP_DUR[i]);
+
         }
+
         // dotted, octave, rest
+
         r = cp_eq_row(content);
+
         g_cpDotBtn = cp_btn_eq(r, "dotted", COL_BTN, cp_dot_cb, 0);
+
         cp_btn_eq(r, "oct -", COL_BTN, cp_oct_cb, -1);
+
         g_cpOctBtn = cp_btn_eq(r, "oct 5", 0x3A4468, cp_oct_cb, 0);
+
         cp_btn_eq(r, "oct +", COL_BTN, cp_oct_cb, 1);
+
         cp_btn_eq(r, "rest", COL_BTN, cp_key_cb, -1);
+
         // the piano
+
         cp_piano(content);
+
         // the notes
+
         g_cpSeq = lv_obj_create(content);
+
         lv_obj_remove_style_all(g_cpSeq);
+
         lv_obj_set_size(g_cpSeq, lv_pct(100), 64);
+
         lv_obj_set_style_bg_color(g_cpSeq, lv_color_hex(0x101830), 0);
+
         lv_obj_set_style_bg_opa(g_cpSeq, LV_OPA_COVER, 0);
+
         lv_obj_set_style_radius(g_cpSeq, 8, 0);
+
         lv_obj_set_style_pad_all(g_cpSeq, 5, 0);
+
         lv_obj_set_style_pad_column(g_cpSeq, 4, 0);
+
         lv_obj_set_style_pad_row(g_cpSeq, 4, 0);
+
         lv_obj_set_flex_flow(g_cpSeq, LV_FLEX_FLOW_ROW_WRAP);
+
         lv_obj_set_scroll_dir(g_cpSeq, LV_DIR_VER);
+
         r = cp_eq_row(content);
+
         cp_btn_eq(r, "Del", 0x8A2F36, cp_del_cb, 0);
+
         cp_btn_eq(r, "Clear", 0x8A2F36, cp_clear_cb, 0);
+
         cp_btn_eq(r, "Play", 0x2F7D4F, cp_play_cb, 0);
+
         // the RTTTL text
+
         g_cpTextTa = make_field(content, "Ringtone (RTTTL), you can edit it here", 230, false);
+
         lv_obj_add_event_cb(g_cpTextTa, cp_text_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
         g_cpInfo = lv_label_create(content);
+
         lv_label_set_text(g_cpInfo, "");
+
         lv_obj_set_style_text_color(g_cpInfo, lv_color_hex(0xB8BEE6), 0);
+
         r = cp_eq_row(content);
+
         cp_btn_eq(r, "Save to SD", COL_BTN, cp_save_cb, 0);
+
         cp_btn_eq(r, "Load from SD", COL_BTN, cp_load_cb, 0);
+
         cp_btn_eq(r, "Use", 0x2F7D4F, cp_use_cb, 0);
+
         g_cpStatus = make_status(content);
+
         lv_obj_t *pad = lv_obj_create(content);
+
         lv_obj_remove_style_all(pad);
+
         lv_obj_set_size(pad, 10, 150);
+
     }
+
     if (!cp_parse(lv_textarea_get_text(g_ntRingTa))) {
+
         g_cpCount = 0;
+
         snprintf(g_cpName, sizeof(g_cpName), "tune");
+
     }
+
     g_cpBusy = true;
+
     lv_textarea_set_text(g_cpNameTa, g_cpName);
+
     g_cpBusy = false;
+
     lv_label_set_text(g_cpStatus, "");
+
     cp_refresh();
+
     open_panel(g_cpPanel);
+
 }
+
+
 
 // ---- list of the files in /rtttl ----
+
 static void rt_pick_back_cb(lv_event_t *e)
+
 {
+
     close_panel(g_rtPickPanel);
+
 }
+
 static void rt_pick_entry_cb(lv_event_t *e)
+
 {
+
     int idx = (int)(uintptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+
     if (idx < 0 || idx >= g_rtCount)
+
         return;
+
 #ifdef HAS_SDCARD
+
     char t[300];
+
     if (!rt_read_file(g_rtNames[idx], t, sizeof(t))) {
+
         if (g_rtTarget == 1)
+
             cp_say("Could not read that file");
+
         else
+
             rt_status("Could not read that file");
+
         close_panel(g_rtPickPanel);
+
         return;
+
     }
+
     t[230] = 0; // the node takes 230 characters at most
+
     if (g_rtTarget == 1) {
+
         if (cp_parse(t)) {
+
             g_cpBusy = true;
+
             lv_textarea_set_text(g_cpNameTa, g_cpName);
+
             g_cpBusy = false;
+
             cp_refresh();
+
             cp_say("Loaded");
+
         } else
+
             cp_say("That file is not an RTTTL tune");
+
     } else {
+
         lv_textarea_set_text(g_ntRingTa, t);
+
         rt_status("Loaded, press Test output to hear it and Save to keep it");
+
     }
+
 #endif
+
     close_panel(g_rtPickPanel);
+
 }
+
 static void rt_pick_fill(void)
+
 {
+
     lv_obj_clean(g_rtPickList);
+
     g_rtCount = 0;
+
     lv_obj_t *h = lv_label_create(g_rtPickList);
+
     lv_label_set_long_mode(h, LV_LABEL_LONG_WRAP);
+
     lv_obj_set_width(h, lv_pct(100));
+
     lv_obj_set_style_text_color(h, lv_color_hex(0xB8BEE6), 0);
+
     lv_label_set_text(h, "Text files in the /rtttl folder of the SD card, one RTTTL tune on the first line of each");
+
 #ifdef HAS_SDCARD
+
     if (!rt_sd_ok()) {
+
         lv_obj_t *m = lv_label_create(g_rtPickList);
+
         lv_label_set_text(m, "No SD card found. Insert one and restart.");
+
         lv_obj_set_style_text_color(m, lv_color_hex(0xF2A0A0), 0);
+
         return;
+
     }
+
     ISpiLock::Guard bus; // the SD card shares its SPI bus with the screen and the radio, take the host's lock like the display library does
+
     if (!SDFs.exists("/rtttl"))
+
         SDFs.mkdir("/rtttl");
+
     FsFile d = SDFs.open("/rtttl");
+
     if (!d || !d.isDir()) {
+
         lv_obj_t *m = lv_label_create(g_rtPickList);
+
         lv_label_set_text(m, "Cannot open /rtttl");
+
         return;
+
     }
+
     FsFile f;
+
     while (g_rtCount < 40 && f.openNext(&d, O_RDONLY)) {
+
         char nm[44];
+
         f.getName(nm, sizeof(nm));
+
         bool dir = f.isDir();
+
         f.close();
+
         if (dir || nm[0] == '.' || !rt_name_ok(nm))
+
             continue;
+
         snprintf(g_rtNames[g_rtCount], sizeof(g_rtNames[0]), "%s", nm);
+
         char label[60];
+
         snprintf(label, sizeof(label), LV_SYMBOL_AUDIO " %s", nm);
-        lv_obj_t *b = make_label_button(g_rtPickList, label, 0x2F7D4F, rt_pick_entry_cb);
-        lv_obj_set_width(b, lv_pct(100));
-        lv_obj_set_width(lv_obj_get_child(b, 0), lv_pct(100));
-        lv_label_set_long_mode(lv_obj_get_child(b, 0), LV_LABEL_LONG_DOT);
+
+        lv_obj_t *b = make_action_button(g_rtPickList, label, rt_pick_entry_cb);
+
         lv_obj_set_user_data(b, (void *)(uintptr_t)g_rtCount);
+
         g_rtCount++;
+
     }
+
     d.close();
+
     if (g_rtCount == 0) {
+
         lv_obj_t *m = lv_label_create(g_rtPickList);
+
         lv_label_set_text(m, "No tunes yet. Save one from here, or copy .txt files into /rtttl on the SD card.");
+
     }
+
 #else
+
     lv_obj_t *m = lv_label_create(g_rtPickList);
+
     lv_label_set_text(m, "This build has no SD card support.");
+
 #endif
+
 }
+
 static void rt_pick_open(int target)
+
 {
+
     g_rtTarget = target;
+
     if (!g_rtPickPanel) {
+
         lv_obj_t *content;
+
         g_rtPickPanel = make_panel("Load ringtone", rt_pick_back_cb, &content);
+
         g_rtPickList = content;
+
     }
+
     rt_pick_fill();
+
     open_panel(g_rtPickPanel);
+
 }
+
 static void rt_load_cb(lv_event_t *e)
+
 {
+
     rt_pick_open(0);
+
 }
+
 static void rt_status(const char *t)
+
 {
+
     if (g_ntStatus)
+
         lv_label_set_text(g_ntStatus, t);
+
 }
+
 static void rt_save_cb(lv_event_t *e)
+
 {
+
     const char *t = lv_textarea_get_text(g_ntRingTa);
+
     if (!t[0]) {
+
         rt_status("Nothing to save, the Ringtone field is empty");
+
         return;
+
     }
+
 #ifdef HAS_SDCARD
+
     char nm[40], msg[80];
+
     if (!rt_sd_ok()) {
+
         rt_status("No SD card found");
+
         return;
+
     }
+
     if (rt_save_file(t, nm, sizeof(nm))) {
+
         snprintf(msg, sizeof(msg), "Saved /rtttl/%s", nm);
+
         rt_status(msg);
+
     } else
+
         rt_status("Could not write the file");
+
 #else
+
     rt_status("This build has no SD card support");
+
 #endif
+
 }
+
+
 
 static void nt_open_cb(lv_event_t *e)
+
 {
+
     if (!g_ntPanel) {
+
         lv_obj_t *content;
+
         g_ntPanel = make_panel("Notification output", nt_back_cb, &content);
-        char label[48];
-        snprintf(label, sizeof(label), "Output on GPIO%d", g_extPin);
-        g_ntMode = make_dropdown(content, label, "Off\nLED\nBuzzer");
+
+        g_ntPinTa = make_field(content, "GPIO output pin", 6, false);
+
+        g_ntMode = make_dropdown(content, "Output mode", "Off\nLED\nBuzzer");
+
         g_ntLed = make_dropdown(content, "LED behaviour", "Incoming chat\nAlways on\nGPS fix\nUnread messages\nLow battery\nCharging");
+
         g_ntRingDd = make_dropdown(content, "Buzzer ringtone", "Beep\nAlert\nChime\nSiren\nKnock\nPing\nDoorbell\nSOS\nRising\nFalling\nArpeggio\nCuckoo\nOde to Joy\nTwinkle\nFur Elise\nJingle Bells\nCustom");
+
         lv_obj_add_event_cb(g_ntRingDd, nt_ring_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
         g_ntRingTa = make_field(content, "Ringtone (RTTTL, 230 characters at most)", 230, false);
+
         {
+
             lv_obj_t *rr = rt_row(content);
+
             cp_btn(rr, "Load", COL_BTN, rt_load_cb, 0);
+
             cp_btn(rr, "Save", COL_BTN, rt_save_cb, 0);
+
             cp_btn(rr, "Composer", 0x2F7D4F, cp_open_cb, 0);
+
         }
+
         {
+
             Preferences rp;
+
             rp.begin("chatui", true);
+
             String saved = rp.getString("ring", RING_TUNE[0]);
+
             rp.end();
+
             lv_textarea_set_text(g_ntRingTa, saved.c_str());
+
         }
+
         {
+
             static char welOpts[640];
+
             snprintf(welOpts, sizeof(welOpts), "Off");
+
             for (int i = 0; i < RING_COUNT; i++)
+
                 snprintf(welOpts + strlen(welOpts), sizeof(welOpts) - strlen(welOpts), "\n%s", RING_NAME[i]);
+
             snprintf(welOpts + strlen(welOpts), sizeof(welOpts) - strlen(welOpts), "\nCurrent ringtone text");
+
             g_ntWelDd = make_dropdown(content, "Welcome sound at boot (buzzer only)", welOpts);
+
         }
+
         g_ntMsg = make_switch_row(content, "Alert on new message");
+
         g_ntBell = make_switch_row(content, "Alert on bell");
-        lv_obj_t *test = make_label_button(content, "Test output", COL_BTN, nt_test_cb);
-        lv_obj_set_width(test, lv_pct(100));
+
+        lv_obj_t *test = make_action_button(content, "Test output", nt_test_cb);
+
         g_ntStatus = make_status(content);
+
         make_save_cancel(content, nt_save_cb, nt_back_cb);
+
         lv_obj_t *ntPad = lv_obj_create(content);
+
         lv_obj_remove_style_all(ntPad);
+
         lv_obj_set_size(ntPad, 10, 150);
+
     }
-    meshtastic_ModuleConfig_ExternalNotificationConfig *c = (meshtastic_ModuleConfig_ExternalNotificationConfig *)g_extCfg();
-    uint32_t mode = 0;
-    int ledMode = emoji_ss_cfg_get ? emoji_ss_cfg_get(12) : 0;
-    if (ledMode > 0)
-        mode = 1;
-    else if (c->enabled && c->output == (uint32_t)g_extPin)
-        mode = 1;
-    else if (c->enabled && c->output_buzzer == (uint32_t)g_extPin)
-        mode = 2;
-    lv_dropdown_set_selected(g_ntMode, mode);
+
     {
-        Preferences wp;
-        wp.begin("chatui", true);
-        lv_dropdown_set_selected(g_ntWelDd, (uint32_t)wp.getInt("welidx", 0));
-        wp.end();
+
+        Preferences rp;
+
+        rp.begin("chatui", true);
+
+        g_extPin = rp.getInt("extpin", g_extPin);
+
+        rp.end();
+
+        char pinStr[16];
+
+        snprintf(pinStr, sizeof(pinStr), "%d", g_extPin);
+
+        lv_textarea_set_text(g_ntPinTa, pinStr);
+
     }
+
+    meshtastic_ModuleConfig_ExternalNotificationConfig *c = (meshtastic_ModuleConfig_ExternalNotificationConfig *)g_extCfg();
+
+    uint32_t mode = 0;
+
+    int ledMode = emoji_ss_cfg_get ? emoji_ss_cfg_get(12) : 0;
+
+    if (ledMode > 0)
+
+        mode = 1;
+
+    else if (c->enabled && c->output == (uint32_t)g_extPin)
+
+        mode = 1;
+
+    else if (c->enabled && c->output_buzzer == (uint32_t)g_extPin)
+
+        mode = 2;
+
+    lv_dropdown_set_selected(g_ntMode, mode);
+
+    {
+
+        Preferences wp;
+
+        wp.begin("chatui", true);
+
+        lv_dropdown_set_selected(g_ntWelDd, (uint32_t)wp.getInt("welidx", 0));
+
+        wp.end();
+
+    }
+
     lv_dropdown_set_selected(g_ntLed, ledMode > 0 ? ledMode : 0);
+
     set_switch(g_ntMsg, c->alert_message || c->alert_message_buzzer);
+
     set_switch(g_ntBell, c->alert_bell || c->alert_bell_buzzer);
+
     lv_label_set_text(g_ntStatus, "");
+
     open_panel(g_ntPanel);
+
 }
+
 extern "C" void emoji_settings_host2(void *(*ext)(void), void (*sendExt)(void), int pin, void (*sendRing)(const char *))
+
 {
+
     if (pin < 0)
+
         return; // no LED or buzzer on this board, the panel stays hidden
+
     g_sendRing = sendRing;
+
     g_extCfg = ext;
+
     g_sendExt = sendExt;
-    g_extPin = pin;
+
+    {
+
+        Preferences rp;
+
+        rp.begin("chatui", true);
+
+        g_extPin = rp.getInt("extpin", pin);
+
+        rp.end();
+
+    }
+
     if (emoji_led_set_pin)
-        emoji_led_set_pin(pin);
+
+        emoji_led_set_pin(g_extPin);
+
     welcome_start();
+
 }
+
+
 
 // power: battery INA address and an I2C bus scan
+
 static CfgFn g_powCfg = nullptr;
+
 static VoidFn g_sendPow = nullptr;
+
 static lv_obj_t *g_i2cPanel = nullptr, *g_i2cStatus, *g_i2cList, *g_ddIna;
+
 static void i2c_back_cb(lv_event_t *e)
+
 {
+
     close_panel(g_i2cPanel);
-}
-static void i2c_scan_cb(lv_event_t *e)
-{
-    char buf[160];
-    int n = 0;
-    buf[0] = 0;
-    for (uint8_t a = 0x08; a < 0x78 && strlen(buf) < sizeof(buf) - 8; a++) {
-        Wire.beginTransmission(a);
-        if (Wire.endTransmission() == 0) {
-            sprintf(buf + strlen(buf), "%s0x%02X", n ? "  " : "", a);
-            n++;
-        }
-    }
-    lv_label_set_text(g_i2cList, n ? buf : "No device answered");
-}
-static void ina_save_cb(lv_event_t *e)
-{
-    meshtastic_Config_PowerConfig *c = (meshtastic_Config_PowerConfig *)g_powCfg();
-    uint32_t sel = lv_dropdown_get_selected(g_ddIna);
-    c->device_battery_ina_address = sel == 0 ? 0 : (sel == 1 ? 0x40 : (sel == 2 ? 0x41 : (sel == 3 ? 0x44 : 0x45)));
-    g_sendPow();
-    lv_label_set_text(g_i2cStatus, "Saved, the node applies it after a restart");
-}
-static void i2c_open_cb(lv_event_t *e)
-{
-    if (!g_i2cPanel) {
-        lv_obj_t *content;
-        g_i2cPanel = make_panel("Power and I2C", i2c_back_cb, &content);
-        g_ddIna = make_dropdown(content, "Battery INA I2C address", "Off\n0x40\n0x41\n0x44\n0x45");
-        g_i2cStatus = make_status(content);
-        make_save_cancel(content, ina_save_cb, i2c_back_cb);
-        lv_obj_t *sc = make_label_button(content, "Scan I2C bus", COL_BTN, i2c_scan_cb);
-        lv_obj_set_width(sc, lv_pct(100));
-        g_i2cList = make_status(content);
-        lv_obj_set_style_text_color(g_i2cList, lv_color_hex(0xFFFFFF), 0);
-    }
-    meshtastic_Config_PowerConfig *c = (meshtastic_Config_PowerConfig *)g_powCfg();
-    uint32_t a = c->device_battery_ina_address;
-    lv_dropdown_set_selected(g_ddIna, a == 0x40 ? 1 : (a == 0x41 ? 2 : (a == 0x44 ? 3 : (a == 0x45 ? 4 : 0))));
-    lv_label_set_text(g_i2cStatus, "");
-    lv_label_set_text(g_i2cList, "");
-    open_panel(g_i2cPanel);
+
 }
 
-extern "C" void emoji_settings_host(void *(*lora)(void), void *(*pos)(void), void *(*sec)(void), void *(*pow)(void),
-                                    void (*sendLora)(void), void (*sendPos)(void), void (*sendSec)(void), void (*sendPow)(void))
+static void i2c_scan_cb(lv_event_t *e)
+
 {
-    g_loraCfg = lora, g_posCfg = pos, g_secCfg = sec, g_powCfg = pow;
-    g_sendLora = sendLora, g_sendPos = sendPos, g_sendSec = sendSec, g_sendPow = sendPow;
+
+#if defined(HAS_WIRE)
+
+    char buf[160];
+
+    int n = 0;
+
+    buf[0] = 0;
+
+    for (uint8_t a = 0x08; a < 0x78 && strlen(buf) < sizeof(buf) - 8; a++) {
+
+        Wire.beginTransmission(a);
+
+        if (Wire.endTransmission() == 0) {
+
+            sprintf(buf + strlen(buf), "%s0x%02X", n ? "  " : "", a);
+
+            n++;
+
+        }
+
+    }
+
+    lv_label_set_text(g_i2cList, n ? buf : "No device answered");
+
+#else
+
+    lv_label_set_text(g_i2cList, "I2C scan not supported on this platform");
+
+#endif
+
 }
+
+static void ina_save_cb(lv_event_t *e)
+
+{
+
+    meshtastic_Config_PowerConfig *c = (meshtastic_Config_PowerConfig *)g_powCfg();
+
+    uint32_t sel = lv_dropdown_get_selected(g_ddIna);
+
+    c->device_battery_ina_address = sel == 0 ? 0 : (sel == 1 ? 0x40 : (sel == 2 ? 0x41 : (sel == 3 ? 0x44 : 0x45)));
+
+    g_sendPow();
+
+    lv_label_set_text(g_i2cStatus, "Saved, the node applies it after a restart");
+
+}
+
+static void i2c_open_cb(lv_event_t *e)
+
+{
+
+    if (!g_i2cPanel) {
+
+        lv_obj_t *content;
+
+        g_i2cPanel = make_panel("Power and I2C", i2c_back_cb, &content);
+
+        g_ddIna = make_dropdown(content, "Battery INA I2C address", "Off\n0x40\n0x41\n0x44\n0x45");
+
+        g_i2cStatus = make_status(content);
+
+        make_save_cancel(content, ina_save_cb, i2c_back_cb);
+
+        lv_obj_t *sc = make_action_button(content, "Scan I2C bus", i2c_scan_cb);
+
+        g_i2cList = make_status(content);
+
+        lv_obj_set_style_text_color(g_i2cList, lv_color_hex(0xFFFFFF), 0);
+
+    }
+
+    meshtastic_Config_PowerConfig *c = (meshtastic_Config_PowerConfig *)g_powCfg();
+
+    uint32_t a = c->device_battery_ina_address;
+
+    lv_dropdown_set_selected(g_ddIna, a == 0x40 ? 1 : (a == 0x41 ? 2 : (a == 0x44 ? 3 : (a == 0x45 ? 4 : 0))));
+
+    lv_label_set_text(g_i2cStatus, "");
+
+    lv_label_set_text(g_i2cList, "");
+
+    open_panel(g_i2cPanel);
+
+}
+
+
+
+extern "C" void emoji_settings_host(void *(*lora)(void), void *(*pos)(void), void *(*sec)(void), void *(*pow)(void),
+
+                                    void (*sendLora)(void), void (*sendPos)(void), void (*sendSec)(void), void (*sendPow)(void))
+
+{
+
+    g_loraCfg = lora, g_posCfg = pos, g_secCfg = sec, g_powCfg = pow;
+
+    g_sendLora = sendLora, g_sendPos = sendPos, g_sendSec = sendSec, g_sendPow = sendPow;
+
+}
+
+
 
 // ---- advanced list ----
 
+
+
 static void names_text(void)
+
 {
+
     if (g_namesLabel)
+
         lv_label_set_text(lv_obj_get_child(g_namesLabel, 0),
+
                           emoji_name_mode() == 1 ? "Chat names: long" : (emoji_name_mode() == 2 ? "Chat names: both" : "Chat names: short"));
+
 }
+
+
 
 static void names_cb(lv_event_t *e)
+
 {
+
     emoji_name_mode_cycle();
+
     names_text();
+
 }
+
+
 
 static void adv_back_cb(lv_event_t *e)
+
 {
+
     close_panel(g_advPanel);
+
 }
+
+
 
 // ---- Nodes: how many nodes are saved, remove the ones not heard for a while, and what the node stores ----
+
 static uint32_t (*g_nodesFn)(uint32_t, bool, uint32_t *) = nullptr;
+
 static std::set<uint32_t> g_nodeProt;
+
 extern "C" void emoji_nodes_host(uint32_t (*fn)(uint32_t, bool, uint32_t *))
+
 {
+
     g_nodesFn = fn;
+
 }
+
 // favorites and ignored nodes are remembered from the node list the node sends, they are never removed from here
+
 extern "C" void emoji_node_flags(uint32_t num, bool fav, bool ign)
+
 {
+
     if (fav || ign)
+
         g_nodeProt.insert(num);
+
     else
+
         g_nodeProt.erase(num);
+
 }
+
 extern "C" bool emoji_node_protected(uint32_t num)
+
 {
+
     return g_nodeProt.count(num) != 0;
+
 }
+
+
 
 static lv_obj_t *g_ndPanel = nullptr, *g_ndInfo = nullptr, *g_ndDd = nullptr, *g_ndPrev = nullptr, *g_ndBtn = nullptr, *g_ndStatus = nullptr,
+
                 *g_ndStore = nullptr;
+
 static bool g_ndArmed = false;
+
 static uint32_t g_ndStale = 0;
+
 static const uint32_t ND_DAYS[5] = {1, 3, 7, 14, 30};
 
+
+
 static void nd_size(char *out, size_t n, uint64_t b)
+
 {
+
     if (b < 1024)
+
         snprintf(out, n, "%u B", (unsigned)b);
+
     else if (b < 1024ull * 1024)
+
         snprintf(out, n, "%.1f KB", (double)b / 1024.0);
+
     else if (b < 1024ull * 1024 * 1024)
+
         snprintf(out, n, "%.1f MB", (double)b / (1024.0 * 1024.0));
+
     else
+
         snprintf(out, n, "%.1f GB", (double)b / (1024.0 * 1024.0 * 1024.0));
+
 }
+
 static uint32_t nd_file(const char *path)
+
 {
+
+#if defined(HAS_LITTLEFS)
+
     File f = LittleFS.open(path, "r");
+
     if (!f)
+
         return 0;
+
     uint32_t s = (uint32_t)f.size();
+
     f.close();
+
     return s;
-}
-static void nd_storage_text(char *out, size_t n)
-{
-    char a[24], b[24], c[24];
-    int o = 0;
-    nd_size(a, sizeof(a), nd_file("/prefs/nodes.proto"));
-    o += snprintf(out + o, n - o, "Node list: %s\n", a);
-    uint32_t cfg = nd_file("/prefs/config.proto") + nd_file("/prefs/module.proto") + nd_file("/prefs/channels.proto") + nd_file("/prefs/device.proto");
-    nd_size(a, sizeof(a), cfg);
-    o += snprintf(out + o, n - o, "Settings files: %s\n", a);
-    nd_size(a, sizeof(a), nd_file("/prefs/uiconfig.proto"));
-    o += snprintf(out + o, n - o, "Screen settings: %s\n", a);
-    uint32_t files = 0, bytes = 0;
-    File d = LittleFS.open("/messages");
-    if (d && d.isDirectory()) {
-        File e = d.openNextFile();
-        while (e) {
-            files++;
-            bytes += (uint32_t)e.size();
-            e.close();
-            e = d.openNextFile();
-        }
-        d.close();
-    }
-    nd_size(a, sizeof(a), bytes);
-    o += snprintf(out + o, n - o, "Chat log: %s in %u files (100 KB, 25 files at most, the oldest go first)\n", a, (unsigned)files);
-    nd_size(a, sizeof(a), LittleFS.usedBytes());
-    nd_size(b, sizeof(b), LittleFS.totalBytes());
-    o += snprintf(out + o, n - o, "Internal storage: %s of %s used", a, b);
-    if (emoji_sd_status) {
-        char pk[160];
-        emoji_sd_status(pk, sizeof(pk));
-        o += snprintf(out + o, n - o, "\n%s", pk);
-    } else
-        o += snprintf(out + o, n - o, "\nSD emoji pack: this build has no SD pack, the emoji are built in");
-#ifdef HAS_SDCARD
-    if (sdCard && sdCard->cardSize() > 1) {
-        nd_size(a, sizeof(a), sdCard->usedBytes());
-        nd_size(c, sizeof(c), sdCard->cardSize());
-        o += snprintf(out + o, n - o, "\nSD card: %s of %s used", a, c);
-    }
+
+#else
+
+    FILE *f = fopen(path, "rb");
+
+    if (!f)
+
+        return 0;
+
+    fseek(f, 0, SEEK_END);
+
+    long s = ftell(f);
+
+    fclose(f);
+
+    return s > 0 ? (uint32_t)s : 0;
+
 #endif
+
 }
+
+static void nd_storage_text(char *out, size_t n)
+
+{
+
+    char a[24], b[24], c[24];
+
+    int o = 0;
+
+    nd_size(a, sizeof(a), nd_file("/prefs/nodes.proto"));
+
+    o += snprintf(out + o, n - o, "Node list: %s\n", a);
+
+    uint32_t cfg = nd_file("/prefs/config.proto") + nd_file("/prefs/module.proto") + nd_file("/prefs/channels.proto") + nd_file("/prefs/device.proto");
+
+    nd_size(a, sizeof(a), cfg);
+
+    o += snprintf(out + o, n - o, "Settings files: %s\n", a);
+
+    nd_size(a, sizeof(a), nd_file("/prefs/uiconfig.proto"));
+
+    o += snprintf(out + o, n - o, "Screen settings: %s\n", a);
+
+    uint32_t files = 0, bytes = 0;
+
+#if defined(HAS_LITTLEFS)
+
+    File d = LittleFS.open("/messages");
+
+    if (d && d.isDirectory()) {
+
+        File e = d.openNextFile();
+
+        while (e) {
+
+            files++;
+
+            bytes += (uint32_t)e.size();
+
+            e.close();
+
+            e = d.openNextFile();
+
+        }
+
+        d.close();
+
+    }
+
+#endif
+
+    nd_size(a, sizeof(a), bytes);
+
+    o += snprintf(out + o, n - o, "Chat log: %s in %u files (100 KB, 25 files at most, the oldest go first)\n", a, (unsigned)files);
+
+#if defined(HAS_LITTLEFS)
+
+    nd_size(a, sizeof(a), LittleFS.usedBytes());
+
+    nd_size(b, sizeof(b), LittleFS.totalBytes());
+
+#else
+
+    nd_size(a, sizeof(a), 0);
+
+    nd_size(b, sizeof(b), 0);
+
+#endif
+
+    o += snprintf(out + o, n - o, "Internal storage: %s of %s used", a, b);
+
+    if (emoji_sd_status) {
+
+        char pk[160];
+
+        emoji_sd_status(pk, sizeof(pk));
+
+        o += snprintf(out + o, n - o, "\n%s", pk);
+
+    } else
+
+        o += snprintf(out + o, n - o, "\nSD emoji pack: this build has no SD pack, the emoji are built in");
+
+#if defined(HAS_STATVFS)
+
+    struct statvfs sv;
+
+    const char *sdPaths[] = {"/mnt/sd_0", "/usr/data/mnt/sd_0", "/sdcard"};
+
+    for (int i = 0; i < 3; i++) {
+
+        if (statvfs(sdPaths[i], &sv) == 0 && sv.f_blocks > 0) {
+
+            double totalGB = ((double)sv.f_blocks * (double)sv.f_frsize) / (1024.0 * 1024.0 * 1024.0);
+
+            double freeGB = ((double)sv.f_bavail * (double)sv.f_frsize) / (1024.0 * 1024.0 * 1024.0);
+
+            double usedGB = totalGB > freeGB ? (totalGB - freeGB) : 0.0;
+
+            o += snprintf(out + o, n - o, "\nSD card (%s): %.1f GB of %.1f GB used", sdPaths[i], usedGB, totalGB);
+
+            break;
+
+        }
+
+    }
+
+#elif defined(HAS_SDCARD)
+
+    if (sdCard && sdCard->cardSize() > 1) {
+
+        nd_size(a, sizeof(a), sdCard->usedBytes());
+
+        nd_size(c, sizeof(c), sdCard->cardSize());
+
+        o += snprintf(out + o, n - o, "\nSD card: %s of %s used", a, c);
+
+    }
+
+#endif
+
+}
+
 static void nd_refresh(void)
+
 {
+
     char t[720];
+
     uint32_t st[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+
     uint32_t days = ND_DAYS[lv_dropdown_get_selected(g_ndDd) < 5 ? lv_dropdown_get_selected(g_ndDd) : 2];
+
     g_ndStale = g_nodesFn ? g_nodesFn(days, false, st) : 0;
+
     if (g_nodesFn) {
+
         snprintf(t, sizeof(t), "Saved: %u of %u nodes\nHeard: last hour %u, last day %u, last week %u", (unsigned)st[0], (unsigned)st[4],
+
                  (unsigned)st[1], (unsigned)st[2], (unsigned)st[3]);
+
         lv_label_set_text(g_ndInfo, t);
+
         if (g_ndStale)
+
             snprintf(t, sizeof(t), "%u node%s would be removed. Favorites, ignored nodes, nodes with a chat and your own node stay.", (unsigned)g_ndStale,
+
                      g_ndStale == 1 ? "" : "s");
+
         else
+
             snprintf(t, sizeof(t), "Nothing to remove at this age.");
+
         lv_label_set_text(g_ndPrev, t);
+
     } else {
+
         lv_label_set_text(g_ndInfo, "The node list is not available in this build.");
+
         lv_label_set_text(g_ndPrev, "");
+
     }
+
     g_ndArmed = false;
+
     lv_label_set_text(lv_obj_get_child(g_ndBtn, 0), "Remove old nodes");
+
     nd_storage_text(t, sizeof(t));
+
     lv_label_set_text(g_ndStore, t);
+
 }
+
 static void nd_back_cb(lv_event_t *e)
+
 {
+
     close_panel(g_ndPanel);
+
 }
+
 static void nd_dd_cb(lv_event_t *e)
+
 {
+
     lv_label_set_text(g_ndStatus, "");
+
     nd_refresh();
+
 }
+
 static void nd_remove_cb(lv_event_t *e)
+
 {
+
     if (!g_nodesFn)
+
         return;
+
     if (g_ndStale == 0) {
+
         lv_label_set_text(g_ndStatus, "Nothing to remove");
+
         return;
+
     }
+
     if (!g_ndArmed) {
+
         g_ndArmed = true;
+
         char t[48];
+
         snprintf(t, sizeof(t), "Tap again to remove %u nodes", (unsigned)g_ndStale);
+
         lv_label_set_text(lv_obj_get_child(g_ndBtn, 0), t);
+
         lv_label_set_text(g_ndStatus, "");
+
         return;
+
     }
+
     uint32_t st[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+
     uint32_t days = ND_DAYS[lv_dropdown_get_selected(g_ndDd) < 5 ? lv_dropdown_get_selected(g_ndDd) : 2];
+
     uint32_t n = g_nodesFn(days, true, st);
+
     nd_refresh();
+
     uint32_t after[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+
     g_nodesFn(days, false, after);
+
     char t[80];
+
     snprintf(t, sizeof(t), "Removed %u node%s, %u left", (unsigned)n, n == 1 ? "" : "s", (unsigned)after[0]);
+
     lv_label_set_text(g_ndStatus, t);
+
 }
+
 static void nd_open_cb(lv_event_t *e)
+
 {
+
     if (!g_ndPanel) {
+
         lv_obj_t *content;
+
         g_ndPanel = make_panel("Nodes", nd_back_cb, &content);
+
         g_ndInfo = lv_label_create(content);
+
         lv_label_set_long_mode(g_ndInfo, LV_LABEL_LONG_WRAP);
+
         lv_obj_set_width(g_ndInfo, lv_pct(100));
+
         lv_obj_set_style_text_color(g_ndInfo, lv_color_hex(0xFFFFFF), 0);
+
         g_ndDd = make_dropdown(content, "Remove nodes not heard for", "1 day\n3 days\n7 days\n14 days\n30 days");
+
         lv_dropdown_set_selected(g_ndDd, 2);
+
         lv_obj_add_event_cb(g_ndDd, nd_dd_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
         g_ndPrev = lv_label_create(content);
+
         lv_label_set_long_mode(g_ndPrev, LV_LABEL_LONG_WRAP);
+
         lv_obj_set_width(g_ndPrev, lv_pct(100));
+
         lv_obj_set_style_text_color(g_ndPrev, lv_color_hex(0xF2A0A0), 0);
-        g_ndBtn = make_label_button(content, "Remove old nodes", 0x8A2F36, nd_remove_cb);
-        lv_obj_set_width(g_ndBtn, lv_pct(100));
+
+        g_ndBtn = make_action_button(content, "Remove old nodes", nd_remove_cb, 0x8A2F36);
+
         g_ndStatus = make_status(content);
+
         lv_obj_t *h = lv_label_create(content);
+
         lv_label_set_text(h, "Storage");
+
+        lv_obj_set_style_pad_left(h, 4, 0);
+
         lv_obj_set_style_text_color(h, lv_color_hex(0xB8BEE6), 0);
+
         g_ndStore = lv_label_create(content);
+
         lv_label_set_long_mode(g_ndStore, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(g_ndStore, lv_pct(100));
+
+        lv_obj_set_width(g_ndStore, LV_PCT(95));
+
+        lv_obj_set_style_pad_left(g_ndStore, 4, 0);
+
         lv_obj_set_style_text_color(g_ndStore, lv_color_hex(0x9FD3FF), 0);
+
         lv_obj_t *pad = lv_obj_create(content);
+
         lv_obj_remove_style_all(pad);
+
         lv_obj_set_size(pad, 10, 120);
+
     }
+
     lv_label_set_text(g_ndStatus, "");
+
     nd_refresh();
+
     open_panel(g_ndPanel);
+
 }
+
+
 
 static void build_adv_panel(void)
+
 {
+
     lv_obj_t *content;
+
     g_advPanel = make_panel("Advanced settings", adv_back_cb, &content);
-    {
-        char rt[130];
-        if (esp_reset_reason() != ESP_RST_POWERON && g_crumbMagic == 0xC0FFEE42)
-            snprintf(rt, sizeof(rt), "Last reset: %s. Last step: %s", reset_name(), g_crumb);
-        else
-            snprintf(rt, sizeof(rt), "Last reset: %s", reset_name());
-        lv_obj_t *rl = lv_label_create(content);
-        lv_label_set_long_mode(rl, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(rl, lv_pct(100));
-        lv_obj_set_style_text_color(rl, lv_color_hex(0x8E95BF), 0);
-        lv_label_set_text(rl, rt);
-    }
-    lv_obj_t *names = make_label_button(content, "", COL_BTN, names_cb);
-    lv_obj_set_width(names, lv_pct(100));
+
+    lv_obj_t *names = make_nav(content, "", names_cb);
+
     g_namesLabel = names;
+
     names_text();
-    make_nav(content, "MQTT  >", mqtt_open_cb);
-    make_nav(content, "Set clock  >", ck_open_cb);
+
+    make_nav(content, "MQTT", mqtt_open_cb);
+
+    make_nav(content, "Set Clock", ck_open_cb);
+
+#if defined(ARCH_PORTDUINO)
+
+    make_nav(content, "Radio Hardware (Portduino)", radio_open_cb);
+
+#endif
+
     if (g_nodesFn)
-        make_nav(content, "Nodes  >", nd_open_cb);
+
+        make_nav(content, "Nodes", nd_open_cb);
+
     if (g_loraCfg) {
-        make_nav(content, "LoRa extras  >", lora_open_cb);
-        make_nav(content, "Position  >", pos_open_cb);
-        make_nav(content, "GPS status  >", gps_open_cb);
-        make_nav(content, "Quiet hours  >", qh_open_cb);
-        make_nav(content, "Power and I2C  >", i2c_open_cb);
-        make_nav(content, "Screensaver  >", ss_open_cb);
+
+        make_nav(content, "LoRa Extras", lora_open_cb);
+
+        make_nav(content, "Position", pos_open_cb);
+
+        make_nav(content, "GPS Status", gps_open_cb);
+
+        make_nav(content, "Quiet Hours", qh_open_cb);
+
+        make_nav(content, "Power & I2C", i2c_open_cb);
+
+        make_nav(content, "Screensaver", ss_open_cb);
+
         if (g_extCfg)
-            make_nav(content, "Notification output  >", nt_open_cb);
-        make_nav(content, "Security  >", sec_open_cb);
+
+            make_nav(content, "Notification Output", nt_open_cb);
+
+        make_nav(content, "Security", sec_open_cb);
+
     }
+
 }
+
+
 
 static void adv_open_cb(lv_event_t *e)
+
 {
+
     if (!g_advPanel)
+
         build_adv_panel();
+
     names_text();
+
     open_panel(g_advPanel);
+
 }
 
+
+
 // adds "Advanced settings" to the settings list, right below the button given
+
 extern "C" void emoji_settings_init(lv_obj_t *anchor, lv_obj_t *screen, lv_obj_t *keyboard, void *(*mqttCfg)(void),
+
                                     void (*sendMqtt)(void), void (*showKb)(lv_obj_t *))
+
 {
+
     if (g_screen || !anchor || !screen)
+
         return;
+
     g_screen = screen;
+
     g_kb = keyboard;
+
     g_mqttCfg = mqttCfg;
+
     g_sendMqtt = sendMqtt;
+
     g_showKb = showKb;
+
     lv_obj_t *parent = lv_obj_get_parent(anchor);
+
     lv_obj_t *btn = lv_button_create(parent);
+
     lv_obj_set_pos(btn, 0, 0);
+
     lv_obj_set_size(btn, LV_PCT(95), 30);
+
     add_style_settings_button_style(btn);
+
     lv_obj_set_style_align(btn, LV_ALIGN_TOP_MID, LV_PART_MAIN | LV_STATE_DEFAULT);
+
     lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+
     lv_obj_set_style_pad_left(btn, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
+
     lv_obj_set_style_pad_right(btn, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
+
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x4db270), LV_PART_MAIN | LV_STATE_PRESSED);
+
     lv_obj_set_style_text_color(btn, lv_color_hex(0x015114), LV_PART_MAIN | LV_STATE_PRESSED);
+
     lv_obj_t *label = lv_label_create(btn);
+
     lv_obj_set_size(label, LV_PCT(100), LV_SIZE_CONTENT);
+
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+
     lv_obj_set_style_align(label, LV_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
+
     lv_label_set_text(label, "Advanced settings");
+
     lv_obj_add_event_cb(btn, adv_open_cb, LV_EVENT_CLICKED, nullptr);
+
     hl_init();
+
     lv_obj_add_style(btn, &g_hl, LV_STATE_FOCUSED);
+
     {
+
         lv_group_t *grp = lv_group_get_default();
+
         if (grp)
+
             lv_group_add_obj(grp, btn);
+
     }
+
     lv_obj_move_to_index(btn, lv_obj_get_index(anchor) + 1);
+
+}
+
+
+extern "C" void emoji_message_alert(void)
+{
+    if (g_extPin < 0) return;
+    if (emoji_quiet_now && emoji_quiet_now()) return;
+#if defined(ARCH_ESP32) || defined(ARDUINO_ARCH_ESP32) || defined(ESP32)
+    static auto alert_fn = [](void *arg) {
+        pinMode(g_extPin, OUTPUT);
+        rtttl_play(g_welTune[0] ? g_welTune : "msg:d=16,o=6,b=180:c,e,g,c7", g_extPin);
+        digitalWrite(g_extPin, LOW);
+        vTaskDelete(NULL);
+    };
+    xTaskCreatePinnedToCore(alert_fn, "msg_alert", 3072, NULL, 1, NULL, 1);
+#else
+    std::thread([]() {
+        pinMode(g_extPin, OUTPUT);
+        rtttl_play(g_welTune[0] ? g_welTune : "msg:d=16,o=6,b=180:c,e,g,c7", g_extPin);
+        digitalWrite(g_extPin, LOW);
+    }).detach();
+#endif
 }

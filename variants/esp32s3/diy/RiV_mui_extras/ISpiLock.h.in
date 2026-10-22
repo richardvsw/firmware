@@ -1,0 +1,48 @@
+#pragma once
+
+#include <cstdint>
+
+/**
+ * @brief Host-provided mutual exclusion for an SPI bus shared with other peripherals.
+ * Compatibility stub for Meshtastic 2.7.x device-ui.
+ */
+class ISpiLock
+{
+  public:
+    virtual ~ISpiLock() = default;
+    virtual void lock(void) = 0;
+    virtual bool lock(uint32_t timeout)
+    {
+        return false;
+    }
+    virtual void unlock(void) = 0;
+
+    virtual void yield(void)
+    {
+        unlock();
+        lock();
+    }
+
+    static void install(ISpiLock *lock);
+    static ISpiLock *installed(void);
+
+    class Guard
+    {
+      public:
+        Guard(void) : held(ISpiLock::installed())
+        {
+            if (held)
+                held->lock();
+        }
+        ~Guard()
+        {
+            if (held)
+                held->unlock();
+        }
+        Guard(const Guard &) = delete;
+        Guard &operator=(const Guard &) = delete;
+
+      private:
+        ISpiLock *held;
+    };
+};

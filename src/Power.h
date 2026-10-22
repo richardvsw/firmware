@@ -36,6 +36,19 @@ static constexpr uint8_t LOW_VOLTAGE_READINGS_BEFORE_SHUTDOWN = 10;
 /// Advance the low-battery shutdown counter by one reading; true once the device should deep sleep.
 bool updateLowVoltageCounter(uint8_t &counter, bool hasBattery, bool hasUsb, uint16_t battMv, uint16_t cutoffMv);
 
+#ifndef HAS_PMU
+class HasBatteryLevel
+{
+  public:
+    virtual ~HasBatteryLevel() = default;
+    virtual int getBatteryPercent() { return -1; }
+    virtual uint16_t getBattVoltage() { return 0; }
+    virtual bool isBatteryConnect() { return false; }
+    virtual bool isVbusIn() { return false; }
+    virtual bool isCharging() { return false; }
+};
+#endif
+
 #if HAS_TELEMETRY && !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR
 #include "modules/Telemetry/Sensor/nullSensor.h"
 #if __has_include(<Adafruit_INA219.h>)
@@ -103,6 +116,7 @@ class Power : public concurrency::OSThread
     virtual bool setup();
     virtual int32_t runOnce() override;
     void setStatusHandler(meshtastic::PowerStatus *handler) { statusHandler = handler; }
+    void setBatterySensor(HasBatteryLevel *sensor);
     const uint16_t OCV[11] = {OCV_ARRAY};
     bool isLowBattery() { return low_voltage_counter >= LOW_VOLTAGE_READINGS_BEFORE_SHUTDOWN; };
 

@@ -75,3 +75,6 @@ build/wasm/
 build/wasm-obj/
 build/wasm-*.log
 .emsdk/
+ 
+# Local IDE / assistant settings
+.claude/

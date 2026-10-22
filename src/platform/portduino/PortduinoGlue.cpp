@@ -216,7 +216,10 @@ void cpuDeepSleep(uint32_t msecs)
     notImplemented("cpuDeepSleep");
 }
 
-void updateBatteryLevel(uint8_t level) NOT_IMPLEMENTED("updateBatteryLevel");
+void updateBatteryLevel(uint8_t level)
+{
+    // No-op on Linux Portduino (BLE battery service not handled here)
+}
 
 int TCPPort = SERVER_API_DEFAULT_PORT;
 bool checkConfigPort = true;

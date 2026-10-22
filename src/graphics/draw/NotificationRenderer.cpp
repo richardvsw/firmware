@@ -18,6 +18,7 @@
 #endif
 #include "main.h"
 #include <algorithm>
+#include <cstring>
 #include <string>
 #include <vector>
 #if HAS_TRACKBALL
@@ -452,7 +453,8 @@ void NotificationRenderer::drawNodePicker(OLEDDisplay *display, OLEDDisplayUiSta
     uint8_t effectiveLineHeight = FONT_HEIGHT_SMALL - 3;
     uint8_t visibleTotalLines = std::min<uint8_t>(totalLines, (screenHeight - vPadding * 2) / effectiveLineHeight);
     uint8_t linesShown = lineCount;
-    const char *linePointers[visibleTotalLines + 1] = {0}; // this is sort of a dynamic allocation
+    const char *linePointers[visibleTotalLines + 1]; // this is sort of a dynamic allocation
+    memset(linePointers, 0, sizeof(linePointers));
 
     // copy the linestarts to display to the linePointers holder
     for (int i = 0; i < lineCount; i++) {
@@ -506,7 +508,6 @@ void NotificationRenderer::drawAlertBannerOverlay(OLEDDisplay *display, OLEDDisp
     // === Layout Configuration ===
     constexpr uint16_t vPadding = 2;
 
-    uint16_t optionWidths[alertBannerOptions] = {0};
     uint16_t maxWidth = 0;
     uint16_t arrowsWidth = display->getStringWidth(">  <", 4, true);
     uint16_t lineWidths[MAX_LINES] = {0};
@@ -547,11 +548,11 @@ void NotificationRenderer::drawAlertBannerOverlay(OLEDDisplay *display, OLEDDisp
     // Measure option widths
     display->setFont(FONT_SMALL);
     for (int i = 0; i < alertBannerOptions; i++) {
-        optionWidths[i] = display->getStringWidth(optionsArrayPtr[i], strlen(optionsArrayPtr[i]), true);
-        if (optionWidths[i] > maxWidth)
-            maxWidth = optionWidths[i];
-        if (optionWidths[i] + arrowsWidth > maxWidth)
-            maxWidth = optionWidths[i] + arrowsWidth;
+        uint16_t optWidth = display->getStringWidth(optionsArrayPtr[i], strlen(optionsArrayPtr[i]), true);
+        if (optWidth > maxWidth)
+            maxWidth = optWidth;
+        if (optWidth + arrowsWidth > maxWidth)
+            maxWidth = optWidth + arrowsWidth;
     }
 
     // Handle input
@@ -602,7 +603,8 @@ void NotificationRenderer::drawAlertBannerOverlay(OLEDDisplay *display, OLEDDisp
                                     ? totalLines
                                     : std::min<uint8_t>(totalLines, (screenHeight - vPadding * 2) / effectiveLineHeight);
     uint8_t linesShown = lineCount;
-    const char *linePointers[visibleTotalLines + 1] = {0}; // this is sort of a dynamic allocation
+    const char *linePointers[visibleTotalLines + 1]; // this is sort of a dynamic allocation
+    memset(linePointers, 0, sizeof(linePointers));
 
     // copy the linestarts to display to the linePointers holder
     for (uint16_t i = 0; i < lineCount && i < visibleTotalLines; i++) {
@@ -646,17 +648,25 @@ void NotificationRenderer::drawNotificationBox(OLEDDisplay *display, OLEDDisplay
                                                uint16_t totalLines, uint8_t firstOptionToShow, uint16_t maxWidth)
 {
 
+    if (totalLines == 0)
+        return;
+
     bool is_picker = false;
     uint16_t lineCount = 0;
     // Layout Configuration
     constexpr uint16_t hPadding = 5;
     constexpr uint16_t vPadding = 2;
     bool needs_bell = false;
-    uint16_t lineWidths[totalLines] = {0};
-    uint16_t lineLengths[totalLines] = {0};
-    BannerFont lineFonts[totalLines] = {};
-    uint8_t lineEffectiveHeights[totalLines] = {0};
-    const char *renderLines[totalLines] = {0};
+    uint16_t lineWidths[totalLines];
+    memset(lineWidths, 0, sizeof(lineWidths));
+    uint16_t lineLengths[totalLines];
+    memset(lineLengths, 0, sizeof(lineLengths));
+    BannerFont lineFonts[totalLines];
+    memset(lineFonts, 0, sizeof(lineFonts));
+    uint8_t lineEffectiveHeights[totalLines];
+    memset(lineEffectiveHeights, 0, sizeof(lineEffectiveHeights));
+    const char *renderLines[totalLines];
+    memset(renderLines, 0, sizeof(renderLines));
 
     if (maxWidth != 0)
         is_picker = true;
