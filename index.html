@@ -1008,6 +1008,28 @@
 
           <div class="gh-toggle-item">
             <div>
+              <div style="font-weight: 600; font-size: 13px;">Show Hop Count & MQTT Indicators</div>
+              <div style="font-size: 12px; color: var(--color-fg-muted);">Display mesh rabbit hop badges and cloud MQTT markers (<span>☁ 🐰2</span>). Toggleable live on-device in Advanced Settings.</div>
+            </div>
+            <label class="gh-switch">
+              <input type="checkbox" id="feat_hops" checked onchange="updateAll()">
+              <span class="gh-slider"></span>
+            </label>
+          </div>
+
+          <div class="gh-toggle-item">
+            <div>
+              <div style="font-weight: 600; font-size: 13px;">@Node Mentions Auto-Complete & Action</div>
+              <div style="font-size: 12px; color: var(--color-fg-muted);">Type <code>@</code> to search and mention mesh nodes, plus a 1-tap "Mention" button on chat bubbles.</div>
+            </div>
+            <label class="gh-switch">
+              <input type="checkbox" id="feat_mentions" checked onchange="updateAll()">
+              <span class="gh-slider"></span>
+            </label>
+          </div>
+
+          <div class="gh-toggle-item">
+            <div>
               <div style="font-weight: 600; font-size: 13px;">Advanced UI & Ringtone Composer</div>
               <div style="font-size: 12px; color: var(--color-fg-muted);">Quiet hours, welcome melody, live RTTTL composer.</div>
             </div>

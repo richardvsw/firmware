@@ -136,6 +136,10 @@ extern "C" bool emoji_snr_enabled(void);
 
 extern "C" bool emoji_snr_toggle(void);
 
+extern "C" bool emoji_hops_enabled(void);
+
+extern "C" bool emoji_hops_toggle(void);
+
 extern "C" void add_style_settings_button_style(lv_obj_t *obj);
 
 extern "C" void add_style_settings_panel_style(lv_obj_t *obj);
@@ -6512,6 +6516,21 @@ static void names_cb(lv_event_t *e)
 
 
 
+static lv_obj_t *g_hopsLabel = nullptr;
+
+static void hops_text(void)
+{
+    if (g_hopsLabel)
+        lv_label_set_text(lv_obj_get_child(g_hopsLabel, 0),
+                          emoji_hops_enabled() ? "Message Hops/MQTT: Show" : "Message Hops/MQTT: Hide");
+}
+
+static void hops_cb(lv_event_t *e)
+{
+    emoji_hops_toggle();
+    hops_text();
+}
+
 static lv_obj_t *g_snrLabel = nullptr;
 
 static void snr_text(void)
@@ -6995,6 +7014,12 @@ static void build_adv_panel(void)
     g_snrLabel = snrBtn;
 
     snr_text();
+
+    lv_obj_t *hopsBtn = make_nav(content, "", hops_cb);
+
+    g_hopsLabel = hopsBtn;
+
+    hops_text();
 
     make_nav(content, "MQTT", mqtt_open_cb);
 

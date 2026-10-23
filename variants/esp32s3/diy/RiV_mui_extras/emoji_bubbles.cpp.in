@@ -14,6 +14,10 @@ static bool g_hasPendingMeta = false;
 static bool g_hasPendingRxStats = false;
 
 extern "C" bool emoji_snr_enabled(void) __attribute__((weak));
+extern "C" bool emoji_hops_enabled(void) __attribute__((weak));
+static inline bool is_hops_active(void) {
+    return emoji_hops_enabled ? emoji_hops_enabled() : true;
+}
 static inline bool is_snr_active(void) {
     return emoji_snr_enabled ? emoji_snr_enabled() : true;
 }
@@ -236,11 +240,13 @@ extern "C" void emoji_name_chip(lv_obj_t *label, uint32_t nodeNum, const char *s
     memcpy(nt + o, tw0, timeLen);
     o += timeLen;
     if (g_hasPendingMeta) {
-        char metaBadge[32];
-        int mlen = snprintf(metaBadge, sizeof(metaBadge), " %s🐰%u", g_pendingMqtt ? "☁ " : "", (unsigned)g_pendingHops);
-        if (mlen > 0) {
-            memcpy(nt + o, metaBadge, mlen);
-            o += mlen;
+        if (is_hops_active()) {
+            char metaBadge[32];
+            int mlen = snprintf(metaBadge, sizeof(metaBadge), " %s🐰%u", g_pendingMqtt ? "☁ " : "", (unsigned)g_pendingHops);
+            if (mlen > 0) {
+                memcpy(nt + o, metaBadge, mlen);
+                o += mlen;
+            }
         }
         g_hasPendingMeta = false;
     }
@@ -418,6 +424,36 @@ static void react_cb(lv_event_t *e)
     g_ctxMode = 0;
     g_ctxTarget = 0;
     lv_textarea_set_text(ta, saved);
+}
+
+static void mention_cb(lv_event_t *e)
+{
+    lv_obj_t *bubble = (lv_obj_t *)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+    close_popup();
+    if (!bubble)
+        return;
+    lv_obj_t *panel = lv_obj_get_parent(bubble);
+    const char *name = nullptr;
+    if (panel) {
+        uint32_t cnt = lv_obj_get_child_count(panel);
+        for (uint32_t i = 0; i < cnt; i++) {
+            lv_obj_t *ch = lv_obj_get_child(panel, i);
+            if (ch != bubble && lv_obj_check_type(ch, &lv_label_class)) {
+                name = lv_label_get_text(ch);
+                break;
+            }
+        }
+    }
+    char mentionStr[32];
+    if (name && name[0])
+        snprintf(mentionStr, sizeof(mentionStr), "@%s ", name);
+    else
+        snprintf(mentionStr, sizeof(mentionStr), "@ ");
+    lv_obj_t *ta = emoji_textarea();
+    if (ta) {
+        lv_textarea_add_text(ta, mentionStr);
+        lv_obj_move_foreground(ta);
+    }
 }
 
 static void reply_cb(lv_event_t *e)

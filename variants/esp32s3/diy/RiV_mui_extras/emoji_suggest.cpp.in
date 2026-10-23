@@ -8,6 +8,80 @@
 #include "emoji_names.inc"
 
 static const int MAX_SUGGESTIONS = 8;
+
+// ---- Node Mentions via @ ----
+typedef void (*MentionCallback)(const char *longName, const char *shortName, uint32_t num);
+typedef void (*MentionHostFn)(const char *query, MentionCallback cb);
+static MentionHostFn g_mentionHost = nullptr;
+
+extern "C" void emoji_mention_host(MentionHostFn fn)
+{
+    g_mentionHost = fn;
+}
+
+// Token starts with @ followed by zero or more chars
+static bool find_mention_token(const char *t, char *query, int qsize, int *tokenLen)
+{
+    int n = (int)strlen(t);
+    int i = n;
+    while (i > 0 && (isalnum((unsigned char)t[i - 1]) || t[i - 1] == '-' || t[i - 1] == '_'))
+        i--;
+    if (i < 1 || t[i - 1] != '@')
+        return false;
+    if (i - 1 > 0 && t[i - 2] != ' ' && t[i - 2] != '
+')
+        return false;
+    int chars = n - i;
+    if (chars >= qsize)
+        return false;
+    for (int k = 0; k < chars; k++)
+        query[k] = (char)tolower((unsigned char)t[i + k]);
+    query[chars] = 0;
+    *tokenLen = chars + 1;
+    return true;
+}
+
+struct MentionMatch {
+    char shortName[8];
+    char longName[24];
+    uint32_t num;
+};
+static MentionMatch g_mentionHits[8];
+static int g_mentionHitCount = 0;
+
+static void mention_collector(const char *longName, const char *shortName, uint32_t num)
+{
+    if (g_mentionHitCount >= 8 || !shortName || !shortName[0])
+        return;
+    MentionMatch &m = g_mentionHits[g_mentionHitCount++];
+    strncpy(m.shortName, shortName, sizeof(m.shortName) - 1);
+    m.shortName[sizeof(m.shortName) - 1] = 0;
+    strncpy(m.longName, longName ? longName : shortName, sizeof(m.longName) - 1);
+    m.longName[sizeof(m.longName) - 1] = 0;
+    m.num = num;
+}
+
+static void pick_mention_cb(lv_event_t *e)
+{
+    lv_obj_t *label = (lv_obj_t *)lv_event_get_target(e);
+    const char *shortName = (const char *)lv_obj_get_user_data(label);
+    if (!shortName || !g_ta)
+        return;
+    char query[16];
+    int tokenLen = 0;
+    if (!find_mention_token(lv_textarea_get_text(g_ta), query, sizeof(query), &tokenLen))
+        return;
+    g_picking = true;
+    lv_textarea_set_cursor_pos(g_ta, LV_TEXTAREA_CURSOR_LAST);
+    for (int k = 0; k < tokenLen; k++)
+        lv_textarea_delete_char(g_ta);
+    char insertText[32];
+    snprintf(insertText, sizeof(insertText), "@%s ", shortName);
+    lv_textarea_add_text(g_ta, insertText);
+    g_picking = false;
+    hide_strip();
+}
+
 extern "C" bool emoji_reply_active(void);
 extern "C" void emoji_recent_note(const char *txt) __attribute__((weak));
 static lv_obj_t *g_strip = nullptr;
@@ -112,9 +186,54 @@ static void text_changed_cb(lv_event_t *e)
 {
     if (g_picking || !g_strip || !g_ta)
         return;
+    const char *fullText = lv_textarea_get_text(g_ta);
     char query[16];
     int tokenLen = 0;
-    if (!find_token(lv_textarea_get_text(g_ta), query, sizeof(query), &tokenLen)) {
+
+    // Check for @mention trigger first
+    if (g_mentionHost && find_mention_token(fullText, query, sizeof(query), &tokenLen)) {
+        g_mentionHitCount = 0;
+        g_mentionHost(query, mention_collector);
+        if (g_mentionHitCount > 0) {
+            lv_obj_clean(g_strip);
+            for (int i = 0; i < g_mentionHitCount; i++) {
+                // Filter by query if query has letters
+                if (query[0]) {
+                    char lwr[24];
+                    for (int k = 0; g_mentionHits[i].shortName[k] && k < 23; k++)
+                        lwr[k] = (char)tolower((unsigned char)g_mentionHits[i].shortName[k]);
+                    lwr[strlen(g_mentionHits[i].shortName)] = 0;
+                    if (!strstr(lwr, query)) {
+                        for (int k = 0; g_mentionHits[i].longName[k] && k < 23; k++)
+                            lwr[k] = (char)tolower((unsigned char)g_mentionHits[i].longName[k]);
+                        lwr[strlen(g_mentionHits[i].longName)] = 0;
+                        if (!strstr(lwr, query)) continue;
+                    }
+                }
+                char pill[32];
+                snprintf(pill, sizeof(pill), "@%s", g_mentionHits[i].shortName);
+                lv_obj_t *chip = lv_label_create(g_strip);
+                lv_label_set_text(chip, pill);
+                lv_obj_set_style_pad_hor(chip, 8, 0);
+                lv_obj_set_style_pad_ver(chip, 4, 0);
+                lv_obj_set_style_bg_color(chip, lv_color_hex(0x238636), 0);
+                lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+                lv_obj_set_style_text_color(chip, lv_color_hex(0xFFFFFF), 0);
+                lv_obj_set_style_radius(chip, 6, 0);
+                lv_obj_set_user_data(chip, (void *)g_mentionHits[i].shortName);
+                lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+                lv_obj_add_event_cb(chip, pick_mention_cb, LV_EVENT_CLICKED, nullptr);
+            }
+            if (lv_obj_get_child_count(g_strip) > 0) {
+                lv_obj_remove_flag(g_strip, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_align_to(g_strip, g_ta, LV_ALIGN_OUT_TOP_LEFT, 0, emoji_reply_active() ? -40 : -2);
+                lv_obj_move_foreground(g_strip);
+                return;
+            }
+        }
+    }
+
+    if (!find_token(fullText, query, sizeof(query), &tokenLen)) {
         hide_strip();
         return;
     }
@@ -213,6 +332,29 @@ extern "C" bool emoji_long_names_toggle(void)
 {
     emoji_name_mode_cycle();
     return emoji_long_names();
+}
+
+extern "C" bool emoji_hops_enabled(void)
+{
+    Preferences prefs;
+    if (prefs.begin("chatui", true)) {
+        bool en = prefs.getBool("show_hops", true);
+        prefs.end();
+        return en;
+    }
+    return true;
+}
+
+extern "C" bool emoji_hops_toggle(void)
+{
+    bool curr = emoji_hops_enabled();
+    bool next = !curr;
+    Preferences prefs;
+    if (prefs.begin("chatui", false)) {
+        prefs.putBool("show_hops", next);
+        prefs.end();
+    }
+    return next;
 }
 
 extern "C" bool emoji_snr_enabled(void)

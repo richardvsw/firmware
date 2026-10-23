@@ -804,7 +804,8 @@ def main():
             # B-48 / RiV-meshBot chat: white background with the bot logo and solid bubbles
             copy("meshbot_bg.cpp.in", dst)
             copy("meshbot_logo.inc", dst)
-            tft_decl += ('extern "C" void emoji_chat_style(lv_obj_t *, const char *, const char *);\n'
+            tft_decl += ('extern "C" void emoji_mention_host(void (*)(const char *, void (*)(const char *, const char *, uint32_t)));\n'
+                         'extern "C" void emoji_chat_style(lv_obj_t *, const char *, const char *);\n'
                          'extern "C" void emoji_bubble_style(lv_obj_t *, lv_obj_t *, bool);\n')
             shown = ("    lv_obj_t *p = nodes[nodeNum];\n    if (p) {\n"
                      "        lv_label_set_text(objects.top_messages_node_label, lv_label_get_text(p->LV_OBJ_IDX(node_lbl_idx)));\n")
