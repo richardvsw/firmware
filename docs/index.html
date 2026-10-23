@@ -1,0 +1,1296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meshtastic Firmware & Variant Configurator</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <style>
+    :root {
+      --bg: #0e1317;
+      --card-bg: #161e24;
+      --card-border: #23303a;
+      --primary: #2ecc71;
+      --primary-hover: #27ae60;
+      --primary-dim: rgba(46, 204, 113, 0.15);
+      --text: #ecf0f1;
+      --text-muted: #8b9bb0;
+      --warning: #f39c12;
+      --warning-bg: rgba(243, 156, 18, 0.15);
+      --danger: #e74c3c;
+      --danger-bg: rgba(231, 76, 60, 0.15);
+      --info: #3498db;
+      --code-bg: #0b0f12;
+      --input-bg: #1e2933;
+      --input-border: #2c3e50;
+      --input-focus: #2ecc71;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--card-border);
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .title-group h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      color: var(--primary);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .title-group p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge-primary { background: var(--primary-dim); color: var(--primary); }
+    .badge-warn { background: var(--warning-bg); color: var(--warning); }
+    .badge-info { background: rgba(52, 152, 219, 0.15); color: var(--info); }
+
+    .layout-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+
+    @media (max-width: 960px) {
+      .layout-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    }
+
+    .card-title {
+      font-size: 1.15rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 8px;
+    }
+
+    .card-title .icon {
+      color: var(--primary);
+      margin-right: 8px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      position: relative;
+    }
+
+    .form-group.full-width {
+      grid-column: 1 / -1;
+    }
+
+    label {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .helper-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--input-border);
+      color: var(--text-muted);
+      font-size: 0.7rem;
+      cursor: help;
+      position: relative;
+    }
+
+    .helper-icon:hover::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      bottom: 125%;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #000;
+      color: #fff;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      white-space: pre-line;
+      width: max-content;
+      max-width: 260px;
+      z-index: 100;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      border: 1px solid var(--card-border);
+    }
+
+    input[type="text"],
+    input[type="number"],
+    select {
+      background: var(--input-bg);
+      border: 1px solid var(--input-border);
+      color: var(--text);
+      padding: 9px 12px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    input:focus,
+    select:focus {
+      border-color: var(--input-focus);
+      box-shadow: 0 0 0 2px var(--primary-dim);
+    }
+
+    input:disabled,
+    select:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      background: #12181d;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: var(--input-bg);
+      border-radius: 6px;
+      border: 1px solid var(--input-border);
+      margin-bottom: 8px;
+    }
+
+    .toggle-info {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .toggle-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+
+    .toggle-desc {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: var(--input-border);
+      transition: 0.2s;
+      border-radius: 24px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: 0.2s;
+      border-radius: 50%;
+    }
+
+    input:checked + .slider {
+      background-color: var(--primary);
+    }
+
+    input:checked + .slider:before {
+      transform: translateX(20px);
+    }
+
+    .alert {
+      padding: 12px 16px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .alert-danger {
+      background: var(--danger-bg);
+      border: 1px solid var(--danger);
+      color: #ff7675;
+    }
+    .alert-warning {
+      background: var(--warning-bg);
+      border: 1px solid var(--warning);
+      color: #fdcb6e;
+    }
+    .alert-info {
+      background: var(--primary-dim);
+      border: 1px solid var(--primary);
+      color: #55efc4;
+    }
+
+    /* Tabs & Code Preview */
+    .tab-header {
+      display: flex;
+      gap: 8px;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 10px;
+      margin-bottom: 14px;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .tab-btn:hover {
+      color: var(--text);
+      background: var(--input-bg);
+    }
+
+    .tab-btn.active {
+      color: var(--primary);
+      background: var(--primary-dim);
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 14px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+      font-size: 0.82rem;
+      color: #d1d8e0;
+      overflow-x: auto;
+      max-height: 480px;
+      white-space: pre;
+    }
+
+    .action-bar {
+      display: flex;
+      gap: 12px;
+      margin-top: 20px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: background 0.2s, transform 0.1s;
+    }
+
+    .btn:active {
+      transform: scale(0.98);
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: #0c1810;
+    }
+
+    .btn-primary:hover {
+      background: var(--primary-hover);
+    }
+
+    .btn-secondary {
+      background: var(--input-bg);
+      border: 1px solid var(--card-border);
+      color: var(--text);
+    }
+
+    .btn-secondary:hover {
+      background: #283747;
+    }
+
+    .conflict-tag {
+      color: var(--danger);
+      font-size: 0.75rem;
+      font-weight: bold;
+    }
+
+    .cheatsheet {
+      margin-top: 10px;
+      font-size: 0.8rem;
+      background: var(--input-bg);
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px dashed var(--input-border);
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <div class="title-group">
+      <h1>⚡ Meshtastic FW & Variant Configurator</h1>
+      <p>Configure custom pinouts, transceivers, displays, touch, and MUI extras, or export clean official variants.</p>
+    </div>
+    <div class="badge-group">
+      <span class="badge badge-primary">Firmware 2.8+ Ready</span>
+      <span class="badge badge-info">Pure Client-side ZIP</span>
+    </div>
+  </header>
+
+  <!-- Realtime Conflict Alert Box -->
+  <div id="conflictAlert" class="alert alert-danger" style="display: none;">
+    <strong>⚠️ Pin Conflict Detected:</strong>
+    <span id="conflictList"></span>
+  </div>
+
+  <div class="layout-grid">
+    <!-- LEFT COLUMN: Form Controls -->
+    <div class="column">
+
+      <!-- 1. Board Type -->
+      <div class="card">
+        <div class="card-title">
+          <span><span class="icon">📟</span> 1. Board Selection</span>
+          <span class="badge badge-primary" id="boardCategoryBadge">Official Board</span>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-group full-width">
+            <label>
+              Board Type
+              <span class="helper-icon" data-tooltip="Pick an official commercial Meshtastic board or a DIY ESP32 board.">?</span>
+            </label>
+            <select id="boardSelect" onchange="onBoardChange()">
+              <optgroup label="Official Boards">
+                <option value="seeed_xiao_s3" selected>Seeed Studio XIAO ESP32-S3 (Wio Baseboard)</option>
+                <option value="heltec_v3">Heltec V3 (ESP32-S3 + SX1262 + OLED)</option>
+                <option value="heltec_wireless_tracker">Heltec Wireless Tracker (SX1262 + TFT + GPS)</option>
+                <option value="t_deck">LilyGO T-Deck (ESP32-S3 + SX1262 + 320x240 TFT + Touch)</option>
+                <option value="tlora_t3s3_v1">LilyGO T3S3 v1 (ESP32-S3 + SX1262)</option>
+              </optgroup>
+              <optgroup label="DIY Custom Targets">
+                <option value="diy_xiao_s3_tft">Seeed XIAO S3 + Custom SPI TFT (ST7789/ST7796)</option>
+                <option value="diy_esp32s3_generic">ESP32-S3 Generic DevKit (8MB/16MB Flash)</option>
+                <option value="diy_esp32_classic">ESP32 Classic (WROOM / WROVER)</option>
+              </optgroup>
+            </select>
+          </div>
+        </div>
+
+        <!-- Virgin Option for Official Boards -->
+        <div id="virginOptionContainer" style="margin-top: 14px;">
+          <div class="toggle-row">
+            <div class="toggle-info">
+              <span class="toggle-title">Virgin / Clean Stock Variant</span>
+              <span class="toggle-desc">Lock configuration to pristine upstream official board pinout.</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="virginStockToggle" onchange="onVirginToggle()">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div id="boardHelperBox" class="cheatsheet" style="margin-top: 10px;">
+          <strong>Board Pin Hint:</strong> <span id="boardHintText">Xiao S3 has pins D0-D10 (GPIO 1..44). RFM95 or SX1262 can share the SPI bus (SCK:7, MISO:8, MOSI:9) with the display.</span>
+        </div>
+      </div>
+
+      <!-- 2. LoRa Transceiver -->
+      <div class="card">
+        <div class="card-title">
+          <span><span class="icon">📡</span> 2. LoRa Transceiver</span>
+          <span class="badge badge-info" id="loraBadge">SX1262</span>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-group full-width">
+            <label>
+              LoRa Chip Type
+              <span class="helper-icon" data-tooltip="SX1262/68 require BUSY pin. RFM95/SX1276 uses DIO0 as IRQ.">?</span>
+            </label>
+            <select id="loraType" onchange="onLoraTypeChange()">
+              <option value="SX1262" selected>Semtech SX1262 (Standard modern low-power, 22dBm)</option>
+              <option value="SX1268">Semtech SX1268 (433/470 MHz bands)</option>
+              <option value="RFM95">HopeRF RFM95W / SX1276 (Legacy 868/915 MHz, uses DIO0)</option>
+              <option value="LR1121">Semtech LR1121 (Sub-GHz + 2.4GHz dual band)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>SCK <span class="helper-icon" data-tooltip="SPI Clock pin for the LoRa radio">?</span></label>
+            <input type="number" id="lora_sck" value="7" oninput="updateAll()">
+          </div>
+          <div class="form-group">
+            <label>MISO <span class="helper-icon" data-tooltip="SPI Master-In Slave-Out pin">?</span></label>
+            <input type="number" id="lora_miso" value="8" oninput="updateAll()">
+          </div>
+          <div class="form-group">
+            <label>MOSI <span class="helper-icon" data-tooltip="SPI Master-Out Slave-In pin">?</span></label>
+            <input type="number" id="lora_mosi" value="9" oninput="updateAll()">
+          </div>
+          <div class="form-group">
+            <label>CS (NSS) <span class="helper-icon" data-tooltip="Chip Select pin for the radio">?</span></label>
+            <input type="number" id="lora_cs" value="41" oninput="updateAll()">
+          </div>
+          <div class="form-group">
+            <label>RESET <span class="helper-icon" data-tooltip="Radio hardware reset pin">?</span></label>
+            <input type="number" id="lora_reset" value="42" oninput="updateAll()">
+          </div>
+          <div class="form-group">
+            <label>DIO1 (IRQ) <span class="helper-icon" data-tooltip="Main interrupt pin for packet receive/transmit">?</span></label>
+            <input type="number" id="lora_dio1" value="39" oninput="updateAll()">
+          </div>
+
+          <!-- SX126x / LR1121 BUSY pin -->
+          <div class="form-group" id="busyPinGroup">
+            <label>BUSY Pin <span class="helper-icon" data-tooltip="Required for SX126x/LR1121! Cannot be left floating.">?</span></label>
+            <input type="number" id="lora_busy" value="40" oninput="updateAll()">
+          </div>
+
+          <!-- RFM95 / SX1276 DIO0 pin -->
+          <div class="form-group" id="dio0PinGroup" style="display: none;">
+            <label>DIO0 (IRQ) <span class="helper-icon" data-tooltip="Required for SX1276/RFM95 packet IRQ.">?</span></label>
+            <input type="number" id="lora_dio0" value="39" oninput="updateAll()">
+          </div>
+        </div>
+
+        <div id="loraHelperText" class="cheatsheet">
+          💡 <strong>Tip:</strong> SX1262 requires <code>BUSY</code> (GPIO40 on Wio Baseboard). DIO2 is typically used as the RF antenna switch.
+        </div>
+      </div>
+
+      <!-- 3. Display & Screen -->
+      <div class="card">
+        <div class="card-title">
+          <span><span class="icon">🖥️</span> 3. Display & Orientation</span>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Display Driver</label>
+            <select id="displayType" onchange="onDisplayTypeChange()">
+              <option value="ST7789">ST7789 (240x320 or 240x240)</option>
+              <option value="ST7796">ST7796 (320x480 High-Res)</option>
+              <option value="ST7735">ST7735 (128x160 Small TFT)</option>
+              <option value="ILI9341">ILI9341 (240x320 Classic)</option>
+              <option value="SSD1306">SSD1306 (I2C OLED 128x64)</option>
+              <option value="NONE">Headless / No Display</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>Screen Orientation</label>
+            <select id="displayRotation" onchange="updateAll()">
+              <option value="0">Portrait (0°)</option>
+              <option value="1">Landscape (90°)</option>
+              <option value="2">Portrait Inverted (180°)</option>
+              <option value="3">Landscape Inverted (270°)</option>
+            </select>
+          </div>
+
+          <!-- SPI TFT Pins -->
+          <div id="tftPinsGroup" class="form-grid full-width" style="margin-top: 8px;">
+            <div class="form-group">
+              <label>TFT CS <span class="helper-icon" data-tooltip="Display SPI Chip Select pin">?</span></label>
+              <input type="number" id="tft_cs" value="1" oninput="updateAll()">
+            </div>
+            <div class="form-group">
+              <label>TFT DC <span class="helper-icon" data-tooltip="Data/Command pin">?</span></label>
+              <input type="number" id="tft_dc" value="2" oninput="updateAll()">
+            </div>
+            <div class="form-group">
+              <label>TFT RST <span class="helper-icon" data-tooltip="Reset pin (set -1 if tied to EN/3V3)">?</span></label>
+              <input type="number" id="tft_rst" value="3" oninput="updateAll()">
+            </div>
+            <div class="form-group">
+              <label>Backlight BL <span class="helper-icon" data-tooltip="Backlight PWM brightness pin (-1 if tied to 3V3)">?</span></label>
+              <input type="number" id="tft_bl" value="4" oninput="updateAll()">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. Touchscreen & Calibration -->
+      <div class="card" id="touchCard">
+        <div class="card-title">
+          <span><span class="icon">👆</span> 4. Touch Controller</span>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Touch Controller</label>
+            <select id="touchType" onchange="onTouchTypeChange()">
+              <option value="CST816S" selected>CST816S (I2C Capacitive)</option>
+              <option value="FT6336">FT6336U (I2C Capacitive)</option>
+              <option value="GT911">GT911 (I2C Capacitive)</option>
+              <option value="XPT2046">XPT2046 (SPI Resistive)</option>
+              <option value="NONE">No Touchscreen</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>Touch Coordinate Mapping</label>
+            <select id="touchMapping" onchange="updateAll()">
+              <option value="DEFAULT">Standard (Match LCD)</option>
+              <option value="SWAP_XY">Swap X/Y</option>
+              <option value="INVERT_X">Invert X</option>
+              <option value="INVERT_Y">Invert Y</option>
+              <option value="SWAP_INVERT_X">Swap X/Y + Invert X</option>
+              <option value="SWAP_INVERT_Y">Swap X/Y + Invert Y</option>
+            </select>
+          </div>
+
+          <div id="touchPinsGroup" class="form-grid full-width" style="margin-top: 8px;">
+            <div class="form-group">
+              <label id="touchPin1Label">Touch SDA / CS</label>
+              <input type="number" id="touch_pin1" value="43" oninput="updateAll()">
+            </div>
+            <div class="form-group">
+              <label id="touchPin2Label">Touch SCL / IRQ</label>
+              <input type="number" id="touch_pin2" value="6" oninput="updateAll()">
+            </div>
+            <div class="form-group">
+              <label>Touch INT (IRQ)</label>
+              <input type="number" id="touch_int" value="5" oninput="updateAll()">
+            </div>
+            <div class="form-group">
+              <label>Touch RST</label>
+              <input type="number" id="touch_rst" value="-1" oninput="updateAll()">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5. Peripherals & RiV MUI Extras -->
+      <div class="card">
+        <div class="card-title">
+          <span><span class="icon">✨</span> 5. Peripherals & RiV MUI Extras</span>
+        </div>
+
+        <div class="form-grid" style="margin-bottom: 14px;">
+          <div class="form-group">
+            <label>Buzzer GPIO <span class="helper-icon" data-tooltip="Pin for notification tone buzzer (e.g. GPIO 48 for Xiao S3)">?</span></label>
+            <input type="number" id="buzzer_pin" value="48" oninput="updateAll()">
+          </div>
+          <div class="form-group">
+            <label>Battery Monitor Mode</label>
+            <select id="batteryMode" onchange="updateAll()">
+              <option value="INA219">I2C INA219/INA226 (Addr 0x40/0x41)</option>
+              <option value="ADC">Analog ADC Voltage Divider</option>
+              <option value="NONE">None / USB Powered Only</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <span class="toggle-title">Full Color Emoji Pack</span>
+            <span class="toggle-desc">650 color emojis in flash + 1300 mono.</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="feat_emoji" checked onchange="updateAll()">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <span class="toggle-title">Rich Chat Bubbles & Reactions</span>
+            <span class="toggle-desc">Emoji reactions on bubbles, quoted reply headers.</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="feat_chat" checked onchange="updateAll()">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <span class="toggle-title">Advanced UI & RTTTL Ringtone Composer</span>
+            <span class="toggle-desc">Quiet hours, custom welcome melody, live tune composer.</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="feat_advanced" checked onchange="updateAll()">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <span class="toggle-title">Clock Screensaver & Stickman</span>
+            <span class="toggle-desc">Dimmed screen with clock, node status, and stickman animation.</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="feat_screensaver" checked onchange="updateAll()">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <span class="toggle-title">MeshBot Custom Theme</span>
+            <span class="toggle-desc">Clean white bubble layout with solid contrast.</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="feat_meshbot" onchange="updateAll()">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT COLUMN: Realtime Code Preview & Export -->
+    <div class="column">
+      <div class="card" style="position: sticky; top: 20px;">
+        <div class="card-title">
+          <span><span class="icon">📄</span> Generated Variant Files</span>
+          <span class="badge badge-primary" id="previewFilename">variant.h</span>
+        </div>
+
+        <div class="tab-header">
+          <button class="tab-btn active" onclick="switchTab('variant.h')">variant.h</button>
+          <button class="tab-btn" onclick="switchTab('platformio_env.ini')">platformio_env.ini</button>
+          <button class="tab-btn" onclick="switchTab('README.md')">README.md</button>
+        </div>
+
+        <pre><code id="codePreview">// Generating...</code></pre>
+
+        <div class="action-bar">
+          <button class="btn btn-primary" onclick="downloadVariantZip()">
+            <span>📦</span> Download Variant ZIP
+          </button>
+          <button class="btn btn-secondary" onclick="copyActiveCode()">
+            <span>📋</span> Copy to Clipboard
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Official board presets database
+const BOARD_PRESETS = {
+  seeed_xiao_s3: {
+    name: "Seeed Studio XIAO ESP32-S3",
+    category: "official",
+    board: "seeed-xiao-s3",
+    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
+    display: { type: "NONE", rotation: 0, cs: -1, dc: -1, rst: -1, bl: -1 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: -1,
+    hint: "Official Seeed Xiao S3 stock variant with Wio-SX1262 baseboard. Headless by default."
+  },
+  heltec_v3: {
+    name: "Heltec V3 (ESP32-S3)",
+    category: "official",
+    board: "heltec-v3",
+    lora: { type: "SX1262", sck: 9, miso: 11, mosi: 10, cs: 8, reset: 12, dio1: 14, busy: 13, dio0: -1 },
+    display: { type: "SSD1306", rotation: 0, cs: -1, dc: -1, rst: 21, bl: -1 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: -1,
+    hint: "Official Heltec V3. Built-in 0.96 inch SSD1306 I2C OLED display on GPIO 17 (SDA) and 18 (SCL)."
+  },
+  heltec_wireless_tracker: {
+    name: "Heltec Wireless Tracker",
+    category: "official",
+    board: "heltec-wireless-tracker",
+    lora: { type: "SX1262", sck: 9, miso: 11, mosi: 10, cs: 8, reset: 12, dio1: 14, busy: 13, dio0: -1 },
+    display: { type: "ST7735", rotation: 1, cs: 38, dc: 39, rst: 40, bl: 45 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: -1,
+    hint: "Heltec Wireless Tracker with onboard 0.96 inch ST7735 SPI TFT and GNSS."
+  },
+  t_deck: {
+    name: "LilyGO T-Deck",
+    category: "official",
+    board: "t-deck",
+    lora: { type: "SX1262", sck: 40, miso: 38, mosi: 41, cs: 9, reset: 12, dio1: 45, busy: 13, dio0: -1 },
+    display: { type: "ST7789", rotation: 1, cs: 12, dc: 11, rst: -1, bl: 42 },
+    touch: { type: "GT911", mapping: "DEFAULT", pin1: 18, pin2: 8, int: 16, rst: -1 },
+    buzzer: 46,
+    hint: "LilyGO T-Deck with 2.8 inch 320x240 ST7789 display, GT911 touch, and trackball/keyboard."
+  },
+  tlora_t3s3_v1: {
+    name: "LilyGO T3S3 v1",
+    category: "official",
+    board: "tlora-t3s3-v1",
+    lora: { type: "SX1262", sck: 5, miso: 3, mosi: 6, cs: 7, reset: 8, dio1: 33, busy: 34, dio0: -1 },
+    display: { type: "SSD1306", rotation: 0, cs: -1, dc: -1, rst: -1, bl: -1 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: -1,
+    hint: "Official LilyGO T3S3 ESP32-S3 board with onboard OLED."
+  },
+  diy_xiao_s3_tft: {
+    name: "Seeed XIAO S3 DIY TFT",
+    category: "diy",
+    board: "seeed-xiao-s3",
+    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
+    display: { type: "ST7789", rotation: 0, cs: 1, dc: 2, rst: 3, bl: 4 },
+    touch: { type: "CST816S", mapping: "INVERT_Y", pin1: 43, pin2: 6, int: 5, rst: -1 },
+    buzzer: 48,
+    hint: "Custom DIY Xiao S3 with ST7789/ST7796 TFT, CST816S I2C touch, and GPIO 48 notification buzzer."
+  },
+  diy_esp32s3_generic: {
+    name: "ESP32-S3 Generic DevKit",
+    category: "diy",
+    board: "esp32-s3-devkitc-1",
+    lora: { type: "SX1262", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: 21, dio0: -1 },
+    display: { type: "ST7789", rotation: 0, cs: 15, dc: 16, rst: 17, bl: 18 },
+    touch: { type: "CST816S", mapping: "DEFAULT", pin1: 4, pin2: 5, int: 6, rst: 7 },
+    buzzer: 8,
+    hint: "Generic ESP32-S3 8MB/16MB board. Fully customizable pinout."
+  },
+  diy_esp32_classic: {
+    name: "ESP32 Classic DIY",
+    category: "diy",
+    board: "esp32dev",
+    lora: { type: "RFM95", sck: 18, miso: 19, mosi: 23, cs: 5, reset: 14, dio1: 33, busy: -1, dio0: 26 },
+    display: { type: "ILI9341", rotation: 1, cs: 15, dc: 2, rst: 4, bl: 21 },
+    touch: { type: "XPT2046", mapping: "DEFAULT", pin1: 27, pin2: 25, int: 32, rst: -1 },
+    buzzer: 13,
+    hint: "Classic ESP32 WROOM with RFM95W (SX1276) using DIO0, plus ILI9341 SPI TFT."
+  }
+};
+
+let currentTab = 'variant.h';
+
+function onBoardChange() {
+  const key = document.getElementById('boardSelect').value;
+  const p = BOARD_PRESETS[key];
+  if (!p) return;
+
+  const isOfficial = p.category === 'official';
+  document.getElementById('boardCategoryBadge').textContent = isOfficial ? "Official Board" : "DIY Target";
+  document.getElementById('boardCategoryBadge').className = isOfficial ? "badge badge-primary" : "badge badge-warn";
+  document.getElementById('virginOptionContainer').style.display = isOfficial ? "block" : "none";
+
+  // Check virgin toggle by default for official boards
+  if (isOfficial) {
+    document.getElementById('virginStockToggle').checked = true;
+  }
+
+  loadPreset(p);
+  onVirginToggle();
+}
+
+function loadPreset(p) {
+  document.getElementById('loraType').value = p.lora.type;
+  document.getElementById('lora_sck').value = p.lora.sck;
+  document.getElementById('lora_miso').value = p.lora.miso;
+  document.getElementById('lora_mosi').value = p.lora.mosi;
+  document.getElementById('lora_cs').value = p.lora.cs;
+  document.getElementById('lora_reset').value = p.lora.reset;
+  document.getElementById('lora_dio1').value = p.lora.dio1;
+  document.getElementById('lora_busy').value = p.lora.busy;
+  document.getElementById('lora_dio0').value = p.lora.dio0;
+
+  document.getElementById('displayType').value = p.display.type;
+  document.getElementById('displayRotation').value = p.display.rotation;
+  document.getElementById('tft_cs').value = p.display.cs;
+  document.getElementById('tft_dc').value = p.display.dc;
+  document.getElementById('tft_rst').value = p.display.rst;
+  document.getElementById('tft_bl').value = p.display.bl;
+
+  document.getElementById('touchType').value = p.touch.type;
+  document.getElementById('touchMapping').value = p.touch.mapping;
+  document.getElementById('touch_pin1').value = p.touch.pin1;
+  document.getElementById('touch_pin2').value = p.touch.pin2;
+  document.getElementById('touch_int').value = p.touch.int;
+  document.getElementById('touch_rst').value = p.touch.rst;
+
+  document.getElementById('buzzer_pin').value = p.buzzer;
+  document.getElementById('boardHintText').textContent = p.hint;
+
+  onLoraTypeChange();
+  onDisplayTypeChange();
+  onTouchTypeChange();
+}
+
+function onVirginToggle() {
+  const isOfficial = document.getElementById('boardCategoryBadge').textContent.includes("Official");
+  const isVirgin = isOfficial && document.getElementById('virginStockToggle').checked;
+
+  const inputs = document.querySelectorAll('#lora_sck, #lora_miso, #lora_mosi, #lora_cs, #lora_reset, #lora_dio1, #lora_busy, #lora_dio0, #tft_cs, #tft_dc, #tft_rst, #tft_bl, #touch_pin1, #touch_pin2, #touch_int, #touch_rst, #loraType, #displayType, #touchType');
+  inputs.forEach(el => {
+    el.disabled = isVirgin;
+  });
+
+  if (isVirgin) {
+    const key = document.getElementById('boardSelect').value;
+    loadPreset(BOARD_PRESETS[key]);
+  }
+  updateAll();
+}
+
+function onLoraTypeChange() {
+  const lora = document.getElementById('loraType').value;
+  document.getElementById('loraBadge').textContent = lora;
+
+  const isSx126x = (lora === 'SX1262' || lora === 'SX1268' || lora === 'LR1121');
+  document.getElementById('busyPinGroup').style.display = isSx126x ? 'flex' : 'none';
+  document.getElementById('dio0PinGroup').style.display = isSx126x ? 'none' : 'flex';
+
+  const helper = document.getElementById('loraHelperText');
+  if (isSx126x) {
+    helper.innerHTML = `💡 <strong>${lora}:</strong> Requires <code>BUSY</code> pin. Typically uses DIO2 for RF antenna switch and DIO3 for TCXO power (1.8V).`;
+  } else {
+    helper.innerHTML = `💡 <strong>${lora} (RFM95):</strong> Legacy Semtech SX1276 core. Requires <code>DIO0</code> pin as packet RX/TX done interrupt.`;
+  }
+  updateAll();
+}
+
+function onDisplayTypeChange() {
+  const dt = document.getElementById('displayType').value;
+  const isSpiTft = ['ST7789', 'ST7796', 'ST7735', 'ILI9341'].includes(dt);
+  document.getElementById('tftPinsGroup').style.display = isSpiTft ? 'grid' : 'none';
+  document.getElementById('touchCard').style.display = (dt === 'NONE') ? 'none' : 'block';
+  updateAll();
+}
+
+function onTouchTypeChange() {
+  const tt = document.getElementById('touchType').value;
+  const hasTouch = (tt !== 'NONE');
+  document.getElementById('touchPinsGroup').style.display = hasTouch ? 'grid' : 'none';
+
+  if (tt === 'XPT2046') {
+    document.getElementById('touchPin1Label').textContent = "Touch CS (SPI)";
+    document.getElementById('touchPin2Label').textContent = "Touch IRQ (SPI)";
+  } else {
+    document.getElementById('touchPin1Label').textContent = "Touch SDA (I2C)";
+    document.getElementById('touchPin2Label').textContent = "Touch SCL (I2C)";
+  }
+  updateAll();
+}
+
+// Conflict Detection
+function checkConflicts() {
+  const pinFields = [
+    { name: 'LoRa CS', val: parseInt(document.getElementById('lora_cs').value) },
+    { name: 'LoRa RST', val: parseInt(document.getElementById('lora_reset').value) },
+    { name: 'LoRa DIO1', val: parseInt(document.getElementById('lora_dio1').value) },
+  ];
+
+  const lora = document.getElementById('loraType').value;
+  if (lora === 'SX1262' || lora === 'SX1268' || lora === 'LR1121') {
+    pinFields.push({ name: 'LoRa BUSY', val: parseInt(document.getElementById('lora_busy').value) });
+  } else {
+    pinFields.push({ name: 'LoRa DIO0', val: parseInt(document.getElementById('lora_dio0').value) });
+  }
+
+  const dt = document.getElementById('displayType').value;
+  if (['ST7789', 'ST7796', 'ST7735', 'ILI9341'].includes(dt)) {
+    pinFields.push({ name: 'TFT CS', val: parseInt(document.getElementById('tft_cs').value) });
+    pinFields.push({ name: 'TFT DC', val: parseInt(document.getElementById('tft_dc').value) });
+    const rst = parseInt(document.getElementById('tft_rst').value);
+    if (rst >= 0) pinFields.push({ name: 'TFT RST', val: rst });
+    const bl = parseInt(document.getElementById('tft_bl').value);
+    if (bl >= 0) pinFields.push({ name: 'Backlight BL', val: bl });
+  }
+
+  const tt = document.getElementById('touchType').value;
+  if (tt !== 'NONE') {
+    const p1 = parseInt(document.getElementById('touch_pin1').value);
+    if (p1 >= 0) pinFields.push({ name: 'Touch Pin1', val: p1 });
+    const p2 = parseInt(document.getElementById('touch_pin2').value);
+    if (p2 >= 0) pinFields.push({ name: 'Touch Pin2', val: p2 });
+    const tInt = parseInt(document.getElementById('touch_int').value);
+    if (tInt >= 0) pinFields.push({ name: 'Touch INT', val: tInt });
+  }
+
+  const buz = parseInt(document.getElementById('buzzer_pin').value);
+  if (buz >= 0) pinFields.push({ name: 'Buzzer', val: buz });
+
+  const seen = {};
+  const conflicts = [];
+  pinFields.forEach(item => {
+    if (item.val >= 0) {
+      if (!seen[item.val]) seen[item.val] = [];
+      seen[item.val].push(item.name);
+    }
+  });
+
+  for (const gpio in seen) {
+    if (seen[gpio].length > 1) {
+      conflicts.push(`GPIO ${gpio} is assigned to [${seen[gpio].join(' & ')}]`);
+    }
+  }
+
+  const alertBox = document.getElementById('conflictAlert');
+  if (conflicts.length > 0) {
+    alertBox.style.display = 'block';
+    document.getElementById('conflictList').textContent = ' ' + conflicts.join(', ');
+  } else {
+    alertBox.style.display = 'none';
+  }
+}
+
+// Code Generators
+function generateVariantH() {
+  const bKey = document.getElementById('boardSelect').value;
+  const p = BOARD_PRESETS[bKey];
+  const isVirgin = p.category === 'official' && document.getElementById('virginStockToggle').checked;
+
+  if (isVirgin) {
+    return `// =========================================================================
+// Meshtastic Official Stock Variant: ${p.name}
+// Generated via Meshtastic RiV Web Configurator
+// (Virgin stock hardware definitions)
+// =========================================================================
+
+#pragma once
+
+#define ARCH_ESP32
+#define USES_CDC_SERIAL
+
+// Built-in official radio & peripheral mappings
+#define USE_${p.lora.type}
+#define LORA_SCK       ${p.lora.sck}
+#define LORA_MISO      ${p.lora.miso}
+#define LORA_MOSI      ${p.lora.mosi}
+#define LORA_CS        ${p.lora.cs}
+#define LORA_RESET     ${p.lora.reset}
+#define LORA_DIO1      ${p.lora.dio1}
+${p.lora.busy >= 0 ? `#define LORA_DIO2      ${p.lora.busy}\n#define SX126X_BUSY    ${p.lora.busy}\n#define SX126X_CS      LORA_CS\n#define SX126X_RESET   LORA_RESET\n#define SX126X_DIO1    LORA_DIO1\n#define SX126X_DIO2_AS_RF_SWITCH\n#define SX126X_DIO3_TCXO_VOLTAGE 1.8` : ''}
+${p.lora.dio0 >= 0 ? `#define LORA_DIO0      ${p.lora.dio0}` : ''}
+
+// Stock Display configuration
+${p.display.type === 'SSD1306' ? '#define USE_SSD1306\n#define RESET_OLED     21' : ''}
+${p.display.type === 'ST7735' ? '#define USE_ST7735\n#define TFT_CS         ' + p.display.cs + '\n#define TFT_DC         ' + p.display.dc + '\n#define TFT_RST        ' + p.display.rst + '\n#define TFT_BL         ' + p.display.bl : ''}
+`;
+  }
+
+  // Custom DIY Generator
+  const lora = document.getElementById('loraType').value;
+  const sck = document.getElementById('lora_sck').value;
+  const miso = document.getElementById('lora_miso').value;
+  const mosi = document.getElementById('lora_mosi').value;
+  const cs = document.getElementById('lora_cs').value;
+  const rst = document.getElementById('lora_reset').value;
+  const dio1 = document.getElementById('lora_dio1').value;
+  const busy = document.getElementById('lora_busy').value;
+  const dio0 = document.getElementById('lora_dio0').value;
+
+  const dt = document.getElementById('displayType').value;
+  const rot = document.getElementById('displayRotation').value;
+  const tCs = document.getElementById('tft_cs').value;
+  const tDc = document.getElementById('tft_dc').value;
+  const tRst = document.getElementById('tft_rst').value;
+  const tBl = document.getElementById('tft_bl').value;
+
+  const tt = document.getElementById('touchType').value;
+  const tMap = document.getElementById('touchMapping').value;
+  const tp1 = document.getElementById('touch_pin1').value;
+  const tp2 = document.getElementById('touch_pin2').value;
+  const tInt = document.getElementById('touch_int').value;
+
+  const buz = document.getElementById('buzzer_pin').value;
+  const bat = document.getElementById('batteryMode').value;
+
+  let code = `// =========================================================================
+// Custom Meshtastic Variant Configuration
+// Target Board: ${p.name}
+// Generated via Meshtastic RiV Web Configurator
+// =========================================================================
+
+#pragma once
+
+#define ARCH_ESP32
+#define USES_CDC_SERIAL
+
+// ─── Hardware SPI Bus (Shared between LoRa & Display) ──────────────────────
+#define HW_SPI_SCK      ${sck}
+#define HW_SPI_MISO     ${miso}
+#define HW_SPI_MOSI     ${mosi}
+#define SPI_SCK         HW_SPI_SCK
+#define SPI_MISO        HW_SPI_MISO
+#define SPI_MOSI        HW_SPI_MOSI
+
+// ─── LoRa Radio (${lora}) ──────────────────────────────────────────────────
+#define USE_${lora}
+#define LORA_SCK        HW_SPI_SCK
+#define LORA_MISO       HW_SPI_MISO
+#define LORA_MOSI       HW_SPI_MOSI
+#define LORA_CS         ${cs}
+#define LORA_RESET      ${rst}
+#define LORA_DIO1       ${dio1}
+`;
+
+  if (lora === 'SX1262' || lora === 'SX1268' || lora === 'LR1121') {
+    code += `#define SX126X_CS       LORA_CS
+#define SX126X_DIO1     LORA_DIO1
+#define SX126X_BUSY     ${busy}
+#define SX126X_RESET    LORA_RESET
+#define SX126X_DIO2_AS_RF_SWITCH
+#define SX126X_DIO3_TCXO_VOLTAGE 1.8
+`;
+  } else {
+    code += `#define LORA_DIO0       ${dio0}\n`;
+  }
+
+  if (dt !== 'NONE') {
+    code += `\n// ─── Display (${dt}) ───────────────────────────────────────────────────
+#define USE_${dt}
+#define TFT_SCK         HW_SPI_SCK
+#define TFT_MOSI        HW_SPI_MOSI
+#define TFT_MISO        HW_SPI_MISO
+#define TFT_CS          ${tCs}
+#define TFT_DC          ${tDc}
+#define TFT_RST         ${tRst}
+#define TFT_BL          ${tBl}
+#define TFT_ROTATION    ${rot}
+`;
+  }
+
+  if (tt !== 'NONE') {
+    code += `\n// ─── Touchscreen (${tt}) ─────────────────────────────────────────────
+#define USE_TOUCH_${tt}
+`;
+    if (tt === 'XPT2046') {
+      code += `#define TOUCH_CS        ${tp1}\n#define SCREEN_TOUCH_INT ${tInt}\n`;
+    } else {
+      code += `#define TOUCH_SDA       ${tp1}\n#define TOUCH_SCL       ${tp2}\n#define SCREEN_TOUCH_INT ${tInt}\n`;
+    }
+
+    if (tMap === 'SWAP_XY') code += `#define TOUCH_SWAP_XY\n`;
+    else if (tMap === 'INVERT_X') code += `#define TOUCH_INVERT_X\n`;
+    else if (tMap === 'INVERT_Y') code += `#define TOUCH_INVERT_Y\n`;
+    else if (tMap === 'SWAP_INVERT_X') code += `#define TOUCH_SWAP_XY\n#define TOUCH_INVERT_X\n`;
+    else if (tMap === 'SWAP_INVERT_Y') code += `#define TOUCH_SWAP_XY\n#define TOUCH_INVERT_Y\n`;
+  }
+
+  if (buz >= 0) {
+    code += `\n// ─── Notification Buzzer ────────────────────────────────────────────────
+#define PIN_BUZZER      ${buz}
+#define HAS_BUZZER      1
+`;
+  }
+
+  if (bat === 'INA219') {
+    code += `\n// ─── Battery Monitoring (I2C INA219/INA226) ─────────────────────────
+#define HAS_INA219
+#define BATTERY_PIN     10 // Virtual pin to enable battery path
+`;
+  } else if (bat === 'ADC') {
+    code += `\n// ─── Battery Monitoring (Analog ADC) ──────────────────────────────────
+#define BATTERY_PIN     1
+#define ADC_CHANNEL     ADC_CHANNEL_0
+#define ADC_MULTIPLIER  2.0
+`;
+  }
+
+  return code;
+}
+
+function generatePlatformIoEnv() {
+  const bKey = document.getElementById('boardSelect').value;
+  const p = BOARD_PRESETS[bKey];
+  const envName = "custom_" + bKey.replace(/-/g, '_');
+
+  const featEmoji = document.getElementById('feat_emoji').checked ? "emoji" : "";
+  const featChat = document.getElementById('feat_chat').checked ? "chat" : "";
+  const featAdv = document.getElementById('feat_advanced').checked ? "advanced themes" : "";
+  const featSs = document.getElementById('feat_screensaver').checked ? "screensaver stickman" : "";
+  const featBot = document.getElementById('feat_meshbot').checked ? "meshbot" : "";
+  const buz = document.getElementById('buzzer_pin').value;
+
+  const features = ["keyboard", "wake", "compose", featEmoji, featChat, featAdv, featSs, featBot]
+    .filter(Boolean)
+    .join(" ");
+
+  return `; =========================================================================
+; PlatformIO Environment Entry
+; Paste this into platformio.ini or variants/${envName}/platformio_env.ini
+; =========================================================================
+
+[env:${envName}]
+extends = esp32s3_base
+board = ${p.board}
+build_flags =
+  \${esp32s3_base.build_flags}
+  -I variants/${envName}
+  -D VARIANT_NAME=\\"${envName}\\"
+  -D LV_USE_TFT=1
+
+; MUI Extras Features
+custom_riv_mui_features = ${features}
+custom_riv_mui_emoji = ${featEmoji ? 'full' : 'small'}
+custom_riv_mui_notify_pin = ${buz >= 0 ? buz : 48}
+custom_riv_mui_kb_height = 34
+
+extra_scripts =
+  \${esp32s3_base.extra_scripts}
+  pre:variants/esp32s3/diy/RiV_mui_extras/mui_extras.py
+`;
+}
+
+function generateReadme() {
+  const bKey = document.getElementById('boardSelect').value;
+  const p = BOARD_PRESETS[bKey];
+  const envName = "custom_" + bKey.replace(/-/g, '_');
+
+  return `# Custom Meshtastic Variant: ${p.name}
+
+Generated via **Meshtastic RiV Web Configurator**.
+
+## Included Files in this ZIP:
+- \`variant.h\`: Hardware definition, pinouts, display, and radio config.
+- \`platformio_env.ini\`: Environment build flags and MUI extras configuration.
+
+## How to Install into your Meshtastic Source:
+1. Extract this folder into your firmware repository under:
+   \`variants/esp32s3/diy/${envName}/\`
+2. Open \`platformio.ini\` in the firmware root and append the snippet from \`platformio_env.ini\`.
+3. Build using PlatformIO CLI:
+   \`\`\`bash
+   pio run -e ${envName}
+   \`\`\`
+4. Flash to your board:
+   \`\`\`bash
+   pio run -e ${envName} -t upload
+   \`\`\`
+
+## Notes & Helpers:
+- Buzzer alert is configured on GPIO \`${document.getElementById('buzzer_pin').value}\`.
+- Full color emojis and quiet hours are enabled.
+`;
+}
+
+function updateAll() {
+  checkConflicts();
+  const codeBox = document.getElementById('codePreview');
+  if (currentTab === 'variant.h') {
+    codeBox.textContent = generateVariantH();
+  } else if (currentTab === 'platformio_env.ini') {
+    codeBox.textContent = generatePlatformIoEnv();
+  } else if (currentTab === 'README.md') {
+    codeBox.textContent = generateReadme();
+  }
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.getElementById('previewFilename').textContent = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.toggle('active', b.textContent === tab);
+  });
+  updateAll();
+}
+
+function copyActiveCode() {
+  const text = document.getElementById('codePreview').textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    alert("Copied " + currentTab + " to clipboard!");
+  });
+}
+
+function downloadVariantZip() {
+  if (typeof JSZip === 'undefined') {
+    alert("JSZip library is still loading. Please check your internet connection.");
+    return;
+  }
+
+  const bKey = document.getElementById('boardSelect').value;
+  const envName = "variant_" + bKey.replace(/-/g, '_');
+
+  const zip = new JSZip();
+  const folder = zip.folder(envName);
+
+  folder.file("variant.h", generateVariantH());
+  folder.file("platformio_env.ini", generatePlatformIoEnv());
+  folder.file("README.md", generateReadme());
+
+  zip.generateAsync({ type: "blob" }).then(function(content) {
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(content);
+    link.download = `${envName}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  });
+}
+
+// Initial initialization
+window.addEventListener('DOMContentLoaded', () => {
+  onBoardChange();
+});
+</script>
+
+</body>
+</html>
