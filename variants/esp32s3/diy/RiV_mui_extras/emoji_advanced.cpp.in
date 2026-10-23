@@ -2072,6 +2072,28 @@ static void ch_dd_cb(lv_event_t *e)
 
 
 
+static void ch_name_val_cb(lv_event_t *e)
+
+{
+
+    int idx = (int)lv_dropdown_get_selected(g_chDd);
+
+    if (idx > 0 && lv_dropdown_get_selected(g_chRoleDd) == 2) {
+
+        const char *txt = lv_textarea_get_text(g_chNameTa);
+
+        if (txt && strlen(txt) > 0) {
+
+            lv_dropdown_set_selected(g_chRoleDd, 1);
+
+        }
+
+    }
+
+}
+
+
+
 static void ch_save_cb(lv_event_t *e)
 
 {
@@ -2119,6 +2141,26 @@ static void ch_save_cb(lv_event_t *e)
 
 
     int roleSel = (int)lv_dropdown_get_selected(g_chRoleDd);
+
+    // Safeguard: auto-promote to SECONDARY if channel name is set on slot 1..7
+    if (idx > 0 && roleSel == 2 && name && strlen(name) > 0) {
+
+        roleSel = 1;
+
+        lv_dropdown_set_selected(g_chRoleDd, 1);
+
+    }
+
+    // Safeguard: primary slot (idx 0) is always PRIMARY
+    if (idx == 0) {
+
+        roleSel = 0;
+
+        lv_dropdown_set_selected(g_chRoleDd, 0);
+
+    }
+
+
 
     if (roleSel == 0) ch->role = meshtastic_Channel_Role_PRIMARY;
 
@@ -2197,6 +2239,8 @@ static void build_ch_panel(void)
     make_section_header(content, "CHANNEL CONFIG");
 
     g_chNameTa = make_field(content, "Channel name", 11, false);
+
+    lv_obj_add_event_cb(g_chNameTa, ch_name_val_cb, LV_EVENT_VALUE_CHANGED, nullptr);
 
     g_chPskTa = make_field(content, "Pre-shared key (PSK Base64)", 44, false);
 
