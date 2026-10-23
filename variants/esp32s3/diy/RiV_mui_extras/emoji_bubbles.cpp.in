@@ -66,6 +66,7 @@ struct BubbleRef {
     bool sent;
 };
 static uint32_t g_pendingNodeNum = 0;
+extern "C" bool emoji_node_distance_str(uint32_t nodeNum, char *out, size_t outSize) __attribute__((weak));
 extern "C" void emoji_trigger_traceroute(uint32_t toNode, uint8_t ch) __attribute__((weak));
 extern "C" void emoji_show_paste_pill(void) __attribute__((weak));
 
@@ -267,6 +268,15 @@ extern "C" void emoji_name_chip(lv_obj_t *label, uint32_t nodeNum, const char *s
     }
     memcpy(nt + o, tw0, timeLen);
     o += timeLen;
+    char distBuf[24] = {0};
+    if (emoji_node_distance_str && emoji_node_distance_str(nodeNum, distBuf, sizeof(distBuf))) {
+        char distBadge[32];
+        int dlen = snprintf(distBadge, sizeof(distBadge), " [%s]", distBuf);
+        if (dlen > 0) {
+            memcpy(nt + o, distBadge, dlen);
+            o += dlen;
+        }
+    }
     if (g_hasPendingMeta) {
         if (is_hops_active()) {
             char metaBadge[32];
@@ -585,8 +595,6 @@ static void longpress_cb(lv_event_t *e)
     lv_obj_remove_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *reply = popup_button(buttons, "Reply", 0x2F7D4F, reply_cb);
     lv_obj_set_user_data(reply, bubble);
-    lv_obj_t *mention = popup_button(buttons, "Mention", 0x3A5A9F, mention_cb);
-    lv_obj_set_user_data(mention, bubble);
     lv_obj_t *trace = popup_button(buttons, "Traceroute", 0x5E3F8E, traceroute_cb);
     lv_obj_set_user_data(trace, bubble);
     lv_obj_t *copy = popup_button(buttons, "Copy", 0x3A4075, copy_cb);

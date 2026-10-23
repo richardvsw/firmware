@@ -6592,10 +6592,41 @@ static void hops_text(void)
                           emoji_hops_enabled() ? "Message Hops/MQTT: Show" : "Message Hops/MQTT: Hide");
 }
 
+
+static lv_obj_t *g_distLabel = nullptr;
+
+extern "C" bool emoji_distance_enabled(void)
+{
+    Preferences p;
+    p.begin("chatui", true);
+    bool en = p.getBool("show_dist", true);
+    p.end();
+    return en;
+}
+
+static void dist_text(void)
+{
+    if (g_distLabel)
+        lv_label_set_text(lv_obj_get_child(g_distLabel, 0),
+                          emoji_distance_enabled() ? "Message Distance: Show" : "Message Distance: Hide");
+}
+
+static void dist_cb(lv_event_t *e)
+{
+    Preferences p;
+    p.begin("chatui", false);
+    bool cur = p.getBool("show_dist", true);
+    p.putBool("show_dist", !cur);
+    p.end();
+    dist_text();
+}
+
 static void hops_cb(lv_event_t *e)
 {
     emoji_hops_toggle();
     hops_text();
+
+    dist_text();
 }
 
 static lv_obj_t *g_snrLabel = nullptr;
@@ -7090,6 +7121,16 @@ static void build_adv_panel(void)
 
     hops_text();
 
+    dist_text();
+
+    lv_obj_t *distBtn = make_nav(content, "", dist_cb);
+
+    g_distLabel = distBtn;
+
+    dist_text();
+
+    make_nav(content, "Canned Messages", canned_adv_open_cb);
+
     if (g_loraCfg) {
 
         make_nav(content, "Screensaver", ss_open_cb);
@@ -7169,6 +7210,8 @@ static void adv_open_cb(lv_event_t *e)
     snr_text();
 
     hops_text();
+
+    dist_text();
 
     proxy_text();
 

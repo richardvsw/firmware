@@ -687,6 +687,10 @@ def patch_mui_node_and_channel(tft, UI):
     )
     edit(tft, old_ch_click, new_ch_click, "replace")
 
+        # Hook updatePosition to track node coordinates for distance & bearing
+    edit(tft, "void TFTView_320x240::updatePosition(uint32_t nodeNum, int32_t lat, int32_t lon, int32_t alt, uint32_t sats, uint32_t precision)\n{\n",
+         "void TFTView_320x240::updatePosition(uint32_t nodeNum, int32_t lat, int32_t lon, int32_t alt, uint32_t sats, uint32_t precision)\n{\n    emoji_record_node_pos(nodeNum, lat, lon, nodeNum == ownNode);\n", "replace")
+
     # Top bar Wi-Fi icon status update
     edit(tft, "void TFTView_320x240::updateConnectionStatus(const meshtastic_DeviceConnectionStatus &status)\n{\n    db.connectionStatus = status;\n",
          "void TFTView_320x240::updateConnectionStatus(const meshtastic_DeviceConnectionStatus &status)\n{\n    db.connectionStatus = status;\n    emoji_top_wifi_update(status.has_wifi && status.wifi.has_status && status.wifi.status.is_connected, objects.battery_panel);\n", "replace")
@@ -820,7 +824,77 @@ def main():
             edit(tft, group, "    emoji_chat_style(nullptr, nullptr, nullptr);\n")
         else:
             copy("bot_stub.cpp.in", dst, "emoji_bot_stub.cpp")
-        tft_decl += ('\nstatic lv_obj_t *g_topWifiIcon = nullptr;\nextern "C" void emoji_top_wifi_update(bool connected, lv_obj_t *parent)\n{\n    if (!parent) return;\n    if (!g_topWifiIcon) {\n        g_topWifiIcon = lv_label_create(parent);\n        lv_label_set_text(g_topWifiIcon, LV_SYMBOL_WIFI);\n        lv_obj_set_style_text_color(g_topWifiIcon, lv_color_hex(0x38bdf8), 0);\n        lv_obj_set_style_text_font(g_topWifiIcon, &ui_font_montserrat_12, 0);\n        lv_obj_set_style_align(g_topWifiIcon, LV_ALIGN_RIGHT_MID, 0);\n        lv_obj_set_pos(g_topWifiIcon, -70, 0);\n    }\n    if (connected)\n        lv_obj_clear_flag(g_topWifiIcon, LV_OBJ_FLAG_HIDDEN);\n    else\n        lv_obj_add_flag(g_topWifiIcon, LV_OBJ_FLAG_HIDDEN);\n}\n\nextern "C" void emoji_trigger_traceroute(uint32_t toNode, uint8_t ch)\n{\n    if (!toNode || !TDeckGUI::instance()) return;\n    TFTView_320x240 *view = TDeckGUI::instance();\n    uint8_t hopLimit = view->db.config.lora.hop_limit ? view->db.config.lora.hop_limit : 3;\n    uint32_t reqId = view->requests.addRequest(toNode, ResponseHandler::TraceRouteRequest);\n    view->controller->traceRoute(toNode, ch, hopLimit, reqId);\n}\n'\n'extern "C" void emoji_suggest_init(lv_obj_t *);\n'
+        tft_decl += ('\n
+struct SimplePos {
+    uint32_t nodeNum;
+    int32_t lat;
+    int32_t lon;
+};
+static SimplePos g_nodePositions[32];
+static int g_nodePosCount = 0;
+static int32_t g_myLat = 0, g_myLon = 0;
+
+extern "C" void emoji_record_node_pos(uint32_t nodeNum, int32_t lat, int32_t lon, bool isOwn)
+{
+    if (isOwn) {
+        g_myLat = lat;
+        g_myLon = lon;
+    }
+    if (!nodeNum || (lat == 0 && lon == 0)) return;
+    for (int i = 0; i < g_nodePosCount; i++) {
+        if (g_nodePositions[i].nodeNum == nodeNum) {
+            g_nodePositions[i].lat = lat;
+            g_nodePositions[i].lon = lon;
+            return;
+        }
+    }
+    if (g_nodePosCount < 32) {
+        g_nodePositions[g_nodePosCount++] = {nodeNum, lat, lon};
+    }
+}
+
+extern "C" bool emoji_distance_enabled(void) __attribute__((weak));
+
+extern "C" bool emoji_node_distance_str(uint32_t nodeNum, char *out, size_t outSize)
+{
+    if (!out || outSize < 16) return false;
+    out[0] = 0;
+    if (emoji_distance_enabled && !emoji_distance_enabled()) return false;
+    if (g_myLat == 0 && g_myLon == 0) return false;
+    int32_t tLat = 0, tLon = 0;
+    for (int i = 0; i < g_nodePosCount; i++) {
+        if (g_nodePositions[i].nodeNum == nodeNum) {
+            tLat = g_nodePositions[i].lat;
+            tLon = g_nodePositions[i].lon;
+            break;
+        }
+    }
+    if (tLat == 0 && tLon == 0) return false;
+
+    float dx = 71.5f * 1e-7f * (float)(tLon - g_myLon);
+    float dy = 111.3f * 1e-7f * (float)(tLat - g_myLat);
+    float dist = sqrtf(dx * dx + dy * dy);
+    float rad = atan2f(dx, dy);
+    float deg = rad * 57.29578f;
+    if (deg < 0.0f) deg += 360.0f;
+
+    const char *dir = "N";
+    if (deg >= 22.5f && deg < 67.5f) dir = "NE";
+    else if (deg >= 67.5f && deg < 112.5f) dir = "E";
+    else if (deg >= 112.5f && deg < 157.5f) dir = "SE";
+    else if (deg >= 157.5f && deg < 202.5f) dir = "S";
+    else if (deg >= 202.5f && deg < 247.5f) dir = "SW";
+    else if (deg >= 247.5f && deg < 292.5f) dir = "W";
+    else if (deg >= 292.5f && deg < 337.5f) dir = "NW";
+
+    if (dist < 1.0f)
+        snprintf(out, outSize, "%dm %s", (int)(dist * 1000.0f), dir);
+    else
+        snprintf(out, outSize, "%.1fkm %s", dist, dir);
+    return true;
+}
+
+static lv_obj_t *g_topWifiIcon = nullptr;\nextern "C" void emoji_top_wifi_update(bool connected, lv_obj_t *parent)\n{\n    if (!parent) return;\n    if (!g_topWifiIcon) {\n        g_topWifiIcon = lv_label_create(parent);\n        lv_label_set_text(g_topWifiIcon, LV_SYMBOL_WIFI);\n        lv_obj_set_style_text_color(g_topWifiIcon, lv_color_hex(0x38bdf8), 0);\n        lv_obj_set_style_text_font(g_topWifiIcon, &ui_font_montserrat_12, 0);\n        lv_obj_set_style_align(g_topWifiIcon, LV_ALIGN_RIGHT_MID, 0);\n        lv_obj_set_pos(g_topWifiIcon, -70, 0);\n    }\n    if (connected)\n        lv_obj_clear_flag(g_topWifiIcon, LV_OBJ_FLAG_HIDDEN);\n    else\n        lv_obj_add_flag(g_topWifiIcon, LV_OBJ_FLAG_HIDDEN);\n}\n\nextern "C" void emoji_trigger_traceroute(uint32_t toNode, uint8_t ch)\n{\n    if (!toNode || !TDeckGUI::instance()) return;\n    TFTView_320x240 *view = TDeckGUI::instance();\n    uint8_t hopLimit = view->db.config.lora.hop_limit ? view->db.config.lora.hop_limit : 3;\n    uint32_t reqId = view->requests.addRequest(toNode, ResponseHandler::TraceRouteRequest);\n    view->controller->traceRoute(toNode, ch, hopLimit, reqId);\n}\n'\n'extern "C" void emoji_suggest_init(lv_obj_t *);\n'
                      'extern "C" bool emoji_long_names(void);\n'
                      'extern "C" void emoji_bubble_register(lv_obj_t *, uint32_t);\n'
                      'extern "C" void emoji_chip_expect(bool);\n'
