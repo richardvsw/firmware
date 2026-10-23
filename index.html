@@ -566,6 +566,10 @@
         <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor"><path d="M9.504.43a1.5 1.5 0 0 1 1.264.508l4.296 4.912a1.5 1.5 0 0 1 0 1.98l-4.296 4.912a1.5 1.5 0 0 1-1.264.508H5.75a1.5 1.5 0 0 1-1.06-.44l-4.25-4.25a1.5 1.5 0 0 1 0-2.12l4.25-4.25a1.5 1.5 0 0 1 1.06-.44h3.754Z"></path></svg>
         Compile Online (.bin)
       </button>
+      <button class="btn" onclick="shareVariantUrl()" title="Copy shareable link to this exact hardware configuration">
+        <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a3.5 3.5 0 0 0 4.95 0 .751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042 5.003 5.003 0 0 1-7.07 0 5.002 5.002 0 0 1 0-7.07l2.5-2.5a5.002 5.002 0 0 1 7.07 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 3.502 3.502 0 0 0-4.95 0l-2.5 2.5a3.5 3.5 0 0 0 0 4.95Z"></path></svg>
+        Share Build Link
+      </button>
     </div>
   </div>
 
@@ -671,6 +675,26 @@
 
           <div id="boardHintBox" style="font-size: 12px; color: var(--color-fg-muted); background: var(--color-canvas-default); padding: 8px 12px; border-radius: 6px; border: 1px dashed var(--color-border-default);">
             <strong>Board Note:</strong> <span id="boardHintText">Official Seeed Xiao S3 stock variant with Wio-SX1262 baseboard. Standard pins D0-D10.</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Visual Hardware Pinout & Wiring Map -->
+      <div class="Box" style="margin-bottom: 20px;">
+        <div class="Box-header">
+          <span>🗺️ Visual Hardware Pin Map</span>
+          <span style="font-size: 11px; color: var(--color-fg-muted);">Live Pin Allocation</span>
+        </div>
+        <div class="Box-body">
+          <div id="pinChipsContainer" style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;">
+            <!-- Populated dynamically by updatePinMap() -->
+          </div>
+          <div style="display: flex; gap: 14px; font-size: 11px; color: var(--color-fg-muted); flex-wrap: wrap; border-top: 1px solid var(--color-border-muted); padding-top: 8px;">
+            <div style="display: flex; align-items: center; gap: 4px;"><span style="width: 8px; height: 8px; border-radius: 2px; background: #2f81f7;"></span> LoRa Radio</div>
+            <div style="display: flex; align-items: center; gap: 4px;"><span style="width: 8px; height: 8px; border-radius: 2px; background: #a371f7;"></span> Display TFT</div>
+            <div style="display: flex; align-items: center; gap: 4px;"><span style="width: 8px; height: 8px; border-radius: 2px; background: #f0883e;"></span> Touch I2C/SPI</div>
+            <div style="display: flex; align-items: center; gap: 4px;"><span style="width: 8px; height: 8px; border-radius: 2px; background: #d29922;"></span> Buzzer & Power</div>
+            <div style="display: flex; align-items: center; gap: 4px;"><span style="width: 8px; height: 8px; border-radius: 2px; background: #3fb950;"></span> Shared SPI Bus</div>
           </div>
         </div>
       </div>
@@ -1750,6 +1774,7 @@ function updateFileStats() {
 
 function updateAll() {
   runSmartSafetyChecks();
+  updatePinMap();
   const editor = document.getElementById('codeEditor');
   if (editor) {
     editor.value = getActiveCode(currentTab);
@@ -1886,8 +1911,192 @@ async function triggerWorkflowDispatch() {
   }
 }
 
+
+// ─── Visual Pin Map Generator ──────────────────────────────────────────────
+function updatePinMap() {
+  const container = document.getElementById('pinChipsContainer');
+  if (!container) return;
+
+  const pins = [];
+
+  const addPin = (label, id, colorBg, colorFg, sub) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const val = parseInt(el.value);
+    if (!isNaN(val) && val >= 0) {
+      pins.push({ label, val, colorBg, colorFg, sub });
+    }
+  };
+
+  // Shared SPI
+  addPin('SPI SCK', 'lora_sck', 'rgba(63,185,80,0.15)', '#3fb950', 'spi');
+  addPin('SPI MISO', 'lora_miso', 'rgba(63,185,80,0.15)', '#3fb950', 'spi');
+  addPin('SPI MOSI', 'lora_mosi', 'rgba(63,185,80,0.15)', '#3fb950', 'spi');
+
+  // LoRa
+  addPin('LoRa CS', 'lora_cs', 'rgba(47,129,247,0.15)', '#58a6ff', 'lora');
+  addPin('LoRa RST', 'lora_reset', 'rgba(47,129,247,0.15)', '#58a6ff', 'lora');
+  addPin('LoRa DIO1', 'lora_dio1', 'rgba(47,129,247,0.15)', '#58a6ff', 'lora');
+  const lora = document.getElementById('loraType').value;
+  if (lora === 'SX1262' || lora === 'SX1268' || lora === 'LR1121') {
+    addPin('LoRa BUSY', 'lora_busy', 'rgba(47,129,247,0.15)', '#58a6ff', 'lora');
+  } else {
+    addPin('LoRa DIO0', 'lora_dio0', 'rgba(47,129,247,0.15)', '#58a6ff', 'lora');
+  }
+
+  // Display
+  const dt = document.getElementById('displayType').value;
+  if (['ST7789', 'ST7796', 'ST7735', 'ILI9341'].includes(dt)) {
+    addPin('TFT CS', 'tft_cs', 'rgba(163,113,247,0.15)', '#bc8cff', 'tft');
+    addPin('TFT DC', 'tft_dc', 'rgba(163,113,247,0.15)', '#bc8cff', 'tft');
+    addPin('TFT RST', 'tft_rst', 'rgba(163,113,247,0.15)', '#bc8cff', 'tft');
+    addPin('TFT BL', 'tft_bl', 'rgba(163,113,247,0.15)', '#bc8cff', 'tft');
+  }
+
+  // Touch
+  const tt = document.getElementById('touchType').value;
+  if (tt !== 'NONE') {
+    const lbl1 = tt === 'XPT2046' ? 'Touch CS' : 'Touch SDA';
+    const lbl2 = tt === 'XPT2046' ? 'Touch IRQ' : 'Touch SCL';
+    addPin(lbl1, 'touch_pin1', 'rgba(240,136,62,0.15)', '#ffa657', 'touch');
+    addPin(lbl2, 'touch_pin2', 'rgba(240,136,62,0.15)', '#ffa657', 'touch');
+    addPin('Touch INT', 'touch_int', 'rgba(240,136,62,0.15)', '#ffa657', 'touch');
+  }
+
+  // Buzzer
+  addPin('Buzzer', 'buzzer_pin', 'rgba(210,153,34,0.15)', '#e3b341', 'buz');
+
+  // Sort by GPIO number
+  pins.sort((a, b) => a.val - b.val);
+
+  container.innerHTML = pins.map(p => `
+    <span class="pin-chip" style="background: ${p.colorBg}; color: ${p.colorFg}; border: 1px solid ${p.colorFg}40; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">
+      GPIO ${p.val}: <span style="font-weight: normal; opacity: 0.9;">${p.label}</span>
+    </span>
+  `).join('');
+}
+
+// ─── Share Build Link (URL Query/Hash) ──────────────────────────────────────
+function getShareableState() {
+  return {
+    b: document.getElementById('boardSelect').value,
+    n: document.getElementById('customVariantName').value,
+    v: document.getElementById('virginStockToggle').checked ? 1 : 0,
+    lt: document.getElementById('loraType').value,
+    sck: document.getElementById('lora_sck').value,
+    miso: document.getElementById('lora_miso').value,
+    mosi: document.getElementById('lora_mosi').value,
+    lcs: document.getElementById('lora_cs').value,
+    lrst: document.getElementById('lora_reset').value,
+    dio1: document.getElementById('lora_dio1').value,
+    busy: document.getElementById('lora_busy').value,
+    dio0: document.getElementById('lora_dio0').value,
+    dt: document.getElementById('displayType').value,
+    rot: document.getElementById('displayRotation').value,
+    tcs: document.getElementById('tft_cs').value,
+    tdc: document.getElementById('tft_dc').value,
+    trst: document.getElementById('tft_rst').value,
+    tbl: document.getElementById('tft_bl').value,
+    tt: document.getElementById('touchType').value,
+    tmap: document.getElementById('touchMapping').value,
+    tp1: document.getElementById('touch_pin1').value,
+    tp2: document.getElementById('touch_pin2').value,
+    tint: document.getElementById('touch_int').value,
+    buz: document.getElementById('buzzer_pin').value,
+    bat: document.getElementById('batteryMode').value,
+    e: document.getElementById('feat_emoji').checked ? 1 : 0,
+    c: document.getElementById('feat_chat').checked ? 1 : 0,
+    a: document.getElementById('feat_advanced').checked ? 1 : 0,
+    s: document.getElementById('feat_screensaver').checked ? 1 : 0,
+    m: document.getElementById('feat_meshbot').checked ? 1 : 0
+  };
+}
+
+function shareVariantUrl() {
+  const state = getShareableState();
+  const params = new URLSearchParams(state);
+  const shareUrl = `${window.location.origin}${window.location.pathname}#${params.toString()}`;
+
+  navigator.clipboard.writeText(shareUrl).then(() => {
+    alert("🔗 Shareable build link copied to clipboard! Anyone with this link will open your exact variant configuration.");
+  }).catch(() => {
+    prompt("Copy this shareable link:", shareUrl);
+  });
+}
+
+function loadStateFromUrl() {
+  const hash = window.location.hash.substring(1);
+  if (!hash) return false;
+
+  try {
+    const params = new URLSearchParams(hash);
+    if (!params.has('b')) return false;
+
+    const setVal = (id, paramKey) => {
+      if (params.has(paramKey)) {
+        const el = document.getElementById(id);
+        if (el) el.value = params.get(paramKey);
+      }
+    };
+
+    const setChk = (id, paramKey) => {
+      if (params.has(paramKey)) {
+        const el = document.getElementById(id);
+        if (el) el.checked = params.get(paramKey) === '1';
+      }
+    };
+
+    setVal('boardSelect', 'b');
+    setVal('customVariantName', 'n');
+    setChk('virginStockToggle', 'v');
+    setVal('loraType', 'lt');
+    setVal('lora_sck', 'sck');
+    setVal('lora_miso', 'miso');
+    setVal('lora_mosi', 'mosi');
+    setVal('lora_cs', 'lcs');
+    setVal('lora_reset', 'lrst');
+    setVal('lora_dio1', 'dio1');
+    setVal('lora_busy', 'busy');
+    setVal('lora_dio0', 'dio0');
+
+    setVal('displayType', 'dt');
+    setVal('displayRotation', 'rot');
+    setVal('tft_cs', 'tcs');
+    setVal('tft_dc', 'tdc');
+    setVal('tft_rst', 'trst');
+    setVal('tft_bl', 'tbl');
+
+    setVal('touchType', 'tt');
+    setVal('touchMapping', 'tmap');
+    setVal('touch_pin1', 'tp1');
+    setVal('touch_pin2', 'tp2');
+    setVal('touch_int', 'tint');
+
+    setVal('buzzer_pin', 'buz');
+    setVal('batteryMode', 'bat');
+    setChk('feat_emoji', 'e');
+    setChk('feat_chat', 'c');
+    setChk('feat_advanced', 'a');
+    setChk('feat_screensaver', 's');
+    setChk('feat_meshbot', 'm');
+
+    onLoraTypeChange();
+    onDisplayTypeChange();
+    onTouchTypeChange();
+    onVirginToggle();
+    return true;
+  } catch (e) {
+    console.error("Failed to load state from hash", e);
+    return false;
+  }
+}
+
 window.addEventListener('DOMContentLoaded', () => {
-  onBoardChange();
+  if (!loadStateFromUrl()) {
+    onBoardChange();
+  } else {
+    updateAll();
+  }
 });
 </script>
 </body>
