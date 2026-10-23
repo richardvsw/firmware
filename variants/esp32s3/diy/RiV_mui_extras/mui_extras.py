@@ -828,7 +828,6 @@ def main():
                     'extern "C" size_t emoji_quote_compose(uint32_t, uint32_t, uint32_t, const char *, size_t, char *, size_t);\n'
                     'extern "C" void emoji_pending_id(uint32_t);\n'
                     'extern "C" void emoji_record_hops(uint32_t, bool);\n'
-                    'extern "C" void emoji_message_alert(void);\n'
                     'extern "C" bool emoji_reaction_apply(uint32_t, const char *, size_t);\n'
                     'extern "C" int emoji_ctx_mode(void);\n'
                     'extern "C" uint32_t emoji_send_reply_id(void);\n'
@@ -887,9 +886,25 @@ def main():
         # long press: reply id and reaction flag into the packet, reactions land on the bubble
         edit(vc, "    size_t msgLen = strlen(textmsg);\n    assert(msgLen <= (size_t)DATA_PAYLOAD_LEN);\n",
              "    emoji_quote_record(requestId, textmsg);\n")
-        recv_old = ("        view->newMessage(p.from, p.to, p.channel, (const char *)p.decoded.payload.bytes, time);\n"
-                    "        log.write(LogMessageEnv(p.from, p.to, p.channel, time, LogMessage::eDefault, false, p.decoded.payload.size,\n"
-                    "                                (const uint8_t *)p.decoded.payload.bytes));\n")
+        recv_old = [
+            ("        if (p.decoded.emoji != 0 &&\n"
+             "            emoji_reaction_apply(p.decoded.reply_id, (const char *)p.decoded.payload.bytes, p.decoded.payload.size))\n"
+             "            break;\n"
+             "        char quoted[DATA_PAYLOAD_LEN + 1];\n"
+             "        size_t quotedLen = emoji_quote_compose(p.id, p.decoded.reply_id, p.decoded.emoji,\n"
+             "                                               (const char *)p.decoded.payload.bytes, p.decoded.payload.size, quoted,\n"
+             "                                               sizeof(quoted));\n"
+             "        emoji_pending_id(p.id);\n"
+             "        uint32_t pHops = (p.hop_start > p.hop_limit) ? (p.hop_start - p.hop_limit) : 0;\n"
+             "        emoji_record_hops(pHops, p.via_mqtt);\n"
+             "        emoji_message_alert();\n"
+             "        view->newMessage(p.from, p.to, p.channel, quoted, time);\n"
+             "        log.write(LogMessageEnv(p.from, p.to, p.channel, time, LogMessage::eDefault, false, quotedLen,\n"
+             "                                (const uint8_t *)quoted));\n"),
+            ("        view->newMessage(p.from, p.to, p.channel, (const char *)p.decoded.payload.bytes, time);\n"
+             "        log.write(LogMessageEnv(p.from, p.to, p.channel, time, LogMessage::eDefault, false, p.decoded.payload.size,\n"
+             "                                (const uint8_t *)p.decoded.payload.bytes));\n"),
+        ]
         recv_new = ("        if (p.decoded.emoji != 0 &&\n"
                     "            emoji_reaction_apply(p.decoded.reply_id, (const char *)p.decoded.payload.bytes, p.decoded.payload.size))\n"
                     "            break;\n"
@@ -900,7 +915,6 @@ def main():
                     "        emoji_pending_id(p.id);\n"
                     "        uint32_t pHops = (p.hop_start > p.hop_limit) ? (p.hop_start - p.hop_limit) : 0;\n"
                     "        emoji_record_hops(pHops, p.via_mqtt);\n"
-                    "        emoji_message_alert();\n"
                     "        view->newMessage(p.from, p.to, p.channel, quoted, time);\n"
                     "        log.write(LogMessageEnv(p.from, p.to, p.channel, time, LogMessage::eDefault, false, quotedLen,\n"
                     "                                (const uint8_t *)quoted));\n")
@@ -1145,13 +1159,23 @@ def main():
              "        msgWakeAt = 0; // something touched the screen after the wake, back to the normal timeout\n"
              "    uint32_t effTimeout = (msgWakeAt && screenTimeout > 8000) ? 8000 : screenTimeout;\n"
              "    if ((effTimeout > 0 && lv_display_get_inactive_time(NULL) > effTimeout) || powerSaving ||\n", "replace")
-        edit(tft, "    if (!restore) {\n        // display msg popup if not already viewing the messages\n",
+        msg_alert = ""
+        if "advanced" in feat:
+            tft_decl += 'extern "C" void emoji_message_alert(void);\n'
+            tft_decl += 'extern "C" bool emoji_quiet_now(void);\n'
+            msg_alert = "        if (!db.silent && (!db.channel[ch].settings.module_settings.is_muted || to != UINT32_MAX) && !emoji_quiet_now())\n            emoji_message_alert();\n"
+
+        anchor_wake = [
+            "    if (!restore) {\n        if (!db.channel[ch].settings.module_settings.is_muted && !emoji_quiet_now())\n            displaydriver->wakeForMessage();\n        // display msg popup if not already viewing the messages\n",
+            "    if (!restore) {\n        if (!db.channel[ch].settings.module_settings.is_muted)\n            displaydriver->wakeForMessage();\n        // display msg popup if not already viewing the messages\n",
+            "    if (!restore) {\n        // display msg popup if not already viewing the messages\n",
+        ]
+        edit(tft, anchor_wake,
              "    if (!restore) {\n"
+             + msg_alert +
              "        if (!db.channel[ch].settings.module_settings.is_muted" + (" && !emoji_quiet_now()" if "advanced" in feat else "") + ")\n"
              "            displaydriver->wakeForMessage();\n"
              "        // display msg popup if not already viewing the messages\n", "replace")
-        if "advanced" in feat:
-            tft_decl += 'extern "C" bool emoji_quiet_now(void);\n'
 
 
     # screensaver: dim page with clock and status, double tap to unlock

@@ -7093,19 +7093,27 @@ extern "C" void emoji_message_alert(void)
 {
     if (g_extPin < 0) return;
     if (emoji_quiet_now && emoji_quiet_now()) return;
+    static volatile bool s_alertBusy = false;
+    if (s_alertBusy) return;
+    s_alertBusy = true;
 #if defined(ARCH_ESP32) || defined(ARDUINO_ARCH_ESP32) || defined(ESP32)
     static auto alert_fn = [](void *arg) {
         pinMode(g_extPin, OUTPUT);
         rtttl_play(g_welTune[0] ? g_welTune : "msg:d=16,o=6,b=180:c,e,g,c7", g_extPin);
         digitalWrite(g_extPin, LOW);
+        s_alertBusy = false;
         vTaskDelete(NULL);
     };
-    xTaskCreatePinnedToCore(alert_fn, "msg_alert", 3072, NULL, 1, NULL, 1);
+    BaseType_t ret = xTaskCreatePinnedToCore(alert_fn, "msg_alert", 3072, NULL, 1, NULL, 1);
+    if (ret != pdPASS) {
+        s_alertBusy = false;
+    }
 #else
     std::thread([]() {
         pinMode(g_extPin, OUTPUT);
         rtttl_play(g_welTune[0] ? g_welTune : "msg:d=16,o=6,b=180:c,e,g,c7", g_extPin);
         digitalWrite(g_extPin, LOW);
+        s_alertBusy = false;
     }).detach();
 #endif
 }
