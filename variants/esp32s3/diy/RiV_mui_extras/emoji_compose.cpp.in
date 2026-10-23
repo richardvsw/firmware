@@ -439,6 +439,77 @@ extern "C" void emoji_format_key(int kind)
     pop_show_kb();
 }
 
+
+// ---- floating auto-expiring paste pill ----
+static lv_obj_t *g_pastePill = nullptr;
+static lv_timer_t *g_pastePillTimer = nullptr;
+
+static void paste_pill_hide(void)
+{
+    if (g_pastePill)
+        lv_obj_add_flag(g_pastePill, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void paste_pill_timer_cb(lv_timer_t *t)
+{
+    paste_pill_hide();
+    lv_timer_pause(t);
+}
+
+static void paste_pill_click_cb(lv_event_t *e)
+{
+    if (g_ta && g_clip[0]) {
+        lv_textarea_add_text(g_ta, g_clip);
+    }
+    paste_pill_hide();
+}
+
+extern "C" void emoji_show_paste_pill(void)
+{
+    if (!g_ta || !g_clip[0])
+        return;
+    if (!g_pastePill) {
+        lv_obj_t *scr = lv_obj_get_screen(g_ta);
+        g_pastePill = lv_obj_create(scr);
+        lv_obj_remove_style_all(g_pastePill);
+        lv_obj_set_size(g_pastePill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(g_pastePill, lv_color_hex(0x2B3158), 0);
+        lv_obj_set_style_bg_opa(g_pastePill, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(g_pastePill, 10, 0);
+        lv_obj_set_style_pad_hor(g_pastePill, 8, 0);
+        lv_obj_set_style_pad_ver(g_pastePill, 3, 0);
+        lv_obj_set_style_border_width(g_pastePill, 1, 0);
+        lv_obj_set_style_border_color(g_pastePill, lv_color_hex(0x5B6FAE), 0);
+        lv_obj_add_flag(g_pastePill, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(g_pastePill, paste_pill_click_cb, LV_EVENT_CLICKED, nullptr);
+
+        lv_obj_t *lbl = lv_label_create(g_pastePill);
+        lv_obj_set_style_text_font(lbl, &ui_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_label_set_text(lbl, "Paste");
+    }
+    lv_obj_t *lbl = lv_obj_get_child(g_pastePill, 0);
+    if (lbl) {
+        char buf[36];
+        char snip[14];
+        strncpy(snip, g_clip, 10);
+        snip[10] = 0;
+        for (int i = 0; snip[i]; i++) {
+            if (snip[i] == '\n' || snip[i] == '\r') snip[i] = ' ';
+        }
+        snprintf(buf, sizeof(buf), "Paste: \"%s%s\"", snip, strlen(g_clip) > 10 ? "..." : "");
+        lv_label_set_text(lbl, buf);
+    }
+    lv_obj_remove_flag(g_pastePill, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_align_to(g_pastePill, g_ta, LV_ALIGN_OUT_TOP_LEFT, 0, emoji_reply_active() ? -36 : -4);
+    lv_obj_move_foreground(g_pastePill);
+
+    if (!g_pastePillTimer)
+        g_pastePillTimer = lv_timer_create(paste_pill_timer_cb, 15000, nullptr);
+    lv_timer_reset(g_pastePillTimer);
+    lv_timer_resume(g_pastePillTimer);
+}
+
 // ---- copy, cut and paste bar ----
 
 static lv_obj_t *g_clipBar = nullptr;

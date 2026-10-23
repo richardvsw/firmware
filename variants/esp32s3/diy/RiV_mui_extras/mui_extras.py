@@ -315,6 +315,7 @@ def patch_mui_node_and_channel(tft, UI):
          decl_block, "before")
 
     set_active_sb = (
+        '    emoji_top_wifi_update(db.connectionStatus.has_wifi && db.connectionStatus.wifi.has_status && db.connectionStatus.wifi.status.is_connected, objects.battery_panel);\n'
         '    if (g_node_search_bar) {\n'
         '        if (p == objects.nodes_panel)\n'
         '            lv_obj_clear_flag(g_node_search_bar, LV_OBJ_FLAG_HIDDEN);\n'
@@ -686,6 +687,10 @@ def patch_mui_node_and_channel(tft, UI):
     )
     edit(tft, old_ch_click, new_ch_click, "replace")
 
+    # Top bar Wi-Fi icon status update
+    edit(tft, "void TFTView_320x240::updateConnectionStatus(const meshtastic_DeviceConnectionStatus &status)\n{\n    db.connectionStatus = status;\n",
+         "void TFTView_320x240::updateConnectionStatus(const meshtastic_DeviceConnectionStatus &status)\n{\n    db.connectionStatus = status;\n    emoji_top_wifi_update(status.has_wifi && status.wifi.has_status && status.wifi.status.is_connected, objects.battery_panel);\n", "replace")
+
 def main():
     dst = os.path.join(UI, "source", "graphics", "common")
     tft = os.path.join(UI, "source", "graphics", "TFT", "TFTView_320x240.cpp")
@@ -815,7 +820,7 @@ def main():
             edit(tft, group, "    emoji_chat_style(nullptr, nullptr, nullptr);\n")
         else:
             copy("bot_stub.cpp.in", dst, "emoji_bot_stub.cpp")
-        tft_decl += ('extern "C" void emoji_suggest_init(lv_obj_t *);\n'
+        tft_decl += ('\nstatic lv_obj_t *g_topWifiIcon = nullptr;\nextern "C" void emoji_top_wifi_update(bool connected, lv_obj_t *parent)\n{\n    if (!parent) return;\n    if (!g_topWifiIcon) {\n        g_topWifiIcon = lv_label_create(parent);\n        lv_label_set_text(g_topWifiIcon, LV_SYMBOL_WIFI);\n        lv_obj_set_style_text_color(g_topWifiIcon, lv_color_hex(0x38bdf8), 0);\n        lv_obj_set_style_text_font(g_topWifiIcon, &ui_font_montserrat_12, 0);\n        lv_obj_set_style_align(g_topWifiIcon, LV_ALIGN_RIGHT_MID, 0);\n        lv_obj_set_pos(g_topWifiIcon, -70, 0);\n    }\n    if (connected)\n        lv_obj_clear_flag(g_topWifiIcon, LV_OBJ_FLAG_HIDDEN);\n    else\n        lv_obj_add_flag(g_topWifiIcon, LV_OBJ_FLAG_HIDDEN);\n}\n\nextern "C" void emoji_trigger_traceroute(uint32_t toNode, uint8_t ch)\n{\n    if (!toNode || !TDeckGUI::instance()) return;\n    TFTView_320x240 *view = TDeckGUI::instance();\n    uint8_t hopLimit = view->db.config.lora.hop_limit ? view->db.config.lora.hop_limit : 3;\n    uint32_t reqId = view->requests.addRequest(toNode, ResponseHandler::TraceRouteRequest);\n    view->controller->traceRoute(toNode, ch, hopLimit, reqId);\n}\n'\n'extern "C" void emoji_suggest_init(lv_obj_t *);\n'
                      'extern "C" bool emoji_long_names(void);\n'
                      'extern "C" void emoji_bubble_register(lv_obj_t *, uint32_t);\n'
                      'extern "C" void emoji_chip_expect(bool);\n'
@@ -1001,7 +1006,7 @@ def main():
     # advanced settings with the chat names switch and the MQTT form
     if "advanced" in feat:
         copy("MuiPrefs.h", dst)
-        copy("emoji_advanced.cpp.in", dst)
+        copy("mui_advanced.cpp.in", dst)
         themes_cpp3 = os.path.join(UI, "source", "graphics", "TFT", "Themes.cpp")
         edit(themes_cpp3, "void Themes::set(enum Theme th)\n{",
              'extern "C" void emoji_advanced_theme(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\n', "before")

@@ -57,6 +57,7 @@ static const uintptr_t MARK_QUOTE = 0xE0E0E0E1;
 
 struct BubbleRef {
     uint32_t id;
+    uint32_t nodeNum;
     lv_obj_t *panel; // panel holding the bubble label
     lv_obj_t *chipLabel; // the row of reaction chips under the bubble, nullptr until the first reaction
     char em[4][13];
@@ -64,6 +65,32 @@ struct BubbleRef {
     uint8_t n;
     bool sent;
 };
+static uint32_t g_pendingNodeNum = 0;
+extern "C" void emoji_trigger_traceroute(uint32_t toNode, uint8_t ch) __attribute__((weak));
+extern "C" void emoji_show_paste_pill(void) __attribute__((weak));
+
+static BubbleRef *find_bubble_by_id(uint32_t id)
+{
+    for (int i = 0; i < 24; i++) {
+        if (g_bubbles[i].id == id)
+            return &g_bubbles[i];
+    }
+    return nullptr;
+}
+
+static void traceroute_cb(lv_event_t *e)
+{
+    lv_obj_t *bubble = (lv_obj_t *)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+    uint32_t id = g_popupId;
+    close_popup();
+    if (!bubble || id == 0)
+        return;
+    BubbleRef *b = find_bubble_by_id(id);
+    if (b && b->nodeNum && emoji_trigger_traceroute) {
+        emoji_trigger_traceroute(b->nodeNum, 0);
+    }
+}
+
 static BubbleRef g_bubbles[24];
 static int g_bubbleNext = 0;
 static uint32_t g_pendingId = 0;
@@ -169,6 +196,7 @@ static void chip_color(uint32_t num, uint32_t *bg, uint32_t *fg)
 // so that chip, name and time stay on one line
 extern "C" void emoji_name_chip(lv_obj_t *label, uint32_t nodeNum, const char *shortName)
 {
+    g_pendingNodeNum = nodeNum;
     bool group = g_chipGroup;
     g_chipGroup = false;
     int mode = emoji_name_mode();
@@ -483,6 +511,8 @@ static void copy_cb(lv_event_t *e)
     const char *t = lv_label_get_text(bubble);
     const char *nl = strchr(t, '\n');
     emoji_clip_set(nl ? nl + 1 : t);
+    if (emoji_show_paste_pill)
+        emoji_show_paste_pill();
 }
 
 static lv_obj_t *popup_button(lv_obj_t *parent, const char *text, uint32_t bg, lv_event_cb_t cb)
@@ -555,6 +585,10 @@ static void longpress_cb(lv_event_t *e)
     lv_obj_remove_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *reply = popup_button(buttons, "Reply", 0x2F7D4F, reply_cb);
     lv_obj_set_user_data(reply, bubble);
+    lv_obj_t *mention = popup_button(buttons, "Mention", 0x3A5A9F, mention_cb);
+    lv_obj_set_user_data(mention, bubble);
+    lv_obj_t *trace = popup_button(buttons, "Traceroute", 0x5E3F8E, traceroute_cb);
+    lv_obj_set_user_data(trace, bubble);
     lv_obj_t *copy = popup_button(buttons, "Copy", 0x3A4075, copy_cb);
     lv_obj_set_user_data(copy, bubble);
     popup_button(buttons, "Cancel", 0x5A6078, cancel_popup_cb);
@@ -684,6 +718,8 @@ extern "C" void emoji_bubble_register(lv_obj_t *label, uint32_t id)
     BubbleRef &b = g_bubbles[g_bubbleNext];
     g_bubbleNext = (g_bubbleNext + 1) % 24;
     b.id = id;
+    b.nodeNum = g_pendingNodeNum;
+    g_pendingNodeNum = 0;
     b.panel = panel;
     b.chipLabel = nullptr;
     b.n = 0;
