@@ -1203,7 +1203,7 @@ const BOARD_PRESETS = {
 
   // ─── RiV Mesh-Tab Series ────────────────────────────────────────────────
   riv_mesh_tab_st7796: {
-    name: "RiV Mesh-Tab ST7796 (3.5" 320x480 Tablet)",
+    name: "RiV Mesh-Tab ST7796 (3.5-inch 320x480 Tablet)",
     category: "riv",
     board: "seeed-xiao-s3",
     extends: "esp32s3_base",
@@ -1211,12 +1211,12 @@ const BOARD_PRESETS = {
     display: { type: "ST7796", rotation: 0, cs: 1, dc: 2, rst: 3, bl: 4 },
     touch: { type: "FT6336", mapping: "DEFAULT", pin1: 43, pin2: 6, int: 5, rst: -1 },
     buzzer: 12,
-    hint: "Xiao S3 3.5" ST7796 320x480 high-res portable mesh tablet with capacitive touch."
+    hint: "Xiao S3 3.5-inch ST7796 320x480 high-res portable mesh tablet with capacitive touch."
   },
 
   // ─── RiV Handheld S3 Series ─────────────────────────────────────────────
   riv_handheld_s3: {
-    name: "RiV Handheld S3 (3.5" ILI9488/ST7796 + Touch)",
+    name: "RiV Handheld S3 (3.5-inch ILI9488/ST7796 + Touch)",
     category: "riv",
     board: "esp32-s3-devkitc-1",
     extends: "esp32s3_base",
@@ -1224,7 +1224,7 @@ const BOARD_PRESETS = {
     display: { type: "ST7796", rotation: 0, cs: 15, dc: 16, rst: 17, bl: 18 },
     touch: { type: "XPT2046", mapping: "DEFAULT", pin1: 4, pin2: 5, int: 6, rst: -1 },
     buzzer: 48,
-    hint: "ESP32-S3 Handheld with 3.5" display, XPT2046 touch, and SX1262 radio."
+    hint: "ESP32-S3 Handheld with 3.5-inch display, XPT2046 touch, and SX1262 radio."
   },
   riv_handheld_s3_st7789: {
     name: "RiV Handheld S3 ST7789 (240x320)",
@@ -1235,7 +1235,7 @@ const BOARD_PRESETS = {
     display: { type: "ST7789", rotation: 0, cs: 15, dc: 16, rst: 17, bl: 18 },
     touch: { type: "CST816S", mapping: "DEFAULT", pin1: 4, pin2: 5, int: 6, rst: -1 },
     buzzer: 48,
-    hint: "ESP32-S3 Handheld paired with ST7789 2.8" 240x320 color screen."
+    hint: "ESP32-S3 Handheld paired with ST7789 2.8-inch 240x320 color screen."
   },
   riv_handheld_s3_joystick: {
     name: "RiV Handheld S3 + Joystick",
@@ -1262,7 +1262,7 @@ const BOARD_PRESETS = {
     hint: "ESP32-S3 paired with legacy HopeRF RFM95W (SX1276) transceiver via DIO0."
   },
   riv_meshnode_s3_4in: {
-    name: "RiV Meshnode S3 4.0" (480x320 IPS)",
+    name: "RiV Meshnode S3 4.0-inch (480x320 IPS)",
     category: "riv",
     board: "esp32-s3-devkitc-1",
     extends: "esp32s3_base",
@@ -1294,7 +1294,7 @@ const BOARD_PRESETS = {
     display: { type: "SSD1306", rotation: 0, cs: -1, dc: -1, rst: -1, bl: -1 },
     touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
     buzzer: -1,
-    hint: "Standard ESP32-S3 with HopeRF RFM95W and 0.96" I2C OLED."
+    hint: "Standard ESP32-S3 with HopeRF RFM95W and 0.96-inch I2C OLED."
   },
   my_esp32s3_diy_eink: {
     name: "DIY ESP32-S3 E-Paper (Low Power)",
@@ -1316,7 +1316,7 @@ const BOARD_PRESETS = {
     display: { type: "SSD1306", rotation: 0, cs: -1, dc: -1, rst: -1, bl: -1 },
     touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
     buzzer: -1,
-    hint: "ESP32-S3 with standard 0.96" I2C OLED display (SDA:4, SCL:5)."
+    hint: "ESP32-S3 with standard 0.96-inch I2C OLED display (SDA:4, SCL:5)."
   },
   t_energy_s3_e22: {
     name: "T-Energy S3 + Ebyte E22 (1W High-Power)",
