@@ -215,6 +215,29 @@ extern "C" bool emoji_long_names_toggle(void)
     return emoji_long_names();
 }
 
+extern "C" bool emoji_snr_enabled(void)
+{
+    Preferences prefs;
+    if (prefs.begin("chatui", true)) {
+        bool en = prefs.getBool("show_snr", true);
+        prefs.end();
+        return en;
+    }
+    return true;
+}
+
+extern "C" bool emoji_snr_toggle(void)
+{
+    bool curr = emoji_snr_enabled();
+    bool next = !curr;
+    Preferences prefs;
+    if (prefs.begin("chatui", false)) {
+        prefs.putBool("show_snr", next);
+        prefs.end();
+    }
+    return next;
+}
+
 // Replies and reactions carry the id of the message they answer. Remember the last few text messages so a reply can show a
 // quote line with what it answers, like the phone app does.
 struct QuoteEntry {

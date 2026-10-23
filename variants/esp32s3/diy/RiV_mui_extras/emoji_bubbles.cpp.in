@@ -1,687 +1,728 @@
-// Chat bubbles like the Android app: a reply shows its quote above the bubble, reactions sit in a chip row under the bubble they
-// answer, a long press on a bubble opens a small menu to react or reply. Each bubble is remembered by message id.
-#include "lvgl.h"
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-
-// Hop count and MQTT badge storage
-static uint32_t g_pendingHops = 0;
-static bool g_pendingMqtt = false;
-static bool g_hasPendingMeta = false;
-
-extern "C" void emoji_record_hops(uint32_t hops, bool viaMqtt)
-{
-    g_pendingHops = hops;
-    g_pendingMqtt = viaMqtt;
-    g_hasPendingMeta = true;
-}
-
-extern "C" {
-extern const lv_font_t ui_font_montserrat_12;
-}
-extern "C" bool emoji_bot_container(lv_obj_t *container);
-extern "C" lv_obj_t *emoji_textarea(void);
-extern "C" lv_obj_t *emoji_format_bubble(lv_obj_t *label, bool sent) __attribute__((weak));
-extern "C" void emoji_clip_set(const char *text) __attribute__((weak));
-
-static const uintptr_t MARK_CHIP = 0xE0E0E0E0;
-static const uintptr_t MARK_QUOTE = 0xE0E0E0E1;
-
-struct BubbleRef {
-    uint32_t id;
-    lv_obj_t *panel; // panel holding the bubble label
-    lv_obj_t *chipLabel; // the row of reaction chips under the bubble, nullptr until the first reaction
-    char em[4][13];
-    uint8_t cnt[4];
-    uint8_t n;
-    bool sent;
-};
-static BubbleRef g_bubbles[24];
-static int g_bubbleNext = 0;
-static uint32_t g_pendingId = 0;
-
-// what the next text send is: 0 plain, 1 reaction to a bubble, 2 reply to a bubble
-static int g_ctxMode = 0;
-static uint32_t g_ctxTarget = 0;
-static char g_replyQuote[48];
-static uint32_t g_sendReplyId = 0;
-static uint32_t g_sendEmoji = 0;
-static lv_obj_t *g_replyStrip = nullptr;
-static lv_obj_t *g_replyLabel = nullptr;
-static lv_obj_t *g_backdrop = nullptr;
-static uint32_t g_popupId = 0;
-
-// colours for the two kinds of helper labels, light variant for the white bot chat
-extern "C" void emoji_aux_restyle(lv_obj_t *label, bool quote, bool bot)
-{
-    lv_obj_set_style_text_font(label, &ui_font_montserrat_12, 0);
-    lv_obj_set_style_bg_opa(label, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_hor(label, 6, 0);
-    lv_obj_set_style_pad_ver(label, 3, 0);
-    lv_obj_set_style_max_width(label, 200, 0);
-    if (quote) {
-        lv_obj_set_style_radius(label, 8, 0);
-        lv_obj_set_style_border_width(label, 3, 0);
-        lv_obj_set_style_border_side(label, LV_BORDER_SIDE_LEFT, 0);
-        lv_obj_set_style_bg_color(label, lv_color_hex(bot ? 0xE9EDF7 : 0x2B3158), 0);
-        lv_obj_set_style_text_color(label, lv_color_hex(bot ? 0x4A5568 : 0xB8BEE6), 0);
-        lv_obj_set_style_border_color(label, lv_color_hex(bot ? 0x5B6FAE : 0x8FA2FF), 0);
-    } else {
-        lv_obj_set_style_radius(label, 10, 0);
-        lv_obj_set_style_border_width(label, bot ? 1 : 0, 0);
-        lv_obj_set_style_border_color(label, lv_color_hex(0xC6CBD6), 0);
-        lv_obj_set_style_bg_color(label, lv_color_hex(bot ? 0xEEF0F6 : 0x2B3158), 0);
-        lv_obj_set_style_text_color(label, lv_color_hex(bot ? 0x1F2937 : 0xE6EAFF), 0);
-    }
-}
-
-// a plain full width panel that carries one helper label, aligned like the bubbles of that side
-static lv_obj_t *make_aux(lv_obj_t *container, const char *text, bool quote, bool sent, bool bot)
-{
-    lv_obj_t *panel = lv_obj_create(container);
-    lv_obj_remove_style_all(panel);
-    lv_obj_set_width(panel, lv_pct(100));
-    lv_obj_set_height(panel, LV_SIZE_CONTENT);
-    lv_obj_remove_flag(panel, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-    lv_obj_set_user_data(panel, (void *)(quote ? MARK_QUOTE : MARK_CHIP));
-    lv_obj_t *label = lv_label_create(panel);
-    lv_label_set_text(label, text);
-    lv_obj_set_width(label, LV_SIZE_CONTENT);
-    lv_obj_set_align(label, sent ? LV_ALIGN_RIGHT_MID : LV_ALIGN_LEFT_MID);
-    emoji_aux_restyle(label, quote, bot);
-    return label;
-}
-
-// first 34 characters of the message part of a bubble, the line with name and time is skipped
-static void body_snippet(lv_obj_t *label, char *out, size_t outSize)
-{
-    const char *t = lv_label_get_text(label);
-    const char *nl = strchr(t, '\n');
-    const char *body = nl ? nl + 1 : t;
-    size_t len = strlen(body);
-    size_t n = len < 34 ? len : 34;
-    if (n > outSize - 3)
-        n = outSize - 3;
-    if (len > n)
-        while (n > 0 && ((unsigned char)body[n] & 0xC0) == 0x80)
-            n--;
-    memcpy(out, body, n);
-    for (size_t i = 0; i < n; i++)
-        if (out[i] == '\n')
-            out[i] = ' ';
-    if (len > n) {
-        out[n++] = '.';
-        out[n++] = '.';
-    }
-    out[n] = 0;
-}
-
-extern "C" int emoji_name_mode(void);
-static bool g_chipGroup = false;
-// set before a message bubble is built: true for a group message, which has a "name time" line on top
-extern "C" void emoji_chip_expect(bool group)
-{
-    g_chipGroup = group;
-}
-
-// the colour of a node in the node list, the same rule as the display library uses
-static void chip_color(uint32_t num, uint32_t *bg, uint32_t *fg)
-{
-    uint32_t red = (num & 0xff0000) >> 16, green = (num & 0xff00) >> 8, blue = num & 0xff;
-    while (red + green + blue < 0xF0) {
-        red += red / 3 + 10;
-        green += green / 3 + 10;
-        blue += blue / 3 + 10;
-    }
-    *bg = (red << 16) | (green << 8) | blue;
-    *fg = (2 * red + 2 * green + blue) > 600 ? 0x000000 : 0xFFFFFF;
-}
-
-// a chip with the short name in the node's colour on the first line of a group message, the long name after it is cut with ..
-// so that chip, name and time stay on one line
-extern "C" void emoji_name_chip(lv_obj_t *label, uint32_t nodeNum, const char *shortName)
-{
-    bool group = g_chipGroup;
-    g_chipGroup = false;
-    int mode = emoji_name_mode();
-    if (!group || !label || mode == 1 || !shortName || !shortName[0])
-        return;
-    const char *txt = lv_label_get_text(label);
-    const char *nl = strchr(txt, '\n');
-    if (!nl)
-        return;
-    const char *tw0 = nl; // start of the time word, the header is "name time"
-    while (tw0 > txt && tw0[-1] != ' ')
-        tw0--;
-    if (tw0 == txt)
-        return;
-    size_t nameLen = (size_t)(tw0 - txt) - 1;
-    size_t timeLen = (size_t)(nl - tw0);
-    const lv_font_t *font = lv_obj_get_style_text_font(label, LV_PART_MAIN);
-    int bw = lv_obj_get_style_border_width(label, LV_PART_MAIN);
-    int padL = lv_obj_get_style_pad_left(label, LV_PART_MAIN) + bw;
-    int padR = lv_obj_get_style_pad_right(label, LV_PART_MAIN) + bw;
-    int padT = lv_obj_get_style_pad_top(label, LV_PART_MAIN) + bw;
-    int chipW = lv_text_get_width(shortName, (uint32_t)strlen(shortName), &ui_font_montserrat_12, 0) + 10;
-    int spaceW = lv_font_get_glyph_width(font, ' ', ' ');
-    if (spaceW < 2)
-        spaceW = 4;
-    int nsp = (chipW + 4 + spaceW - 1) / spaceW;
-    if (nsp > 14)
-        nsp = 14;
-    size_t restLen = strlen(nl);
-    char *nt = (char *)malloc(restLen + 120);
-    if (!nt)
-        return;
-    size_t o = 0;
-    for (int i = 0; i < nsp; i++)
-        nt[o++] = ' ';
-    int maxBubbleW = lv_obj_get_width(lv_obj_get_parent(label));
-    if (maxBubbleW <= 0) {
-        lv_display_t *disp = lv_display_get_default();
-        maxBubbleW = disp ? (lv_display_get_horizontal_resolution(disp) - 40) : 380;
-    }
-    if (maxBubbleW <= 0)
-        maxBubbleW = 380;
-    if (mode == 2 && nameLen > 0) {
-        int timeW = lv_text_get_width(tw0, (uint32_t)timeLen, font, 0);
-        int avail = maxBubbleW - padL - padR - nsp * spaceW - spaceW - timeW;
-        char nm[64];
-        size_t n = nameLen < sizeof(nm) - 1 ? nameLen : sizeof(nm) - 1;
-        memcpy(nm, txt, n);
-        nm[n] = 0;
-        bool cut = false;
-        int dotsW = lv_text_get_width("..", 2, font, 0);
-        while (n > 0 && lv_text_get_width(nm, (uint32_t)n, font, 0) + (cut ? dotsW : 0) > avail) {
-            n--;
-            while (n > 0 && ((unsigned char)nm[n] & 0xC0) == 0x80)
-                n--;
-            nm[n] = 0;
-            cut = true;
-        }
-        if (n > 0) {
-            memcpy(nt + o, nm, n);
-            o += n;
-            if (cut) {
-                nt[o++] = '.';
-                nt[o++] = '.';
-            }
-            nt[o++] = ' ';
-        }
-    }
-    memcpy(nt + o, tw0, timeLen);
-    o += timeLen;
-    if (g_hasPendingMeta) {
-        char metaBadge[32];
-        int mlen = snprintf(metaBadge, sizeof(metaBadge), " %s🐰%u", g_pendingMqtt ? "☁ " : "", (unsigned)g_pendingHops);
-        if (mlen > 0) {
-            memcpy(nt + o, metaBadge, mlen);
-            o += mlen;
-        }
-        g_hasPendingMeta = false;
-    }
-    memcpy(nt + o, nl, restLen + 1);
-    lv_label_set_text(label, nt);
-    // the bubble width follows the new first line, responsive to parent/screen width
-    int w = lv_text_get_width(nt, (uint32_t)strlen(nt), &ui_font_montserrat_14, 0);
-    int maxW = maxBubbleW - 20;
-    if (maxW < 160) maxW = 160;
-    int lw = (w < maxW ? w : maxW) + 14;
-    lv_obj_set_width(label, lw < 40 ? 40 : lw);
-    free(nt);
-    lv_obj_t *panel = lv_obj_get_parent(label);
-    uint32_t bg, fg;
-    chip_color(nodeNum, &bg, &fg);
-    lv_obj_t *chip = lv_label_create(panel);
-    lv_label_set_text(chip, shortName);
-    lv_obj_set_style_text_font(chip, &ui_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(chip, lv_color_hex(fg), 0);
-    lv_obj_set_style_bg_color(chip, lv_color_hex(bg), 0);
-    lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(chip, 6, 0);
-    lv_obj_set_style_pad_hor(chip, 5, 0);
-    lv_obj_set_style_pad_ver(chip, 0, 0);
-    lv_obj_set_width(chip, LV_SIZE_CONTENT);
-    lv_obj_add_flag(chip, LV_OBJ_FLAG_IGNORE_LAYOUT);
-    lv_obj_remove_flag(chip, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-    lv_obj_update_layout(panel);
-    lv_obj_align_to(chip, label, LV_ALIGN_TOP_LEFT, padL, padT + 1);
-}
-
-extern "C" void emoji_pending_id(uint32_t id)
-{
-    g_pendingId = id;
-}
-
-// the bubble marks are used by the bot chat restyle to tell helper panels from bubbles
-extern "C" int emoji_panel_kind(lv_obj_t *panel)
-{
-    uintptr_t u = (uintptr_t)lv_obj_get_user_data(panel);
-    return u == MARK_CHIP ? 1 : (u == MARK_QUOTE ? 2 : 0);
-}
-
-// ---- send context, read by the patched send functions ----
-
-extern "C" int emoji_ctx_mode(void)
-{
-    return g_ctxMode;
-}
-
-extern "C" uint32_t emoji_ctx_target(void)
-{
-    return g_ctxTarget;
-}
-
-extern "C" bool emoji_reply_active(void)
-{
-    return g_ctxMode == 2 && g_replyStrip && !lv_obj_has_flag(g_replyStrip, LV_OBJ_FLAG_HIDDEN);
-}
-
-// reply id and reaction flag put into the packet that is built right now
-extern "C" void emoji_set_reply(uint32_t id, bool reaction)
-{
-    g_sendReplyId = id;
-    g_sendEmoji = reaction ? 1 : 0;
-}
-
-extern "C" uint32_t emoji_send_reply_id(void)
-{
-    return g_sendReplyId;
-}
-
-extern "C" uint32_t emoji_send_emoji_flag(void)
-{
-    return g_sendEmoji;
-}
-
-// text that goes into the message log: a reply carries its quote line so it comes back after a restart
-extern "C" size_t emoji_log_text(const char *text, size_t len, char *out, size_t outSize)
-{
-    size_t pos = 0;
-    if (g_ctxMode == 2 && g_replyQuote[0]) {
-        int w = snprintf(out, outSize, "> %s\n", g_replyQuote);
-        pos = (w < 0) ? 0 : ((size_t)w < outSize ? (size_t)w : outSize - 1);
-    }
-    size_t room = outSize - 1 - pos;
-    size_t n = len < room ? len : room;
-    memcpy(out + pos, text, n);
-    out[pos + n] = 0;
-    return pos + n;
-}
-
-static void hide_reply_strip(void)
-{
-    if (g_replyStrip)
-        lv_obj_add_flag(g_replyStrip, LV_OBJ_FLAG_HIDDEN);
-}
-
-// called when the text has been sent, forgets the reply target
-extern "C" void emoji_ctx_done(void)
-{
-    g_ctxMode = 0;
-    g_ctxTarget = 0;
-    g_replyQuote[0] = 0;
-    hide_reply_strip();
-}
-
-static void cancel_reply_cb(lv_event_t *e)
-{
-    emoji_ctx_done();
-}
-
-static void show_reply_strip(const char *quote)
-{
-    lv_obj_t *ta = emoji_textarea();
-    if (!ta)
-        return;
-    if (!g_replyStrip) {
-        g_replyStrip = lv_obj_create(lv_obj_get_parent(ta));
-        lv_obj_set_size(g_replyStrip, lv_pct(85), LV_SIZE_CONTENT);
-        lv_obj_remove_flag(g_replyStrip, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_bg_color(g_replyStrip, lv_color_hex(0x3D4A86), 0);
-        lv_obj_set_style_bg_opa(g_replyStrip, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(g_replyStrip, 0, 0);
-        lv_obj_set_style_radius(g_replyStrip, 6, 0);
-        lv_obj_set_style_pad_all(g_replyStrip, 4, 0);
-        lv_obj_add_event_cb(g_replyStrip, cancel_reply_cb, LV_EVENT_CLICKED, nullptr);
-        g_replyLabel = lv_label_create(g_replyStrip);
-        lv_obj_set_width(g_replyLabel, lv_pct(100));
-        lv_label_set_long_mode(g_replyLabel, LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_color(g_replyLabel, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_text_font(g_replyLabel, &ui_font_montserrat_12, 0);
-    }
-    char text[96];
-    snprintf(text, sizeof(text), "Reply to: %s   (tap to cancel)", quote);
-    lv_label_set_text(g_replyLabel, text);
-    lv_obj_remove_flag(g_replyStrip, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_align_to(g_replyStrip, ta, LV_ALIGN_OUT_TOP_LEFT, 0, -2);
-    lv_obj_move_foreground(g_replyStrip);
-}
-
-// ---- long press menu ----
-
-static void close_popup(void)
-{
-    if (g_backdrop) {
-        lv_obj_delete_async(g_backdrop);
-        g_backdrop = nullptr;
-    }
-}
-
-static void backdrop_cb(lv_event_t *e)
-{
-    if (lv_event_get_target(e) == lv_event_get_current_target(e))
-        close_popup();
-}
-
-static void react_cb(lv_event_t *e)
-{
-    lv_obj_t *label = (lv_obj_t *)lv_event_get_target(e);
-    char emoji[16];
-    snprintf(emoji, sizeof(emoji), "%s", lv_label_get_text(label));
-    uint32_t id = g_popupId;
-    close_popup();
-    lv_obj_t *ta = emoji_textarea();
-    if (!ta || id == 0)
-        return;
-    // send it through the normal text path, the typed text is put back afterwards
-    char saved[240];
-    snprintf(saved, sizeof(saved), "%s", lv_textarea_get_text(ta));
-    g_ctxMode = 1;
-    g_ctxTarget = id;
-    lv_textarea_set_text(ta, emoji);
-    lv_obj_send_event(ta, LV_EVENT_READY, nullptr);
-    g_ctxMode = 0;
-    g_ctxTarget = 0;
-    lv_textarea_set_text(ta, saved);
-}
-
-static void reply_cb(lv_event_t *e)
-{
-    uint32_t id = g_popupId;
-    lv_obj_t *bubble = (lv_obj_t *)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
-    close_popup();
-    if (id == 0 || !bubble)
-        return;
-    body_snippet(bubble, g_replyQuote, sizeof(g_replyQuote));
-    g_ctxMode = 2;
-    g_ctxTarget = id;
-    show_reply_strip(g_replyQuote);
-}
-
-static void cancel_popup_cb(lv_event_t *e)
-{
-    close_popup();
-}
-
-static void copy_cb(lv_event_t *e)
-{
-    lv_obj_t *bubble = (lv_obj_t *)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
-    close_popup();
-    if (!bubble || !emoji_clip_set)
-        return;
-    const char *t = lv_label_get_text(bubble);
-    const char *nl = strchr(t, '\n');
-    emoji_clip_set(nl ? nl + 1 : t);
-}
-
-static lv_obj_t *popup_button(lv_obj_t *parent, const char *text, uint32_t bg, lv_event_cb_t cb)
-{
-    lv_obj_t *l = lv_label_create(parent);
-    lv_label_set_text(l, text);
-    lv_obj_set_style_bg_color(l, lv_color_hex(bg), 0);
-    lv_obj_set_style_bg_opa(l, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(l, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_radius(l, 8, 0);
-    lv_obj_set_style_pad_hor(l, 14, 0);
-    lv_obj_set_style_pad_ver(l, 6, 0);
-    lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(l, cb, LV_EVENT_CLICKED, nullptr);
-    return l;
-}
-
-static void longpress_cb(lv_event_t *e)
-{
-    lv_obj_t *bubble = (lv_obj_t *)lv_event_get_target(e);
-    if (!lv_obj_check_type(bubble, &lv_label_class))
-        bubble = (lv_obj_t *)lv_obj_get_user_data(bubble);
-    uint32_t id = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
-    lv_indev_wait_release(lv_indev_active());
-    if (g_backdrop || id == 0)
-        return;
-    g_popupId = id;
-    g_backdrop = lv_obj_create(lv_layer_top());
-    lv_obj_remove_style_all(g_backdrop);
-    lv_obj_set_size(g_backdrop, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(g_backdrop, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(g_backdrop, LV_OPA_50, 0);
-    lv_obj_add_flag(g_backdrop, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(g_backdrop, backdrop_cb, LV_EVENT_CLICKED, nullptr);
-    lv_obj_t *panel = lv_obj_create(g_backdrop);
-    lv_obj_remove_style_all(panel);
-    lv_obj_set_size(panel, 280, LV_SIZE_CONTENT);
-    lv_obj_center(panel);
-    lv_obj_set_style_bg_color(panel, lv_color_hex(0x2B3158), 0);
-    lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(panel, 12, 0);
-    lv_obj_set_style_pad_all(panel, 10, 0);
-    lv_obj_set_style_pad_row(panel, 10, 0);
-    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *row = lv_obj_create(panel);
-    lv_obj_remove_style_all(row);
-    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-    static const char *const reactions[] = {"\xF0\x9F\x91\x8D", "\xE2\x9D\xA4", "\xF0\x9F\x98\x82", "\xF0\x9F\x98\xAE",
-                                            "\xF0\x9F\x98\xA2", "\xF0\x9F\x99\x8F"};
-    for (const char *r : reactions) {
-        lv_obj_t *l = lv_label_create(row);
-        lv_label_set_text(l, r);
-        lv_obj_set_style_pad_all(l, 7, 0);
-        lv_obj_set_style_bg_color(l, lv_color_hex(0x3D4A86), 0);
-        lv_obj_set_style_bg_opa(l, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(l, 10, 0);
-        lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(l, react_cb, LV_EVENT_CLICKED, nullptr);
-    }
-    lv_obj_t *buttons = lv_obj_create(panel);
-    lv_obj_remove_style_all(buttons);
-    lv_obj_set_size(buttons, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *reply = popup_button(buttons, "Reply", 0x2F7D4F, reply_cb);
-    lv_obj_set_user_data(reply, bubble);
-    lv_obj_t *copy = popup_button(buttons, "Copy", 0x3A4075, copy_cb);
-    lv_obj_set_user_data(copy, bubble);
-    popup_button(buttons, "Cancel", 0x5A6078, cancel_popup_cb);
-}
-
-static void unflash_cb(lv_timer_t *t)
-{
-    lv_obj_t *o = (lv_obj_t *)lv_timer_get_user_data(t);
-    if (o && lv_obj_is_valid(o))
-        lv_obj_set_style_outline_width(o, 0, 0);
-    lv_timer_delete(t);
-}
-
-// a tap on a quote scrolls to the message it quotes and outlines it for a moment
-static void quote_jump_cb(lv_event_t *e)
-{
-    lv_obj_t *ql = (lv_obj_t *)lv_event_get_target(e);
-    lv_obj_t *qp = lv_obj_get_parent(ql);
-    lv_obj_t *container = qp ? lv_obj_get_parent(qp) : nullptr;
-    if (!container)
-        return;
-    char key[48];
-    strncpy(key, lv_label_get_text(ql), sizeof(key) - 1);
-    key[sizeof(key) - 1] = 0;
-    size_t kl = strlen(key);
-    if (kl >= 2 && key[kl - 1] == '.' && key[kl - 2] == '.')
-        key[kl - 2] = 0;
-    if (!key[0] || !strcmp(key, "replying to a message"))
-        return;
-    for (int i = (int)lv_obj_get_index(qp) - 1; i >= 0; i--) {
-        lv_obj_t *c = lv_obj_get_child(container, i);
-        if (!c || lv_obj_get_user_data(c) == (void *)MARK_CHIP || lv_obj_get_user_data(c) == (void *)MARK_QUOTE)
-            continue;
-        uint32_t n = lv_obj_get_child_count(c);
-        for (uint32_t k = 0; k < n; k++) {
-            lv_obj_t *l = lv_obj_get_child(c, k);
-            if (!l || !lv_obj_check_type(l, &lv_label_class))
-                continue;
-            const char *t = lv_label_get_text(l);
-            const char *nl = strchr(t, '\n');
-            const char *body = nl ? nl + 1 : t;
-            if (body && strstr(body, key)) {
-                lv_obj_scroll_to_view(c, LV_ANIM_ON);
-                lv_obj_set_style_outline_width(l, 2, 0);
-                lv_obj_set_style_outline_color(l, lv_color_hex(0xFFD54A), 0);
-                lv_obj_set_style_outline_pad(l, 1, 0);
-                lv_timer_t *tm = lv_timer_create(unflash_cb, 1500, l);
-                lv_timer_set_repeat_count(tm, 1);
-                return;
-            }
-        }
-    }
-}
-
-// Called for every new bubble. id is the message id of a sent bubble, 0 for a received one, which takes the id that
-// emoji_pending_id announced. A bubble that starts with a quote line has that line moved into its own panel above.
-extern "C" void emoji_bubble_register(lv_obj_t *label, uint32_t id)
-{
-    if (!label)
-        return;
-    bool sent = lv_obj_get_style_align(label, LV_PART_MAIN) == LV_ALIGN_RIGHT_MID;
-    static uint32_t g_autoMsgId = 0x80000000;
-    if (id == 0) {
-        id = g_pendingId;
-        g_pendingId = 0;
-        if (id == 0) {
-            id = ++g_autoMsgId;
-        }
-    }
-    lv_obj_t *panel = lv_obj_get_parent(label);
-    lv_obj_t *container = panel ? lv_obj_get_parent(panel) : nullptr;
-    if (container) {
-        const char *quoteText = nullptr;
-        char quote[48];
-        // a stored quote line, text looks like "name time\n> quote\nmessage"
-        const char *txt = lv_label_get_text(label);
-        const char *nl1 = strchr(txt, '\n');
-        if (nl1 && nl1[1] == '>' && nl1[2] == ' ') {
-            const char *qs = nl1 + 3;
-            const char *qe = strchr(qs, '\n');
-            if (qe) {
-                size_t qn = (size_t)(qe - qs) < sizeof(quote) - 1 ? (size_t)(qe - qs) : sizeof(quote) - 1;
-                memcpy(quote, qs, qn);
-                quote[qn] = 0;
-                quoteText = quote;
-                char rest[300];
-                size_t head = (size_t)(nl1 - txt);
-                if (head > 120)
-                    head = 120;
-                memcpy(rest, txt, head);
-                rest[head] = 0;
-                snprintf(rest + head, sizeof(rest) - head, "\n%s", qe + 1);
-                lv_label_set_text(label, rest);
-            }
-        } else if (sent && g_ctxMode == 2 && g_replyQuote[0]) {
-            // a reply that is being sent right now
-            quoteText = g_replyQuote;
-        }
-        if (quoteText) {
-            lv_obj_t *ql = make_aux(container, quoteText, true, sent, emoji_bot_container(container));
-            lv_obj_move_to_index(lv_obj_get_parent(ql), lv_obj_get_index(panel));
-            lv_obj_add_flag(ql, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(ql, quote_jump_cb, LV_EVENT_CLICKED, nullptr);
-        }
-    }
-    lv_obj_t *vis = emoji_format_bubble ? emoji_format_bubble(label, sent) : nullptr;
-    if (id == 0 || !panel)
-        return;
-    BubbleRef &b = g_bubbles[g_bubbleNext];
-    g_bubbleNext = (g_bubbleNext + 1) % 24;
-    b.id = id;
-    b.panel = panel;
-    b.chipLabel = nullptr;
-    b.n = 0;
-    b.sent = sent;
-    lv_obj_add_flag(label, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(label, longpress_cb, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)id);
-    if (vis) {
-        lv_obj_set_user_data(vis, label);
-        lv_obj_add_flag(vis, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(vis, longpress_cb, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)id);
-    }
-}
-
-// one small chip per emoji with its count, under the bubble it answers
-static void rebuild_chips(BubbleRef &b)
-{
-    lv_obj_t *container = lv_obj_get_parent(b.panel);
-    if (b.chipLabel && lv_obj_is_valid(b.chipLabel))
-        lv_obj_delete(b.chipLabel);
-    bool bot = emoji_bot_container(container);
-    lv_obj_t *row = lv_obj_create(container);
-    lv_obj_remove_style_all(row);
-    lv_obj_set_width(row, lv_pct(100));
-    lv_obj_set_height(row, LV_SIZE_CONTENT);
-    lv_obj_remove_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-    lv_obj_set_user_data(row, (void *)MARK_CHIP);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(row, b.sent ? LV_FLEX_ALIGN_END : LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(row, 4, 0);
-    lv_obj_set_style_pad_row(row, 2, 0);
-    lv_obj_set_style_pad_hor(row, 4, 0);
-    for (int k = 0; k < b.n; k++) {
-        char t[24];
-        snprintf(t, sizeof(t), "%s %d", b.em[k], (int)b.cnt[k]);
-        lv_obj_t *l = lv_label_create(row);
-        lv_label_set_text(l, t);
-        lv_obj_set_style_text_font(l, &ui_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(l, lv_color_hex(bot ? 0x1F2937 : 0xFFFFFF), 0);
-        lv_obj_set_style_bg_color(l, lv_color_hex(bot ? 0xDDE2F0 : 0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(l, bot ? LV_OPA_COVER : (lv_opa_t)50, 0);
-        lv_obj_set_style_radius(l, 9, 0);
-        lv_obj_set_style_pad_hor(l, 6, 0);
-        lv_obj_set_style_pad_ver(l, 1, 0);
-    }
-    b.chipLabel = row;
-    lv_obj_move_to_index(row, lv_obj_get_index(b.panel) + 1);
-}
-
-// true when the reaction was put under the bubble it answers
-extern "C" bool emoji_reaction_apply(uint32_t replyId, const char *payload, size_t size)
-{
-    if (replyId == 0 || size == 0 || size > 12)
-        return false;
-    for (int i = 0; i < 24; i++) {
-        BubbleRef &b = g_bubbles[i];
-        if (b.id != replyId || !b.panel || !lv_obj_is_valid(b.panel))
-            continue;
-        bool found = false;
-        for (int k = 0; k < b.n; k++)
-            if (strlen(b.em[k]) == size && memcmp(b.em[k], payload, size) == 0) {
-                if (b.cnt[k] < 99)
-                    b.cnt[k]++;
-                found = true;
-                break;
-            }
-        if (!found) {
-            if (b.n >= 4)
-                return true; // the chip row is full, drop the extra emoji
-            memcpy(b.em[b.n], payload, size);
-            b.em[b.n][size] = 0;
-            b.cnt[b.n] = 1;
-            b.n++;
-        }
-        rebuild_chips(b);
-        return true;
-    }
-    return false;
-}
+// Chat bubbles like the Android app: a reply shows its quote above the bubble, reactions sit in a chip row under the bubble they
+// answer, a long press on a bubble opens a small menu to react or reply. Each bubble is remembered by message id.
+#include "lvgl.h"
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+// Hop count, MQTT, SNR and RSSI storage
+static uint32_t g_pendingHops = 0;
+static bool g_pendingMqtt = false;
+static float g_pendingSnr = 0.0f;
+static int32_t g_pendingRssi = 0;
+static bool g_hasPendingMeta = false;
+static bool g_hasPendingRxStats = false;
+
+extern "C" bool emoji_snr_enabled(void) __attribute__((weak));
+static inline bool is_snr_active(void) {
+    return emoji_snr_enabled ? emoji_snr_enabled() : true;
+}
+
+extern "C" void emoji_record_hops(uint32_t hops, bool viaMqtt)
+{
+    g_pendingHops = hops;
+    g_pendingMqtt = viaMqtt;
+    g_hasPendingMeta = true;
+    g_hasPendingRxStats = false;
+}
+
+extern "C" void emoji_record_rx_stats(uint32_t hops, bool viaMqtt, float snr, int32_t rssi)
+{
+    g_pendingHops = hops;
+    g_pendingMqtt = viaMqtt;
+    g_hasPendingMeta = true;
+    if (!viaMqtt && (snr != 0.0f || rssi != 0)) {
+        g_pendingSnr = snr;
+        g_pendingRssi = rssi;
+        g_hasPendingRxStats = true;
+    } else {
+        g_hasPendingRxStats = false;
+    }
+}
+
+extern "C" {
+extern const lv_font_t ui_font_montserrat_12;
+}
+extern "C" bool emoji_bot_container(lv_obj_t *container);
+extern "C" lv_obj_t *emoji_textarea(void);
+extern "C" lv_obj_t *emoji_format_bubble(lv_obj_t *label, bool sent) __attribute__((weak));
+extern "C" void emoji_clip_set(const char *text) __attribute__((weak));
+
+static const uintptr_t MARK_CHIP = 0xE0E0E0E0;
+static const uintptr_t MARK_QUOTE = 0xE0E0E0E1;
+
+struct BubbleRef {
+    uint32_t id;
+    lv_obj_t *panel; // panel holding the bubble label
+    lv_obj_t *chipLabel; // the row of reaction chips under the bubble, nullptr until the first reaction
+    char em[4][13];
+    uint8_t cnt[4];
+    uint8_t n;
+    bool sent;
+};
+static BubbleRef g_bubbles[24];
+static int g_bubbleNext = 0;
+static uint32_t g_pendingId = 0;
+
+// what the next text send is: 0 plain, 1 reaction to a bubble, 2 reply to a bubble
+static int g_ctxMode = 0;
+static uint32_t g_ctxTarget = 0;
+static char g_replyQuote[48];
+static uint32_t g_sendReplyId = 0;
+static uint32_t g_sendEmoji = 0;
+static lv_obj_t *g_replyStrip = nullptr;
+static lv_obj_t *g_replyLabel = nullptr;
+static lv_obj_t *g_backdrop = nullptr;
+static uint32_t g_popupId = 0;
+
+// colours for the two kinds of helper labels, light variant for the white bot chat
+extern "C" void emoji_aux_restyle(lv_obj_t *label, bool quote, bool bot)
+{
+    lv_obj_set_style_text_font(label, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_bg_opa(label, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_hor(label, 6, 0);
+    lv_obj_set_style_pad_ver(label, 3, 0);
+    lv_obj_set_style_max_width(label, 200, 0);
+    if (quote) {
+        lv_obj_set_style_radius(label, 8, 0);
+        lv_obj_set_style_border_width(label, 3, 0);
+        lv_obj_set_style_border_side(label, LV_BORDER_SIDE_LEFT, 0);
+        lv_obj_set_style_bg_color(label, lv_color_hex(bot ? 0xE9EDF7 : 0x2B3158), 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(bot ? 0x4A5568 : 0xB8BEE6), 0);
+        lv_obj_set_style_border_color(label, lv_color_hex(bot ? 0x5B6FAE : 0x8FA2FF), 0);
+    } else {
+        lv_obj_set_style_radius(label, 10, 0);
+        lv_obj_set_style_border_width(label, bot ? 1 : 0, 0);
+        lv_obj_set_style_border_color(label, lv_color_hex(0xC6CBD6), 0);
+        lv_obj_set_style_bg_color(label, lv_color_hex(bot ? 0xEEF0F6 : 0x2B3158), 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(bot ? 0x1F2937 : 0xE6EAFF), 0);
+    }
+}
+
+// a plain full width panel that carries one helper label, aligned like the bubbles of that side
+static lv_obj_t *make_aux(lv_obj_t *container, const char *text, bool quote, bool sent, bool bot)
+{
+    lv_obj_t *panel = lv_obj_create(container);
+    lv_obj_remove_style_all(panel);
+    lv_obj_set_width(panel, lv_pct(100));
+    lv_obj_set_height(panel, LV_SIZE_CONTENT);
+    lv_obj_remove_flag(panel, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_set_user_data(panel, (void *)(quote ? MARK_QUOTE : MARK_CHIP));
+    lv_obj_t *label = lv_label_create(panel);
+    lv_label_set_text(label, text);
+    lv_obj_set_width(label, LV_SIZE_CONTENT);
+    lv_obj_set_align(label, sent ? LV_ALIGN_RIGHT_MID : LV_ALIGN_LEFT_MID);
+    emoji_aux_restyle(label, quote, bot);
+    return label;
+}
+
+// first 34 characters of the message part of a bubble, the line with name and time is skipped
+static void body_snippet(lv_obj_t *label, char *out, size_t outSize)
+{
+    const char *t = lv_label_get_text(label);
+    const char *nl = strchr(t, '\n');
+    const char *body = nl ? nl + 1 : t;
+    size_t len = strlen(body);
+    size_t n = len < 34 ? len : 34;
+    if (n > outSize - 3)
+        n = outSize - 3;
+    if (len > n)
+        while (n > 0 && ((unsigned char)body[n] & 0xC0) == 0x80)
+            n--;
+    memcpy(out, body, n);
+    for (size_t i = 0; i < n; i++)
+        if (out[i] == '\n')
+            out[i] = ' ';
+    if (len > n) {
+        out[n++] = '.';
+        out[n++] = '.';
+    }
+    out[n] = 0;
+}
+
+extern "C" int emoji_name_mode(void);
+static bool g_chipGroup = false;
+// set before a message bubble is built: true for a group message, which has a "name time" line on top
+extern "C" void emoji_chip_expect(bool group)
+{
+    g_chipGroup = group;
+}
+
+// the colour of a node in the node list, the same rule as the display library uses
+static void chip_color(uint32_t num, uint32_t *bg, uint32_t *fg)
+{
+    uint32_t red = (num & 0xff0000) >> 16, green = (num & 0xff00) >> 8, blue = num & 0xff;
+    while (red + green + blue < 0xF0) {
+        red += red / 3 + 10;
+        green += green / 3 + 10;
+        blue += blue / 3 + 10;
+    }
+    *bg = (red << 16) | (green << 8) | blue;
+    *fg = (2 * red + 2 * green + blue) > 600 ? 0x000000 : 0xFFFFFF;
+}
+
+// a chip with the short name in the node's colour on the first line of a group message, the long name after it is cut with ..
+// so that chip, name and time stay on one line
+extern "C" void emoji_name_chip(lv_obj_t *label, uint32_t nodeNum, const char *shortName)
+{
+    bool group = g_chipGroup;
+    g_chipGroup = false;
+    int mode = emoji_name_mode();
+    if (!group || !label || mode == 1 || !shortName || !shortName[0])
+        return;
+    const char *txt = lv_label_get_text(label);
+    const char *nl = strchr(txt, '\n');
+    if (!nl)
+        return;
+    const char *tw0 = nl; // start of the time word, the header is "name time"
+    while (tw0 > txt && tw0[-1] != ' ')
+        tw0--;
+    if (tw0 == txt)
+        return;
+    size_t nameLen = (size_t)(tw0 - txt) - 1;
+    size_t timeLen = (size_t)(nl - tw0);
+    const lv_font_t *font = lv_obj_get_style_text_font(label, LV_PART_MAIN);
+    int bw = lv_obj_get_style_border_width(label, LV_PART_MAIN);
+    int padL = lv_obj_get_style_pad_left(label, LV_PART_MAIN) + bw;
+    int padR = lv_obj_get_style_pad_right(label, LV_PART_MAIN) + bw;
+    int padT = lv_obj_get_style_pad_top(label, LV_PART_MAIN) + bw;
+    int chipW = lv_text_get_width(shortName, (uint32_t)strlen(shortName), &ui_font_montserrat_12, 0) + 10;
+    int spaceW = lv_font_get_glyph_width(font, ' ', ' ');
+    if (spaceW < 2)
+        spaceW = 4;
+    int nsp = (chipW + 4 + spaceW - 1) / spaceW;
+    if (nsp > 14)
+        nsp = 14;
+    size_t restLen = strlen(nl);
+    char *nt = (char *)malloc(restLen + 120);
+    if (!nt)
+        return;
+    size_t o = 0;
+    for (int i = 0; i < nsp; i++)
+        nt[o++] = ' ';
+    int maxBubbleW = lv_obj_get_width(lv_obj_get_parent(label));
+    if (maxBubbleW <= 0) {
+        lv_display_t *disp = lv_display_get_default();
+        maxBubbleW = disp ? (lv_display_get_horizontal_resolution(disp) - 40) : 380;
+    }
+    if (maxBubbleW <= 0)
+        maxBubbleW = 380;
+    if (mode == 2 && nameLen > 0) {
+        int timeW = lv_text_get_width(tw0, (uint32_t)timeLen, font, 0);
+        int avail = maxBubbleW - padL - padR - nsp * spaceW - spaceW - timeW;
+        char nm[64];
+        size_t n = nameLen < sizeof(nm) - 1 ? nameLen : sizeof(nm) - 1;
+        memcpy(nm, txt, n);
+        nm[n] = 0;
+        bool cut = false;
+        int dotsW = lv_text_get_width("..", 2, font, 0);
+        while (n > 0 && lv_text_get_width(nm, (uint32_t)n, font, 0) + (cut ? dotsW : 0) > avail) {
+            n--;
+            while (n > 0 && ((unsigned char)nm[n] & 0xC0) == 0x80)
+                n--;
+            nm[n] = 0;
+            cut = true;
+        }
+        if (n > 0) {
+            memcpy(nt + o, nm, n);
+            o += n;
+            if (cut) {
+                nt[o++] = '.';
+                nt[o++] = '.';
+            }
+            nt[o++] = ' ';
+        }
+    }
+    memcpy(nt + o, tw0, timeLen);
+    o += timeLen;
+    if (g_hasPendingMeta) {
+        char metaBadge[32];
+        int mlen = snprintf(metaBadge, sizeof(metaBadge), " %s🐰%u", g_pendingMqtt ? "☁ " : "", (unsigned)g_pendingHops);
+        if (mlen > 0) {
+            memcpy(nt + o, metaBadge, mlen);
+            o += mlen;
+        }
+        g_hasPendingMeta = false;
+    }
+    memcpy(nt + o, nl, restLen + 1);
+    lv_label_set_text(label, nt);
+    // the bubble width follows the new first line, responsive to parent/screen width
+    int w = lv_text_get_width(nt, (uint32_t)strlen(nt), &ui_font_montserrat_14, 0);
+    int maxW = maxBubbleW - 20;
+    if (maxW < 160) maxW = 160;
+    int lw = (w < maxW ? w : maxW) + 14;
+    lv_obj_set_width(label, lw < 40 ? 40 : lw);
+    free(nt);
+    lv_obj_t *panel = lv_obj_get_parent(label);
+    uint32_t bg, fg;
+    chip_color(nodeNum, &bg, &fg);
+    lv_obj_t *chip = lv_label_create(panel);
+    lv_label_set_text(chip, shortName);
+    lv_obj_set_style_text_font(chip, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(chip, lv_color_hex(fg), 0);
+    lv_obj_set_style_bg_color(chip, lv_color_hex(bg), 0);
+    lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(chip, 6, 0);
+    lv_obj_set_style_pad_hor(chip, 5, 0);
+    lv_obj_set_style_pad_ver(chip, 0, 0);
+    lv_obj_set_width(chip, LV_SIZE_CONTENT);
+    lv_obj_add_flag(chip, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_remove_flag(chip, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_update_layout(panel);
+    lv_obj_align_to(chip, label, LV_ALIGN_TOP_LEFT, padL, padT + 1);
+}
+
+extern "C" void emoji_pending_id(uint32_t id)
+{
+    g_pendingId = id;
+}
+
+// the bubble marks are used by the bot chat restyle to tell helper panels from bubbles
+extern "C" int emoji_panel_kind(lv_obj_t *panel)
+{
+    uintptr_t u = (uintptr_t)lv_obj_get_user_data(panel);
+    return u == MARK_CHIP ? 1 : (u == MARK_QUOTE ? 2 : 0);
+}
+
+// ---- send context, read by the patched send functions ----
+
+extern "C" int emoji_ctx_mode(void)
+{
+    return g_ctxMode;
+}
+
+extern "C" uint32_t emoji_ctx_target(void)
+{
+    return g_ctxTarget;
+}
+
+extern "C" bool emoji_reply_active(void)
+{
+    return g_ctxMode == 2 && g_replyStrip && !lv_obj_has_flag(g_replyStrip, LV_OBJ_FLAG_HIDDEN);
+}
+
+// reply id and reaction flag put into the packet that is built right now
+extern "C" void emoji_set_reply(uint32_t id, bool reaction)
+{
+    g_sendReplyId = id;
+    g_sendEmoji = reaction ? 1 : 0;
+}
+
+extern "C" uint32_t emoji_send_reply_id(void)
+{
+    return g_sendReplyId;
+}
+
+extern "C" uint32_t emoji_send_emoji_flag(void)
+{
+    return g_sendEmoji;
+}
+
+// text that goes into the message log: a reply carries its quote line so it comes back after a restart
+extern "C" size_t emoji_log_text(const char *text, size_t len, char *out, size_t outSize)
+{
+    size_t pos = 0;
+    if (g_ctxMode == 2 && g_replyQuote[0]) {
+        int w = snprintf(out, outSize, "> %s\n", g_replyQuote);
+        pos = (w < 0) ? 0 : ((size_t)w < outSize ? (size_t)w : outSize - 1);
+    }
+    size_t room = outSize - 1 - pos;
+    size_t n = len < room ? len : room;
+    memcpy(out + pos, text, n);
+    out[pos + n] = 0;
+    return pos + n;
+}
+
+static void hide_reply_strip(void)
+{
+    if (g_replyStrip)
+        lv_obj_add_flag(g_replyStrip, LV_OBJ_FLAG_HIDDEN);
+}
+
+// called when the text has been sent, forgets the reply target
+extern "C" void emoji_ctx_done(void)
+{
+    g_ctxMode = 0;
+    g_ctxTarget = 0;
+    g_replyQuote[0] = 0;
+    hide_reply_strip();
+}
+
+static void cancel_reply_cb(lv_event_t *e)
+{
+    emoji_ctx_done();
+}
+
+static void show_reply_strip(const char *quote)
+{
+    lv_obj_t *ta = emoji_textarea();
+    if (!ta)
+        return;
+    if (!g_replyStrip) {
+        g_replyStrip = lv_obj_create(lv_obj_get_parent(ta));
+        lv_obj_set_size(g_replyStrip, lv_pct(85), LV_SIZE_CONTENT);
+        lv_obj_remove_flag(g_replyStrip, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_color(g_replyStrip, lv_color_hex(0x3D4A86), 0);
+        lv_obj_set_style_bg_opa(g_replyStrip, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(g_replyStrip, 0, 0);
+        lv_obj_set_style_radius(g_replyStrip, 6, 0);
+        lv_obj_set_style_pad_all(g_replyStrip, 4, 0);
+        lv_obj_add_event_cb(g_replyStrip, cancel_reply_cb, LV_EVENT_CLICKED, nullptr);
+        g_replyLabel = lv_label_create(g_replyStrip);
+        lv_obj_set_width(g_replyLabel, lv_pct(100));
+        lv_label_set_long_mode(g_replyLabel, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_color(g_replyLabel, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(g_replyLabel, &ui_font_montserrat_12, 0);
+    }
+    char text[96];
+    snprintf(text, sizeof(text), "Reply to: %s   (tap to cancel)", quote);
+    lv_label_set_text(g_replyLabel, text);
+    lv_obj_remove_flag(g_replyStrip, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_align_to(g_replyStrip, ta, LV_ALIGN_OUT_TOP_LEFT, 0, -2);
+    lv_obj_move_foreground(g_replyStrip);
+}
+
+// ---- long press menu ----
+
+static void close_popup(void)
+{
+    if (g_backdrop) {
+        lv_obj_delete_async(g_backdrop);
+        g_backdrop = nullptr;
+    }
+}
+
+static void backdrop_cb(lv_event_t *e)
+{
+    if (lv_event_get_target(e) == lv_event_get_current_target(e))
+        close_popup();
+}
+
+static void react_cb(lv_event_t *e)
+{
+    lv_obj_t *label = (lv_obj_t *)lv_event_get_target(e);
+    char emoji[16];
+    snprintf(emoji, sizeof(emoji), "%s", lv_label_get_text(label));
+    uint32_t id = g_popupId;
+    close_popup();
+    lv_obj_t *ta = emoji_textarea();
+    if (!ta || id == 0)
+        return;
+    // send it through the normal text path, the typed text is put back afterwards
+    char saved[240];
+    snprintf(saved, sizeof(saved), "%s", lv_textarea_get_text(ta));
+    g_ctxMode = 1;
+    g_ctxTarget = id;
+    lv_textarea_set_text(ta, emoji);
+    lv_obj_send_event(ta, LV_EVENT_READY, nullptr);
+    g_ctxMode = 0;
+    g_ctxTarget = 0;
+    lv_textarea_set_text(ta, saved);
+}
+
+static void reply_cb(lv_event_t *e)
+{
+    uint32_t id = g_popupId;
+    lv_obj_t *bubble = (lv_obj_t *)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+    close_popup();
+    if (id == 0 || !bubble)
+        return;
+    body_snippet(bubble, g_replyQuote, sizeof(g_replyQuote));
+    g_ctxMode = 2;
+    g_ctxTarget = id;
+    show_reply_strip(g_replyQuote);
+}
+
+static void cancel_popup_cb(lv_event_t *e)
+{
+    close_popup();
+}
+
+static void copy_cb(lv_event_t *e)
+{
+    lv_obj_t *bubble = (lv_obj_t *)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+    close_popup();
+    if (!bubble || !emoji_clip_set)
+        return;
+    const char *t = lv_label_get_text(bubble);
+    const char *nl = strchr(t, '\n');
+    emoji_clip_set(nl ? nl + 1 : t);
+}
+
+static lv_obj_t *popup_button(lv_obj_t *parent, const char *text, uint32_t bg, lv_event_cb_t cb)
+{
+    lv_obj_t *l = lv_label_create(parent);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_bg_color(l, lv_color_hex(bg), 0);
+    lv_obj_set_style_bg_opa(l, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(l, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_radius(l, 8, 0);
+    lv_obj_set_style_pad_hor(l, 14, 0);
+    lv_obj_set_style_pad_ver(l, 6, 0);
+    lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(l, cb, LV_EVENT_CLICKED, nullptr);
+    return l;
+}
+
+static void longpress_cb(lv_event_t *e)
+{
+    lv_obj_t *bubble = (lv_obj_t *)lv_event_get_target(e);
+    if (!lv_obj_check_type(bubble, &lv_label_class))
+        bubble = (lv_obj_t *)lv_obj_get_user_data(bubble);
+    uint32_t id = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+    lv_indev_wait_release(lv_indev_active());
+    if (g_backdrop || id == 0)
+        return;
+    g_popupId = id;
+    g_backdrop = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(g_backdrop);
+    lv_obj_set_size(g_backdrop, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(g_backdrop, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(g_backdrop, LV_OPA_50, 0);
+    lv_obj_add_flag(g_backdrop, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(g_backdrop, backdrop_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *panel = lv_obj_create(g_backdrop);
+    lv_obj_remove_style_all(panel);
+    lv_obj_set_size(panel, 280, LV_SIZE_CONTENT);
+    lv_obj_center(panel);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(0x2B3158), 0);
+    lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(panel, 12, 0);
+    lv_obj_set_style_pad_all(panel, 10, 0);
+    lv_obj_set_style_pad_row(panel, 10, 0);
+    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *row = lv_obj_create(panel);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    static const char *const reactions[] = {"\xF0\x9F\x91\x8D", "\xE2\x9D\xA4", "\xF0\x9F\x98\x82", "\xF0\x9F\x98\xAE",
+                                            "\xF0\x9F\x98\xA2", "\xF0\x9F\x99\x8F"};
+    for (const char *r : reactions) {
+        lv_obj_t *l = lv_label_create(row);
+        lv_label_set_text(l, r);
+        lv_obj_set_style_pad_all(l, 7, 0);
+        lv_obj_set_style_bg_color(l, lv_color_hex(0x3D4A86), 0);
+        lv_obj_set_style_bg_opa(l, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(l, 10, 0);
+        lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(l, react_cb, LV_EVENT_CLICKED, nullptr);
+    }
+    lv_obj_t *buttons = lv_obj_create(panel);
+    lv_obj_remove_style_all(buttons);
+    lv_obj_set_size(buttons, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *reply = popup_button(buttons, "Reply", 0x2F7D4F, reply_cb);
+    lv_obj_set_user_data(reply, bubble);
+    lv_obj_t *copy = popup_button(buttons, "Copy", 0x3A4075, copy_cb);
+    lv_obj_set_user_data(copy, bubble);
+    popup_button(buttons, "Cancel", 0x5A6078, cancel_popup_cb);
+}
+
+static void unflash_cb(lv_timer_t *t)
+{
+    lv_obj_t *o = (lv_obj_t *)lv_timer_get_user_data(t);
+    if (o && lv_obj_is_valid(o))
+        lv_obj_set_style_outline_width(o, 0, 0);
+    lv_timer_delete(t);
+}
+
+// a tap on a quote scrolls to the message it quotes and outlines it for a moment
+static void quote_jump_cb(lv_event_t *e)
+{
+    lv_obj_t *ql = (lv_obj_t *)lv_event_get_target(e);
+    lv_obj_t *qp = lv_obj_get_parent(ql);
+    lv_obj_t *container = qp ? lv_obj_get_parent(qp) : nullptr;
+    if (!container)
+        return;
+    char key[48];
+    strncpy(key, lv_label_get_text(ql), sizeof(key) - 1);
+    key[sizeof(key) - 1] = 0;
+    size_t kl = strlen(key);
+    if (kl >= 2 && key[kl - 1] == '.' && key[kl - 2] == '.')
+        key[kl - 2] = 0;
+    if (!key[0] || !strcmp(key, "replying to a message"))
+        return;
+    for (int i = (int)lv_obj_get_index(qp) - 1; i >= 0; i--) {
+        lv_obj_t *c = lv_obj_get_child(container, i);
+        if (!c || lv_obj_get_user_data(c) == (void *)MARK_CHIP || lv_obj_get_user_data(c) == (void *)MARK_QUOTE)
+            continue;
+        uint32_t n = lv_obj_get_child_count(c);
+        for (uint32_t k = 0; k < n; k++) {
+            lv_obj_t *l = lv_obj_get_child(c, k);
+            if (!l || !lv_obj_check_type(l, &lv_label_class))
+                continue;
+            const char *t = lv_label_get_text(l);
+            const char *nl = strchr(t, '\n');
+            const char *body = nl ? nl + 1 : t;
+            if (body && strstr(body, key)) {
+                lv_obj_scroll_to_view(c, LV_ANIM_ON);
+                lv_obj_set_style_outline_width(l, 2, 0);
+                lv_obj_set_style_outline_color(l, lv_color_hex(0xFFD54A), 0);
+                lv_obj_set_style_outline_pad(l, 1, 0);
+                lv_timer_t *tm = lv_timer_create(unflash_cb, 1500, l);
+                lv_timer_set_repeat_count(tm, 1);
+                return;
+            }
+        }
+    }
+}
+
+// Called for every new bubble. id is the message id of a sent bubble, 0 for a received one, which takes the id that
+// emoji_pending_id announced. A bubble that starts with a quote line has that line moved into its own panel above.
+extern "C" void emoji_bubble_register(lv_obj_t *label, uint32_t id)
+{
+    if (!label)
+        return;
+    bool sent = lv_obj_get_style_align(label, LV_PART_MAIN) == LV_ALIGN_RIGHT_MID;
+    static uint32_t g_autoMsgId = 0x80000000;
+    if (id == 0) {
+        id = g_pendingId;
+        g_pendingId = 0;
+        if (id == 0) {
+            id = ++g_autoMsgId;
+        }
+    }
+    lv_obj_t *panel = lv_obj_get_parent(label);
+    lv_obj_t *container = panel ? lv_obj_get_parent(panel) : nullptr;
+    if (container) {
+        const char *quoteText = nullptr;
+        char quote[48];
+        // a stored quote line, text looks like "name time\n> quote\nmessage"
+        const char *txt = lv_label_get_text(label);
+        const char *nl1 = strchr(txt, '\n');
+        if (nl1 && nl1[1] == '>' && nl1[2] == ' ') {
+            const char *qs = nl1 + 3;
+            const char *qe = strchr(qs, '\n');
+            if (qe) {
+                size_t qn = (size_t)(qe - qs) < sizeof(quote) - 1 ? (size_t)(qe - qs) : sizeof(quote) - 1;
+                memcpy(quote, qs, qn);
+                quote[qn] = 0;
+                quoteText = quote;
+                char rest[300];
+                size_t head = (size_t)(nl1 - txt);
+                if (head > 120)
+                    head = 120;
+                memcpy(rest, txt, head);
+                rest[head] = 0;
+                snprintf(rest + head, sizeof(rest) - head, "\n%s", qe + 1);
+                lv_label_set_text(label, rest);
+            }
+        } else if (sent && g_ctxMode == 2 && g_replyQuote[0]) {
+            // a reply that is being sent right now
+            quoteText = g_replyQuote;
+        }
+        if (quoteText) {
+            lv_obj_t *ql = make_aux(container, quoteText, true, sent, emoji_bot_container(container));
+            lv_obj_move_to_index(lv_obj_get_parent(ql), lv_obj_get_index(panel));
+            lv_obj_add_flag(ql, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(ql, quote_jump_cb, LV_EVENT_CLICKED, nullptr);
+        }
+    }
+    // Append SNR & RSSI to received message bubble if enabled
+    if (!sent && g_hasPendingRxStats && is_snr_active()) {
+        char snrBuf[64];
+        snprintf(snrBuf, sizeof(snrBuf), "\n#3fb950 SNR %.2f dB  RSSI %d dBm#", g_pendingSnr, (int)g_pendingRssi);
+        const char *orig = lv_label_get_text(label);
+        if (orig) {
+            size_t olen = strlen(orig);
+            char *withSnr = (char *)malloc(olen + strlen(snrBuf) + 1);
+            if (withSnr) {
+                strcpy(withSnr, orig);
+                strcat(withSnr, snrBuf);
+                lv_label_set_recolor(label, true);
+                lv_label_set_text(label, withSnr);
+                free(withSnr);
+            }
+        }
+        g_hasPendingRxStats = false;
+    }
+    lv_obj_t *vis = emoji_format_bubble ? emoji_format_bubble(label, sent) : nullptr;
+    if (id == 0 || !panel)
+        return;
+    BubbleRef &b = g_bubbles[g_bubbleNext];
+    g_bubbleNext = (g_bubbleNext + 1) % 24;
+    b.id = id;
+    b.panel = panel;
+    b.chipLabel = nullptr;
+    b.n = 0;
+    b.sent = sent;
+    lv_obj_add_flag(label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(label, longpress_cb, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)id);
+    if (vis) {
+        lv_obj_set_user_data(vis, label);
+        lv_obj_add_flag(vis, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(vis, longpress_cb, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)id);
+    }
+}
+
+// one small chip per emoji with its count, under the bubble it answers
+static void rebuild_chips(BubbleRef &b)
+{
+    lv_obj_t *container = lv_obj_get_parent(b.panel);
+    if (b.chipLabel && lv_obj_is_valid(b.chipLabel))
+        lv_obj_delete(b.chipLabel);
+    bool bot = emoji_bot_container(container);
+    lv_obj_t *row = lv_obj_create(container);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_width(row, lv_pct(100));
+    lv_obj_set_height(row, LV_SIZE_CONTENT);
+    lv_obj_remove_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_set_user_data(row, (void *)MARK_CHIP);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(row, b.sent ? LV_FLEX_ALIGN_END : LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 4, 0);
+    lv_obj_set_style_pad_row(row, 2, 0);
+    lv_obj_set_style_pad_hor(row, 4, 0);
+    for (int k = 0; k < b.n; k++) {
+        char t[24];
+        snprintf(t, sizeof(t), "%s %d", b.em[k], (int)b.cnt[k]);
+        lv_obj_t *l = lv_label_create(row);
+        lv_label_set_text(l, t);
+        lv_obj_set_style_text_font(l, &ui_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(l, lv_color_hex(bot ? 0x1F2937 : 0xFFFFFF), 0);
+        lv_obj_set_style_bg_color(l, lv_color_hex(bot ? 0xDDE2F0 : 0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(l, bot ? LV_OPA_COVER : (lv_opa_t)50, 0);
+        lv_obj_set_style_radius(l, 9, 0);
+        lv_obj_set_style_pad_hor(l, 6, 0);
+        lv_obj_set_style_pad_ver(l, 1, 0);
+    }
+    b.chipLabel = row;
+    lv_obj_move_to_index(row, lv_obj_get_index(b.panel) + 1);
+}
+
+// true when the reaction was put under the bubble it answers
+extern "C" bool emoji_reaction_apply(uint32_t replyId, const char *payload, size_t size)
+{
+    if (replyId == 0 || size == 0 || size > 12)
+        return false;
+    for (int i = 0; i < 24; i++) {
+        BubbleRef &b = g_bubbles[i];
+        if (b.id != replyId || !b.panel || !lv_obj_is_valid(b.panel))
+            continue;
+        bool found = false;
+        for (int k = 0; k < b.n; k++)
+            if (strlen(b.em[k]) == size && memcmp(b.em[k], payload, size) == 0) {
+                if (b.cnt[k] < 99)
+                    b.cnt[k]++;
+                found = true;
+                break;
+            }
+        if (!found) {
+            if (b.n >= 4)
+                return true; // the chip row is full, drop the extra emoji
+            memcpy(b.em[b.n], payload, size);
+            b.em[b.n][size] = 0;
+            b.cnt[b.n] = 1;
+            b.n++;
+        }
+        rebuild_chips(b);
+        return true;
+    }
+    return false;
+}

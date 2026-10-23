@@ -828,6 +828,7 @@ def main():
                     'extern "C" size_t emoji_quote_compose(uint32_t, uint32_t, uint32_t, const char *, size_t, char *, size_t);\n'
                     'extern "C" void emoji_pending_id(uint32_t);\n'
                     'extern "C" void emoji_record_hops(uint32_t, bool);\n'
+                    'extern "C" void emoji_record_rx_stats(uint32_t, bool, float, int32_t);\n'
                     'extern "C" bool emoji_reaction_apply(uint32_t, const char *, size_t);\n'
                     'extern "C" int emoji_ctx_mode(void);\n'
                     'extern "C" uint32_t emoji_send_reply_id(void);\n'

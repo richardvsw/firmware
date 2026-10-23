@@ -132,6 +132,10 @@ extern "C" int emoji_name_mode(void);
 
 extern "C" int emoji_name_mode_cycle(void);
 
+extern "C" bool emoji_snr_enabled(void);
+
+extern "C" bool emoji_snr_toggle(void);
+
 extern "C" void add_style_settings_button_style(lv_obj_t *obj);
 
 extern "C" void add_style_settings_panel_style(lv_obj_t *obj);
@@ -6508,6 +6512,34 @@ static void names_cb(lv_event_t *e)
 
 
 
+static lv_obj_t *g_snrLabel = nullptr;
+
+static void snr_text(void)
+
+{
+
+    if (g_snrLabel)
+
+        lv_label_set_text(lv_obj_get_child(g_snrLabel, 0),
+
+                          emoji_snr_enabled() ? "Message SNR/RSSI: Show" : "Message SNR/RSSI: Hide");
+
+}
+
+
+
+static void snr_cb(lv_event_t *e)
+
+{
+
+    emoji_snr_toggle();
+
+    snr_text();
+
+}
+
+
+
 static void adv_back_cb(lv_event_t *e)
 
 {
@@ -6958,6 +6990,12 @@ static void build_adv_panel(void)
 
     names_text();
 
+    lv_obj_t *snrBtn = make_nav(content, "", snr_cb);
+
+    g_snrLabel = snrBtn;
+
+    snr_text();
+
     make_nav(content, "MQTT", mqtt_open_cb);
 
     make_nav(content, "Set Clock", ck_open_cb);
@@ -7007,6 +7045,8 @@ static void adv_open_cb(lv_event_t *e)
         build_adv_panel();
 
     names_text();
+
+    snr_text();
 
     open_panel(g_advPanel);
 

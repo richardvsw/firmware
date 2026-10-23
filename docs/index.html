@@ -997,6 +997,17 @@
 
           <div class="gh-toggle-item">
             <div>
+              <div style="font-weight: 600; font-size: 13px;">Show Message SNR & RSSI</div>
+              <div style="font-size: 12px; color: var(--color-fg-muted);">Display green signal metrics (<span style="color: #3fb950; font-family: monospace;">SNR 6.75 dB RSSI -60 dBm</span>) under incoming LoRa chat bubbles. Toggleable live on-device in Advanced Settings.</div>
+            </div>
+            <label class="gh-switch">
+              <input type="checkbox" id="feat_snr" checked onchange="updateAll()">
+              <span class="gh-slider"></span>
+            </label>
+          </div>
+
+          <div class="gh-toggle-item">
+            <div>
               <div style="font-weight: 600; font-size: 13px;">Advanced UI & Ringtone Composer</div>
               <div style="font-size: 12px; color: var(--color-fg-muted);">Quiet hours, welcome melody, live RTTTL composer.</div>
             </div>
@@ -2347,7 +2358,8 @@ function getShareableState() {
     c: document.getElementById('feat_chat').checked ? 1 : 0,
     a: document.getElementById('feat_advanced').checked ? 1 : 0,
     s: document.getElementById('feat_screensaver').checked ? 1 : 0,
-    m: document.getElementById('feat_meshbot').checked ? 1 : 0
+    m: document.getElementById('feat_meshbot').checked ? 1 : 0,
+    snr: document.getElementById('feat_snr') && document.getElementById('feat_snr').checked ? 1 : 0
   };
 }
 
@@ -2418,6 +2430,7 @@ function loadStateFromUrl() {
     setChk('feat_advanced', 'a');
     setChk('feat_screensaver', 's');
     setChk('feat_meshbot', 'm');
+    setChk('feat_snr', 'snr');
 
     onLoraTypeChange();
     onDisplayTypeChange();
