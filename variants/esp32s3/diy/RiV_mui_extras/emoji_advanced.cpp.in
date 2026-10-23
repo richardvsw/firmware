@@ -7026,6 +7026,8 @@ static void build_adv_panel(void)
 
     g_advPanel = make_panel("Advanced settings", adv_back_cb, &content);
 
+    make_section_header(content, "CHAT & DISPLAY");
+
     lv_obj_t *names = make_nav(content, "", names_cb);
 
     g_namesLabel = names;
@@ -7044,6 +7046,14 @@ static void build_adv_panel(void)
 
     hops_text();
 
+    if (g_loraCfg) {
+
+        make_nav(content, "Screensaver", ss_open_cb);
+
+    }
+
+    make_section_header(content, "NETWORK & MQTT");
+
     lv_obj_t *proxyBtn = make_nav(content, "", proxy_cb);
 
     g_proxyLabel = proxyBtn;
@@ -7052,7 +7062,13 @@ static void build_adv_panel(void)
 
     make_nav(content, "MQTT", mqtt_open_cb);
 
-    make_nav(content, "Set Clock", ck_open_cb);
+    make_section_header(content, "RADIO & LORA");
+
+    if (g_loraCfg) {
+
+        make_nav(content, "LoRa Extras", lora_open_cb);
+
+    }
 
 #if defined(ARCH_PORTDUINO)
 
@@ -7060,23 +7076,29 @@ static void build_adv_panel(void)
 
 #endif
 
-    if (g_nodesFn)
-
-        make_nav(content, "Nodes", nd_open_cb);
-
     if (g_loraCfg) {
 
-        make_nav(content, "LoRa Extras", lora_open_cb);
+        make_section_header(content, "LOCATION & GPS");
 
         make_nav(content, "Position", pos_open_cb);
 
         make_nav(content, "GPS Status", gps_open_cb);
 
+    }
+
+    make_section_header(content, "SYSTEM & HARDWARE");
+
+    if (g_nodesFn)
+
+        make_nav(content, "Nodes", nd_open_cb);
+
+    make_nav(content, "Set Clock", ck_open_cb);
+
+    if (g_loraCfg) {
+
         make_nav(content, "Quiet Hours", qh_open_cb);
 
         make_nav(content, "Power & I2C", i2c_open_cb);
-
-        make_nav(content, "Screensaver", ss_open_cb);
 
         if (g_extCfg)
 
@@ -7101,6 +7123,10 @@ static void adv_open_cb(lv_event_t *e)
     names_text();
 
     snr_text();
+
+    hops_text();
+
+    proxy_text();
 
     open_panel(g_advPanel);
 
