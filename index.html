@@ -1282,35 +1282,123 @@ ${p.display.type === 'ST7735' ? '#define USE_ST7735\n#define TFT_CS         ' + 
 
 function generatePlatformIoEnv() {
   const bKey = document.getElementById('boardSelect').value;
-  const p = BOARD_PRESETS[bKey];
+  const p = BOARD_PRESETS[bKey] || BOARD_PRESETS.seeed_xiao_s3;
   const envName = getCustomVariantName();
+
+  const isOfficial = p.category === 'official';
+  const isVirgin = isOfficial && document.getElementById('virginStockToggle').checked;
+
+  const dt = document.getElementById('displayType').value;
+  const rot = document.getElementById('displayRotation').value;
+  const isTft = ['ST7789', 'ST7796', 'ST7735', 'ILI9341'].includes(dt);
+
+  const tt = document.getElementById('touchType').value;
+  const hasTouch = (tt !== 'NONE');
+
+  const sck = document.getElementById('lora_sck').value;
+  const mosi = document.getElementById('lora_mosi').value;
+  const tCs = document.getElementById('tft_cs').value;
+  const tDc = document.getElementById('tft_dc').value;
+  const tRst = document.getElementById('tft_rst').value;
+  const tBl = document.getElementById('tft_bl').value;
+
+  const tp1 = document.getElementById('touch_pin1').value;
+  const tp2 = document.getElementById('touch_pin2').value;
+  const tInt = document.getElementById('touch_int').value;
+
+  const buz = document.getElementById('buzzer_pin').value;
 
   const featEmoji = document.getElementById('feat_emoji').checked ? "emoji" : "";
   const featChat = document.getElementById('feat_chat').checked ? "chat" : "";
   const featAdv = document.getElementById('feat_advanced').checked ? "advanced themes" : "";
   const featSs = document.getElementById('feat_screensaver').checked ? "screensaver stickman" : "";
   const featBot = document.getElementById('feat_meshbot').checked ? "meshbot" : "";
-  const buz = document.getElementById('buzzer_pin').value;
 
   const features = ["keyboard", "wake", "compose", featEmoji, featChat, featAdv, featSs, featBot]
     .filter(Boolean)
     .join(" ");
 
-  return `; =========================================================================
-; PlatformIO Environment Entry
-; Paste this into platformio.ini or variants/${envName}/platformio_env.ini
+  // Resolution detection
+  let w = 240, h = 320;
+  if (dt === 'ST7796') { w = 320; h = 480; }
+  else if (dt === 'ST7735') { w = 128; h = 160; }
+
+  // Touch rotation helper
+  let touchRot = rot;
+  const tMap = document.getElementById('touchMapping').value;
+  if (tMap === 'INVERT_Y') touchRot = 2;
+  else if (tMap === 'SWAP_XY') touchRot = 1;
+
+  let ini = `; =========================================================================
+; PlatformIO Environment Entry: ${envName}
+; Target Base: ${p.name}
 ; =========================================================================
 
 [env:${envName}]
-extends = esp32s3_base
+extends = ${p.extends || 'esp32s3_base'}
 board = ${p.board}
+board_build.variant = ${envName}
+board_build.variants_dir = variants/esp32s3/diy
+`;
+
+  if (isTft) {
+    ini += `
+lib_deps =
+  \${esp32s3_base.lib_deps}
+  \${device-ui_base.lib_deps}
+  lovyan03/LovyanGFX@1.2.21
+
 build_flags =
   \${esp32s3_base.build_flags}
-  -I variants/${envName}
+  -I variants/esp32s3/diy/${envName}
   -D VARIANT_NAME=\\"${envName}\\"
-  -D LV_USE_TFT=1
+  -D USE_LOVYAN_GFX
+  -D LGFX_DRIVER_TEMPLATE
+  -D LGFX_DRIVER=LGFX_GENERIC
+  -D LGFX_PANEL=${dt}
+  -D LGFX_SCREEN_WIDTH=${w}
+  -D LGFX_SCREEN_HEIGHT=${h}
+  -D LGFX_ROTATION=${rot}
+  -D LGFX_PIN_SCK=${sck}
+  -D LGFX_PIN_MOSI=${mosi}
+  -D LGFX_PIN_DC=${tDc}
+  -D LGFX_PIN_CS=${tCs}
+  -D LGFX_PIN_RST=${tRst}
+  -D LGFX_PIN_BL=${tBl}
+  -D HAS_SCREEN=0
+  -D HAS_TFT=1
+  -D VIEW_240x320
+  -D DISPLAY_SET_RESOLUTION
+`;
 
-; MUI Extras Features
+    if (hasTouch) {
+      if (tt === 'XPT2046') {
+        ini += `  -D LGFX_TOUCH=XPT2046
+  -D LGFX_TOUCH_CS=${tp1}
+  -D LGFX_TOUCH_INT=${tInt}
+  -D LGFX_TOUCH_ROTATION=${touchRot}
+`;
+      } else {
+        ini += `  -D LGFX_TOUCH=${tt}
+  -D LGFX_TOUCH_SDA=${tp1}
+  -D LGFX_TOUCH_SCL=${tp2}
+  -D LGFX_TOUCH_INT=${tInt}
+  -D LGFX_TOUCH_ROTATION=${touchRot}
+`;
+      }
+    }
+  } else {
+    ini += `
+build_flags =
+  \${${p.extends || 'esp32s3_base'}.build_flags}
+  -I variants/esp32s3/diy/${envName}
+  -D VARIANT_NAME=\\"${envName}\\"
+`;
+  }
+
+  // MUI Extras script and config
+  ini += `
+; RiV MUI Extras Configuration
 custom_riv_mui_features = ${features}
 custom_riv_mui_emoji = ${featEmoji ? 'full' : 'small'}
 custom_riv_mui_notify_pin = ${buz >= 0 ? buz : 48}
@@ -1320,6 +1408,8 @@ extra_scripts =
   \${esp32s3_base.extra_scripts}
   pre:variants/esp32s3/diy/RiV_mui_extras/mui_extras.py
 `;
+
+  return ini;
 }
 
 function generateReadme() {
