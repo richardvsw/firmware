@@ -1,448 +1,627 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-color-mode="dark" data-dark-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Meshtastic Firmware & Variant Configurator</title>
+  <title>richardvsw/firmware &bull; Meshtastic Variant Studio</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
     :root {
-      --bg: #0e1317;
-      --card-bg: #161e24;
-      --card-border: #23303a;
-      --primary: #2ecc71;
-      --primary-hover: #27ae60;
-      --primary-dim: rgba(46, 204, 113, 0.15);
-      --text: #ecf0f1;
-      --text-muted: #8b9bb0;
-      --warning: #f39c12;
-      --warning-bg: rgba(243, 156, 18, 0.15);
-      --danger: #e74c3c;
-      --danger-bg: rgba(231, 76, 60, 0.15);
-      --info: #3498db;
-      --code-bg: #0b0f12;
-      --input-bg: #1e2933;
-      --input-border: #2c3e50;
-      --input-focus: #2ecc71;
+      --color-canvas-default: #0d1117;
+      --color-canvas-subtle: #161b22;
+      --color-border-default: #30363d;
+      --color-border-muted: #21262d;
+      --color-neutral-muted: rgba(110,118,129,0.4);
+      --color-fg-default: #e6edf3;
+      --color-fg-muted: #848d97;
+      --color-fg-subtle: #6e7681;
+      --color-accent-fg: #2f81f7;
+      --color-accent-emphasis: #1f6feb;
+      --color-success-fg: #3fb950;
+      --color-success-emphasis: #238636;
+      --color-attention-fg: #d29922;
+      --color-attention-subtle: rgba(187,128,9,0.15);
+      --color-danger-fg: #f85149;
+      --color-danger-subtle: rgba(248,81,73,0.15);
+      --color-btn-bg: #21262d;
+      --color-btn-border: #30363d;
+      --color-btn-hover-bg: #30363d;
+      --color-btn-primary-bg: #238636;
+      --color-btn-primary-hover-bg: #2ea043;
+      --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: var(--bg);
-      color: var(--text);
+      font-family: var(--font-sans);
+      background-color: var(--color-canvas-default);
+      color: var(--color-fg-default);
+      font-size: 14px;
       line-height: 1.5;
-      padding: 20px;
     }
 
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
+    /* GitHub Header Bar */
+    .gh-header {
+      background: var(--color-canvas-subtle);
+      border-bottom: 1px solid var(--color-border-default);
+      padding: 14px 24px 0 24px;
     }
 
-    header {
+    .gh-header-top {
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      margin-bottom: 24px;
-      padding-bottom: 16px;
-      border-bottom: 1px solid var(--card-border);
+      justify-content: space-between;
       flex-wrap: wrap;
-      gap: 16px;
+      gap: 12px;
+      margin-bottom: 14px;
     }
 
-    .title-group h1 {
-      font-size: 1.75rem;
-      font-weight: 700;
-      color: var(--primary);
+    .repo-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .repo-title a {
+      color: var(--color-accent-fg);
+      text-decoration: none;
+    }
+    .repo-title a:hover { text-decoration: underline; }
+    .repo-title span.slash { color: var(--color-fg-muted); }
+
+    .gh-badge {
+      display: inline-flex;
+      align-items: center;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 2px 8px;
+      border-radius: 20px;
+      border: 1px solid var(--color-border-default);
+      color: var(--color-fg-muted);
+    }
+
+    .gh-tabs {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+    }
+
+    .gh-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      font-size: 14px;
+      color: var(--color-fg-muted);
+      text-decoration: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+    }
+    .gh-tab:hover { color: var(--color-fg-default); }
+    .gh-tab.active {
+      color: var(--color-fg-default);
+      border-bottom-color: #f78166;
+      font-weight: 600;
+    }
+
+    /* Main Container */
+    .gh-container {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    /* GitHub Subhead banner */
+    .subhead {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 12px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--color-border-muted);
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .subhead-heading {
+      font-size: 20px;
+      font-weight: 600;
       display: flex;
       align-items: center;
       gap: 10px;
     }
 
-    .title-group p {
-      color: var(--text-muted);
-      font-size: 0.95rem;
+    .subhead-description {
+      color: var(--color-fg-muted);
+      font-size: 13px;
     }
 
-    .badge {
-      display: inline-block;
-      padding: 3px 8px;
-      border-radius: 4px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    .badge-primary { background: var(--primary-dim); color: var(--primary); }
-    .badge-warn { background: var(--warning-bg); color: var(--warning); }
-    .badge-info { background: rgba(52, 152, 219, 0.15); color: var(--info); }
-
-    .layout-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 24px;
-    }
-
-    @media (max-width: 960px) {
-      .layout-grid {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    .card {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 10px;
-      padding: 20px;
+    /* Smart Meter Bar */
+    .smart-meter-card {
+      background: var(--color-canvas-subtle);
+      border: 1px solid var(--color-border-default);
+      border-radius: 6px;
+      padding: 12px 16px;
       margin-bottom: 20px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
     }
 
-    .card-title {
-      font-size: 1.15rem;
+    .meter-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
       font-weight: 600;
-      margin-bottom: 16px;
+      color: var(--color-fg-muted);
+    }
+
+    .meter-bar {
+      height: 8px;
+      background: var(--color-border-muted);
+      border-radius: 4px;
+      overflow: hidden;
+      display: flex;
+    }
+
+    .meter-seg {
+      height: 100%;
+      transition: width 0.3s ease;
+    }
+    .meter-base { background: var(--color-accent-emphasis); }
+    .meter-ui { background: #8957e5; }
+    .meter-emoji { background: #238636; }
+    .meter-free { background: transparent; }
+
+    .meter-legend {
+      display: flex;
+      gap: 16px;
+      font-size: 11px;
+      color: var(--color-fg-muted);
+      flex-wrap: wrap;
+    }
+    .legend-item { display: flex; align-items: center; gap: 5px; }
+    .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+    /* Layout Grid */
+    .grid-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+      gap: 20px;
+    }
+    @media (max-width: 1020px) {
+      .grid-layout { grid-template-columns: 1fr; }
+    }
+
+    /* Box / Card */
+    .Box {
+      background: var(--color-canvas-subtle);
+      border: 1px solid var(--color-border-default);
+      border-radius: 6px;
+      margin-bottom: 20px;
+    }
+
+    .Box-header {
+      background: rgba(110,118,129,0.06);
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--color-border-default);
       display: flex;
       align-items: center;
       justify-content: space-between;
-      border-bottom: 1px solid var(--card-border);
-      padding-bottom: 8px;
-    }
-
-    .card-title .icon {
-      color: var(--primary);
-      margin-right: 8px;
-    }
-
-    .form-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 14px;
-    }
-
-    .form-group {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      position: relative;
-    }
-
-    .form-group.full-width {
-      grid-column: 1 / -1;
-    }
-
-    label {
-      font-size: 0.85rem;
+      border-top-left-radius: 6px;
+      border-top-right-radius: 6px;
       font-weight: 600;
-      color: var(--text);
+      font-size: 14px;
+    }
+
+    .Box-body {
+      padding: 16px;
+    }
+
+    /* Form Fields */
+    .form-group {
+      margin-bottom: 14px;
+    }
+    .form-group:last-child { margin-bottom: 0; }
+
+    .form-label {
       display: flex;
       align-items: center;
       gap: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: var(--color-fg-default);
     }
 
-    .helper-icon {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 16px;
-      height: 16px;
-      border-radius: 50%;
-      background: var(--input-border);
-      color: var(--text-muted);
-      font-size: 0.7rem;
-      cursor: help;
-      position: relative;
+    .form-label-hint {
+      font-size: 12px;
+      color: var(--color-fg-muted);
+      font-weight: normal;
     }
 
-    .helper-icon:hover::after {
-      content: attr(data-tooltip);
-      position: absolute;
-      bottom: 125%;
-      left: 50%;
-      transform: translateX(-50%);
-      background: #000;
-      color: #fff;
+    .form-control {
+      width: 100%;
+      background: var(--color-canvas-default);
+      border: 1px solid var(--color-border-default);
+      color: var(--color-fg-default);
       padding: 6px 10px;
       border-radius: 6px;
-      font-size: 0.75rem;
-      white-space: pre-line;
-      width: max-content;
-      max-width: 260px;
-      z-index: 100;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-      border: 1px solid var(--card-border);
-    }
-
-    input[type="text"],
-    input[type="number"],
-    select {
-      background: var(--input-bg);
-      border: 1px solid var(--input-border);
-      color: var(--text);
-      padding: 9px 12px;
-      border-radius: 6px;
-      font-size: 0.9rem;
+      font-size: 13px;
       outline: none;
-      transition: border-color 0.2s, box-shadow 0.2s;
+      font-family: inherit;
     }
-
-    input:focus,
-    select:focus {
-      border-color: var(--input-focus);
-      box-shadow: 0 0 0 2px var(--primary-dim);
+    .form-control:focus {
+      border-color: var(--color-accent-fg);
+      box-shadow: 0 0 0 3px rgba(47,129,247,0.3);
     }
-
-    input:disabled,
-    select:disabled {
-      opacity: 0.5;
+    .form-control:disabled {
+      background: rgba(110,118,129,0.1);
+      color: var(--color-fg-subtle);
       cursor: not-allowed;
-      background: #12181d;
+      border-color: var(--color-border-muted);
     }
 
-    .toggle-row {
+    .form-grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .form-grid-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+    }
+    @media (max-width: 600px) {
+      .form-grid-2, .form-grid-3 { grid-template-columns: 1fr; }
+    }
+
+    /* GitHub Toggle Switch */
+    .gh-toggle-item {
       display: flex;
       align-items: center;
       justify-content: space-between;
       padding: 10px 12px;
-      background: var(--input-bg);
+      border: 1px solid var(--color-border-muted);
       border-radius: 6px;
-      border: 1px solid var(--input-border);
       margin-bottom: 8px;
+      background: var(--color-canvas-default);
+      transition: border-color 0.15s ease;
+    }
+    .gh-toggle-item:hover {
+      border-color: var(--color-border-default);
     }
 
-    .toggle-info {
-      display: flex;
-      flex-direction: column;
-    }
-
-    .toggle-title {
-      font-size: 0.9rem;
-      font-weight: 600;
-    }
-
-    .toggle-desc {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-    }
-
-    .switch {
+    .gh-switch {
       position: relative;
-      display: inline-block;
-      width: 44px;
-      height: 24px;
+      width: 36px;
+      height: 20px;
       flex-shrink: 0;
     }
-
-    .switch input {
-      opacity: 0;
-      width: 0;
-      height: 0;
-    }
-
-    .slider {
+    .gh-switch input { opacity: 0; width: 0; height: 0; }
+    .gh-slider {
       position: absolute;
       cursor: pointer;
       top: 0; left: 0; right: 0; bottom: 0;
-      background-color: var(--input-border);
-      transition: 0.2s;
-      border-radius: 24px;
+      background-color: var(--color-btn-border);
+      transition: .2s;
+      border-radius: 20px;
     }
-
-    .slider:before {
+    .gh-slider:before {
       position: absolute;
       content: "";
-      height: 18px;
-      width: 18px;
+      height: 14px;
+      width: 14px;
       left: 3px;
       bottom: 3px;
-      background-color: white;
-      transition: 0.2s;
+      background-color: #fff;
+      transition: .2s;
       border-radius: 50%;
     }
+    .gh-switch input:checked + .gh-slider { background-color: var(--color-success-emphasis); }
+    .gh-switch input:checked + .gh-slider:before { transform: translateX(16px); }
 
-    input:checked + .slider {
-      background-color: var(--primary);
-    }
-
-    input:checked + .slider:before {
-      transform: translateX(20px);
-    }
-
-    .alert {
-      padding: 12px 16px;
+    /* GitHub Alerts */
+    .gh-alert {
+      padding: 10px 14px;
       border-radius: 6px;
-      font-size: 0.85rem;
-      margin-bottom: 16px;
+      font-size: 13px;
       display: flex;
       align-items: flex-start;
       gap: 10px;
+      margin-bottom: 16px;
+      border: 1px solid;
     }
-    .alert-danger {
-      background: var(--danger-bg);
-      border: 1px solid var(--danger);
-      color: #ff7675;
+    .gh-alert-warn {
+      background: var(--color-attention-subtle);
+      border-color: rgba(210,153,34,0.4);
+      color: #e3b341;
     }
-    .alert-warning {
-      background: var(--warning-bg);
-      border: 1px solid var(--warning);
-      color: #fdcb6e;
+    .gh-alert-danger {
+      background: var(--color-danger-subtle);
+      border-color: rgba(248,81,73,0.4);
+      color: #ff7b72;
     }
-    .alert-info {
-      background: var(--primary-dim);
-      border: 1px solid var(--primary);
-      color: #55efc4;
-    }
-
-    /* Tabs & Code Preview */
-    .tab-header {
-      display: flex;
-      gap: 8px;
-      border-bottom: 1px solid var(--card-border);
-      padding-bottom: 10px;
-      margin-bottom: 14px;
+    .gh-alert-info {
+      background: rgba(56,139,253,0.15);
+      border-color: rgba(56,139,253,0.4);
+      color: #58a6ff;
     }
 
-    .tab-btn {
-      background: transparent;
-      border: none;
-      color: var(--text-muted);
-      padding: 6px 14px;
-      border-radius: 6px;
-      font-size: 0.85rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-
-    .tab-btn:hover {
-      color: var(--text);
-      background: var(--input-bg);
-    }
-
-    .tab-btn.active {
-      color: var(--primary);
-      background: var(--primary-dim);
-    }
-
-    pre {
-      background: var(--code-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 8px;
-      padding: 14px;
-      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
-      font-size: 0.82rem;
-      color: #d1d8e0;
-      overflow-x: auto;
-      max-height: 480px;
-      white-space: pre;
-    }
-
-    .action-bar {
-      display: flex;
-      gap: 12px;
-      margin-top: 20px;
-      flex-wrap: wrap;
-    }
-
+    /* Buttons */
     .btn {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      padding: 10px 20px;
+      gap: 6px;
+      padding: 6px 14px;
       border-radius: 6px;
-      font-size: 0.9rem;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid var(--color-btn-border);
+      background: var(--color-btn-bg);
+      color: var(--color-fg-default);
+      transition: all 0.15s ease;
+      line-height: 20px;
+    }
+    .btn:hover {
+      background: var(--color-btn-hover-bg);
+      border-color: var(--color-fg-muted);
+    }
+    .btn-primary {
+      background: var(--color-btn-primary-bg);
+      border-color: rgba(240,246,252,0.1);
+      color: #ffffff;
+      font-weight: 600;
+    }
+    .btn-primary:hover {
+      background: var(--color-btn-primary-hover-bg);
+    }
+    .btn-sm {
+      padding: 3px 8px;
+      font-size: 12px;
+    }
+
+    /* Code Editor Pane */
+    .file-box {
+      border: 1px solid var(--color-border-default);
+      border-radius: 6px;
+      background: var(--color-canvas-subtle);
+      position: sticky;
+      top: 16px;
+    }
+
+    .file-header {
+      padding: 8px 12px;
+      background: rgba(110,118,129,0.06);
+      border-bottom: 1px solid var(--color-border-default);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-top-left-radius: 6px;
+      border-top-right-radius: 6px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .file-tabs {
+      display: flex;
+      gap: 4px;
+    }
+    .file-tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--color-fg-muted);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
       font-weight: 600;
       cursor: pointer;
+      font-family: var(--font-mono);
+    }
+    .file-tab-btn.active {
+      color: var(--color-fg-default);
+      background: var(--color-border-muted);
+    }
+
+    .code-editor-area {
+      width: 100%;
+      height: 480px;
+      background: #090d13;
       border: none;
-      transition: background 0.2s, transform 0.1s;
+      color: #c9d1d9;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      line-height: 1.5;
+      padding: 14px;
+      outline: none;
+      resize: vertical;
+      white-space: pre;
+      tab-size: 2;
     }
 
-    .btn:active {
-      transform: scale(0.98);
+    .file-footer {
+      padding: 10px 14px;
+      border-top: 1px solid var(--color-border-default);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
     }
 
-    .btn-primary {
-      background: var(--primary);
-      color: #0c1810;
+    /* Modal Backdrop */
+    .gh-modal-backdrop {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
     }
-
-    .btn-primary:hover {
-      background: var(--primary-hover);
+    .gh-modal {
+      background: var(--color-canvas-subtle);
+      border: 1px solid var(--color-border-default);
+      border-radius: 8px;
+      width: 100%;
+      max-width: 620px;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: 0 12px 36px rgba(0,0,0,0.6);
     }
-
-    .btn-secondary {
-      background: var(--input-bg);
-      border: 1px solid var(--card-border);
-      color: var(--text);
+    .gh-modal-header {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--color-border-default);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 600;
+      font-size: 15px;
     }
+    .gh-modal-body { padding: 18px; }
 
-    .btn-secondary:hover {
-      background: #283747;
+    /* Tooltip styling */
+    .tip {
+      color: var(--color-fg-subtle);
+      cursor: help;
+      display: inline-flex;
+      align-items: center;
+      font-size: 12px;
     }
+    .tip:hover { color: var(--color-accent-fg); }
 
-    .conflict-tag {
-      color: var(--danger);
-      font-size: 0.75rem;
-      font-weight: bold;
-    }
-
-    .cheatsheet {
-      margin-top: 10px;
-      font-size: 0.8rem;
-      background: var(--input-bg);
-      padding: 10px;
-      border-radius: 6px;
-      border: 1px dashed var(--input-border);
+    /* Pin Chip */
+    .pin-chip {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: rgba(110,118,129,0.15);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--color-fg-muted);
     }
   </style>
 </head>
 <body>
 
-<div class="container">
-  <header>
-    <div class="title-group">
-      <h1>⚡ Meshtastic FW & Variant Configurator</h1>
-      <p>Configure custom pinouts, transceivers, displays, touch, and MUI extras, or export clean official variants.</p>
+<!-- GitHub Navigation Bar -->
+<div class="gh-header">
+  <div class="gh-header-top">
+    <div class="repo-title">
+      <svg height="20" aria-hidden="true" viewBox="0 0 16 16" version="1.1" width="20" fill="currentColor"><path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.45-1.087a.249.249 0 0 0-.3 0L5.4 15.7a.25.25 0 0 1-.4-.2Z"></path></svg>
+      <a href="https://github.com/richardvsw" target="_blank">richardvsw</a>
+      <span class="slash">/</span>
+      <a href="https://github.com/richardvsw/firmware" target="_blank">firmware</a>
+      <span class="gh-badge">Public</span>
     </div>
-    <div class="badge-group">
-      <span class="badge badge-primary">Firmware 2.8+ Ready</span>
-      <span class="badge badge-info">Pure Client-side ZIP</span>
-    </div>
-  </header>
 
-  <!-- Realtime Conflict Alert Box -->
-  <div id="conflictAlert" class="alert alert-danger" style="display: none;">
-    <strong>⚠️ Pin Conflict Detected:</strong>
-    <span id="conflictList"></span>
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <span class="gh-badge" style="background: rgba(63,185,80,0.15); color: var(--color-success-fg); border-color: rgba(63,185,80,0.4);">
+        ● Meshtastic 2.8.2
+      </span>
+      <a href="https://github.com/richardvsw/firmware/tree/develop" target="_blank" class="btn btn-sm">
+        <svg height="14" width="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm-2.25.75a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 8a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0-9a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"></path></svg>
+        develop
+      </a>
+      <a href="https://github.com/richardvsw/firmware/actions" target="_blank" class="btn btn-sm">
+        Actions
+      </a>
+    </div>
   </div>
 
-  <div class="layout-grid">
-    <!-- LEFT COLUMN: Form Controls -->
-    <div class="column">
+  <div class="gh-tabs">
+    <a href="https://github.com/richardvsw/firmware" class="gh-tab">Code</a>
+    <a href="https://github.com/richardvsw/firmware/issues" class="gh-tab">Issues</a>
+    <a href="https://github.com/richardvsw/firmware/pulls" class="gh-tab">Pull requests</a>
+    <a href="https://github.com/richardvsw/firmware/actions" class="gh-tab">Actions</a>
+    <div class="gh-tab active">
+      <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2.5a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"></path></svg>
+      Variant Studio
+    </div>
+  </div>
+</div>
 
-      <!-- 1. Board Type -->
-      <div class="card">
-        <div class="card-title">
-          <span><span class="icon">📟</span> 1. Board Selection</span>
-          <span class="badge badge-primary" id="boardCategoryBadge">Official Board</span>
+<div class="gh-container">
+  <!-- Subhead -->
+  <div class="subhead">
+    <div>
+      <div class="subhead-heading">
+        <span>⚡ Meshtastic Variant Studio</span>
+      </div>
+      <div class="subhead-description">
+        Pick an existing official or DIY board, customize display, touch, LoRa transceiver, and MUI extras, then export the variant or compile online.
+      </div>
+    </div>
+    <div>
+      <button class="btn btn-primary" onclick="downloadVariantZip()">
+        <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2.75 14A1.75 1.75 0 0 1 1 12.25v-2.5a.75.75 0 0 1 1.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 1.5 0v2.5A1.75 1.75 0 0 1 13.25 14Z"></path><path d="M7.25 7.689V2a.75.75 0 0 1 1.5 0v5.689l1.97-1.969a.749.749 0 1 1 1.06 1.06l-3.25 3.25a.749.749 0 0 1-1.06 0L4.22 6.78a.749.749 0 1 1 1.06-1.06l1.97 1.969Z"></path></svg>
+        Download Variant ZIP
+      </button>
+      <button class="btn" onclick="openCompileModal()" style="border-color: var(--color-success-fg); color: var(--color-success-fg);">
+        <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor"><path d="M9.504.43a1.5 1.5 0 0 1 1.264.508l4.296 4.912a1.5 1.5 0 0 1 0 1.98l-4.296 4.912a1.5 1.5 0 0 1-1.264.508H5.75a1.5 1.5 0 0 1-1.06-.44l-4.25-4.25a1.5 1.5 0 0 1 0-2.12l4.25-4.25a1.5 1.5 0 0 1 1.06-.44h3.754Z"></path></svg>
+        Compile Online (.bin)
+      </button>
+    </div>
+  </div>
+
+  <!-- Smart Hardware Flash / RAM Meter -->
+  <div class="smart-meter-card">
+    <div class="meter-header">
+      <span>Estimated Flash App Partition Usage (6.0 MB Max)</span>
+      <span id="meterPercentLabel">4.59 MB / 6.00 MB (76%)</span>
+    </div>
+    <div class="meter-bar">
+      <div id="meterBaseSeg" class="meter-seg meter-base" style="width: 32%;"></div>
+      <div id="meterUiSeg" class="meter-seg meter-ui" style="width: 18%;"></div>
+      <div id="meterEmojiSeg" class="meter-seg meter-emoji" style="width: 26%;"></div>
+      <div id="meterFreeSeg" class="meter-seg meter-free" style="width: 24%;"></div>
+    </div>
+    <div class="meter-legend">
+      <div class="legend-item"><span class="legend-dot" style="background: var(--color-accent-emphasis);"></span> Core Meshtastic (~1.9 MB)</div>
+      <div class="legend-item"><span class="legend-dot" style="background: #8957e5;"></span> LVGL MUI + LovyanGFX (~1.1 MB)</div>
+      <div class="legend-item"><span class="legend-dot" style="background: #238636;"></span> Full Color Emoji Pack (~1.6 MB)</div>
+      <div class="legend-item"><span class="legend-dot" style="background: #30363d;"></span> Free Flash Space (~1.4 MB)</div>
+    </div>
+  </div>
+
+  <!-- Realtime Conflict & Hardware Safety Alert -->
+  <div id="hardwareConflictAlert" class="gh-alert gh-alert-danger" style="display: none;">
+    <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor"><path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575Zm1.763.707a.25.25 0 0 0-.44 0L1.698 13.132a.25.25 0 0 0 .22.368h12.164a.25.25 0 0 0 .22-.368Zm.53 3.996v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"></path></svg>
+    <div>
+      <strong>Hardware Pin Conflict Detected:</strong>
+      <div id="conflictListText" style="margin-top: 4px;"></div>
+    </div>
+  </div>
+
+  <div id="strappingWarningAlert" class="gh-alert gh-alert-warn" style="display: none;">
+    <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor"><path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575Zm1.763.707a.25.25 0 0 0-.44 0L1.698 13.132a.25.25 0 0 0 .22.368h12.164a.25.25 0 0 0 .22-.368Zm.53 3.996v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"></path></svg>
+    <div>
+      <strong>Smart Pin Advisory:</strong>
+      <div id="strappingText" style="margin-top: 4px;"></div>
+    </div>
+  </div>
+
+  <div class="grid-layout">
+    <!-- LEFT: Controls & Form -->
+    <div>
+      <!-- 1. Base Variant Selection -->
+      <div class="Box">
+        <div class="Box-header">
+          <span>1. Base Existing Variant</span>
+          <span class="gh-badge" id="boardCategoryBadge">Official Board</span>
         </div>
-
-        <div class="form-grid">
-          <div class="form-group full-width">
-            <label>
-              Custom Variant Name
-              <span class="helper-icon" data-tooltip="Give your custom variant a unique name. This becomes the folder and environment name.">?</span>
+        <div class="Box-body">
+          <div class="form-group">
+            <label class="form-label">
+              Choose Existing Base Board
+              <span class="tip" title="Start with a real, tested board configuration.">ⓘ</span>
             </label>
-            <input type="text" id="customVariantName" value="my_custom_variant" placeholder="e.g. my_tracker_s3" oninput="updateAll()">
-          </div>
-
-          <div class="form-group full-width">
-            <label>
-              Base Board Template
-              <span class="helper-icon" data-tooltip="Pick an official commercial Meshtastic board or a DIY ESP32 board as a starting point.">?</span>
-            </label>
-            <select id="boardSelect" onchange="onBoardChange()">
+            <select id="boardSelect" class="form-control" onchange="onBoardChange()">
               <optgroup label="Seeed Studio">
                 <option value="seeed_xiao_s3" selected>Seeed Studio XIAO ESP32-S3 (Wio-SX1262)</option>
                 <option value="seeed_sensecap_indicator">Seeed SenseCAP Indicator (4" Touch + SX1262)</option>
@@ -469,41 +648,43 @@
               </optgroup>
             </select>
           </div>
-        </div>
 
-        <!-- Virgin Option for Official Boards -->
-        <div id="virginOptionContainer" style="margin-top: 14px;">
-          <div class="toggle-row">
-            <div class="toggle-info">
-              <span class="toggle-title">Virgin / Clean Stock Variant</span>
-              <span class="toggle-desc">Lock configuration to pristine upstream official board pinout.</span>
+          <div class="form-group">
+            <label class="form-label">
+              Custom Variant Name
+              <span class="form-label-hint">(Used for folder & environment name)</span>
+            </label>
+            <input type="text" id="customVariantName" class="form-control" value="my_seeed_xiao_s3" oninput="updateAll()">
+          </div>
+
+          <!-- Virgin / Clean Stock Switch -->
+          <div class="gh-toggle-item" id="virginContainer">
+            <div>
+              <div style="font-weight: 600; font-size: 13px;">Virgin / Clean Stock Variant</div>
+              <div style="font-size: 12px; color: var(--color-fg-muted);">Lock pinouts to exact factory specifications. Turn OFF to customize display, touch, or radio.</div>
             </div>
-            <label class="switch">
-              <input type="checkbox" id="virginStockToggle" onchange="onVirginToggle()">
-              <span class="slider"></span>
+            <label class="gh-switch">
+              <input type="checkbox" id="virginStockToggle" checked onchange="onVirginToggle()">
+              <span class="gh-slider"></span>
             </label>
           </div>
-        </div>
 
-        <div id="boardHelperBox" class="cheatsheet" style="margin-top: 10px;">
-          <strong>Board Pin Hint:</strong> <span id="boardHintText">Xiao S3 has pins D0-D10 (GPIO 1..44). RFM95 or SX1262 can share the SPI bus (SCK:7, MISO:8, MOSI:9) with the display.</span>
+          <div id="boardHintBox" style="font-size: 12px; color: var(--color-fg-muted); background: var(--color-canvas-default); padding: 8px 12px; border-radius: 6px; border: 1px dashed var(--color-border-default);">
+            <strong>Board Note:</strong> <span id="boardHintText">Official Seeed Xiao S3 stock variant with Wio-SX1262 baseboard. Standard pins D0-D10.</span>
+          </div>
         </div>
       </div>
 
       <!-- 2. LoRa Transceiver -->
-      <div class="card">
-        <div class="card-title">
-          <span><span class="icon">📡</span> 2. LoRa Transceiver</span>
-          <span class="badge badge-info" id="loraBadge">SX1262</span>
+      <div class="Box">
+        <div class="Box-header">
+          <span>2. LoRa Transceiver</span>
+          <span class="gh-badge" id="loraBadge">SX1262</span>
         </div>
-
-        <div class="form-grid">
-          <div class="form-group full-width">
-            <label>
-              LoRa Chip Type
-              <span class="helper-icon" data-tooltip="SX1262/68 require BUSY pin. RFM95/SX1276 uses DIO0 as IRQ.">?</span>
-            </label>
-            <select id="loraType" onchange="onLoraTypeChange()">
+        <div class="Box-body">
+          <div class="form-group">
+            <label class="form-label">LoRa Chipset</label>
+            <select id="loraType" class="form-control" onchange="onLoraTypeChange()">
               <option value="SX1262" selected>Semtech SX1262 (Standard modern low-power, 22dBm)</option>
               <option value="SX1268">Semtech SX1268 (433/470 MHz bands)</option>
               <option value="RFM95">HopeRF RFM95W / SX1276 (Legacy 868/915 MHz, uses DIO0)</option>
@@ -511,272 +692,327 @@
             </select>
           </div>
 
-          <div class="form-group">
-            <label>SCK <span class="helper-icon" data-tooltip="SPI Clock pin for the LoRa radio">?</span></label>
-            <input type="number" id="lora_sck" value="7" oninput="updateAll()">
-          </div>
-          <div class="form-group">
-            <label>MISO <span class="helper-icon" data-tooltip="SPI Master-In Slave-Out pin">?</span></label>
-            <input type="number" id="lora_miso" value="8" oninput="updateAll()">
-          </div>
-          <div class="form-group">
-            <label>MOSI <span class="helper-icon" data-tooltip="SPI Master-Out Slave-In pin">?</span></label>
-            <input type="number" id="lora_mosi" value="9" oninput="updateAll()">
-          </div>
-          <div class="form-group">
-            <label>CS (NSS) <span class="helper-icon" data-tooltip="Chip Select pin for the radio">?</span></label>
-            <input type="number" id="lora_cs" value="41" oninput="updateAll()">
-          </div>
-          <div class="form-group">
-            <label>RESET <span class="helper-icon" data-tooltip="Radio hardware reset pin">?</span></label>
-            <input type="number" id="lora_reset" value="42" oninput="updateAll()">
-          </div>
-          <div class="form-group">
-            <label>DIO1 (IRQ) <span class="helper-icon" data-tooltip="Main interrupt pin for packet receive/transmit">?</span></label>
-            <input type="number" id="lora_dio1" value="39" oninput="updateAll()">
+          <div class="form-grid-3">
+            <div class="form-group">
+              <label class="form-label">SCK</label>
+              <input type="number" id="lora_sck" class="form-control" value="7" oninput="updateAll()">
+            </div>
+            <div class="form-group">
+              <label class="form-label">MISO</label>
+              <input type="number" id="lora_miso" class="form-control" value="8" oninput="updateAll()">
+            </div>
+            <div class="form-group">
+              <label class="form-label">MOSI</label>
+              <input type="number" id="lora_mosi" class="form-control" value="9" oninput="updateAll()">
+            </div>
           </div>
 
-          <!-- SX126x / LR1121 BUSY pin -->
-          <div class="form-group" id="busyPinGroup">
-            <label>BUSY Pin <span class="helper-icon" data-tooltip="Required for SX126x/LR1121! Cannot be left floating.">?</span></label>
-            <input type="number" id="lora_busy" value="40" oninput="updateAll()">
+          <div class="form-grid-3">
+            <div class="form-group">
+              <label class="form-label">CS (NSS)</label>
+              <input type="number" id="lora_cs" class="form-control" value="41" oninput="updateAll()">
+            </div>
+            <div class="form-group">
+              <label class="form-label">RESET</label>
+              <input type="number" id="lora_reset" class="form-control" value="42" oninput="updateAll()">
+            </div>
+            <div class="form-group">
+              <label class="form-label">DIO1 (IRQ)</label>
+              <input type="number" id="lora_dio1" class="form-control" value="39" oninput="updateAll()">
+            </div>
           </div>
 
-          <!-- RFM95 / SX1276 DIO0 pin -->
-          <div class="form-group" id="dio0PinGroup" style="display: none;">
-            <label>DIO0 (IRQ) <span class="helper-icon" data-tooltip="Required for SX1276/RFM95 packet IRQ.">?</span></label>
-            <input type="number" id="lora_dio0" value="39" oninput="updateAll()">
+          <div class="form-grid-2">
+            <div class="form-group" id="busyPinGroup">
+              <label class="form-label">BUSY Pin <span class="tip" title="Required for SX126x/LR1121! Cannot be left floating.">ⓘ</span></label>
+              <input type="number" id="lora_busy" class="form-control" value="40" oninput="updateAll()">
+            </div>
+            <div class="form-group" id="dio0PinGroup" style="display: none;">
+              <label class="form-label">DIO0 (IRQ) <span class="tip" title="Required for SX1276/RFM95 packet IRQ.">ⓘ</span></label>
+              <input type="number" id="lora_dio0" class="form-control" value="39" oninput="updateAll()">
+            </div>
+            <div class="form-group">
+              <label class="form-label">RF Switch Control</label>
+              <select id="lora_rf_switch" class="form-control" onchange="updateAll()">
+                <option value="DIO2" selected>DIO2 as RF Switch (Standard)</option>
+                <option value="PINS">Dedicated RXEN / TXEN Pins</option>
+                <option value="NONE">No Antenna Switch</option>
+              </select>
+            </div>
           </div>
-        </div>
-
-        <div id="loraHelperText" class="cheatsheet">
-          💡 <strong>Tip:</strong> SX1262 requires <code>BUSY</code> (GPIO40 on Wio Baseboard). DIO2 is typically used as the RF antenna switch.
         </div>
       </div>
 
       <!-- 3. Display & Screen -->
-      <div class="card">
-        <div class="card-title">
-          <span><span class="icon">🖥️</span> 3. Display & Orientation</span>
+      <div class="Box">
+        <div class="Box-header">
+          <span>3. Display & LovyanGFX Driver</span>
         </div>
-
-        <div class="form-grid">
-          <div class="form-group">
-            <label>Display Driver</label>
-            <select id="displayType" onchange="onDisplayTypeChange()">
-              <option value="ST7789">ST7789 (240x320 or 240x240)</option>
-              <option value="ST7796">ST7796 (320x480 High-Res)</option>
-              <option value="ST7735">ST7735 (128x160 Small TFT)</option>
-              <option value="ILI9341">ILI9341 (240x320 Classic)</option>
-              <option value="SSD1306">SSD1306 (I2C OLED 128x64)</option>
-              <option value="NONE">Headless / No Display</option>
-            </select>
+        <div class="Box-body">
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label class="form-label">Display Driver</label>
+              <select id="displayType" class="form-control" onchange="onDisplayTypeChange()">
+                <option value="ST7789">ST7789 (240x320 / 240x240 Color TFT)</option>
+                <option value="ST7796">ST7796 (320x480 High-Res Color TFT)</option>
+                <option value="ST7735">ST7735 (128x160 Small Color TFT)</option>
+                <option value="ILI9341">ILI9341 (240x320 Classic Color TFT)</option>
+                <option value="SSD1306">SSD1306 (I2C OLED 128x64)</option>
+                <option value="NONE">Headless / No Display</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Orientation</label>
+              <select id="displayRotation" class="form-control" onchange="updateAll()">
+                <option value="0">Portrait (0°)</option>
+                <option value="1">Landscape (90°)</option>
+                <option value="2">Portrait Inverted (180°)</option>
+                <option value="3">Landscape Inverted (270°)</option>
+              </select>
+            </div>
           </div>
 
-          <div class="form-group">
-            <label>Screen Orientation</label>
-            <select id="displayRotation" onchange="updateAll()">
-              <option value="0">Portrait (0°)</option>
-              <option value="1">Landscape (90°)</option>
-              <option value="2">Portrait Inverted (180°)</option>
-              <option value="3">Landscape Inverted (270°)</option>
-            </select>
-          </div>
-
-          <!-- SPI TFT Pins -->
-          <div id="tftPinsGroup" class="form-grid full-width" style="margin-top: 8px;">
-            <div class="form-group">
-              <label>TFT CS <span class="helper-icon" data-tooltip="Display SPI Chip Select pin">?</span></label>
-              <input type="number" id="tft_cs" value="1" oninput="updateAll()">
+          <div id="tftPinsGroup">
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label class="form-label">TFT CS</label>
+                <input type="number" id="tft_cs" class="form-control" value="1" oninput="updateAll()">
+              </div>
+              <div class="form-group">
+                <label class="form-label">TFT DC</label>
+                <input type="number" id="tft_dc" class="form-control" value="2" oninput="updateAll()">
+              </div>
             </div>
-            <div class="form-group">
-              <label>TFT DC <span class="helper-icon" data-tooltip="Data/Command pin">?</span></label>
-              <input type="number" id="tft_dc" value="2" oninput="updateAll()">
-            </div>
-            <div class="form-group">
-              <label>TFT RST <span class="helper-icon" data-tooltip="Reset pin (set -1 if tied to EN/3V3)">?</span></label>
-              <input type="number" id="tft_rst" value="3" oninput="updateAll()">
-            </div>
-            <div class="form-group">
-              <label>Backlight BL <span class="helper-icon" data-tooltip="Backlight PWM brightness pin (-1 if tied to 3V3)">?</span></label>
-              <input type="number" id="tft_bl" value="4" oninput="updateAll()">
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label class="form-label">TFT RST <span class="tip" title="Set to -1 if tied to EN or 3.3V">ⓘ</span></label>
+                <input type="number" id="tft_rst" class="form-control" value="3" oninput="updateAll()">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Backlight BL (PWM) <span class="tip" title="Set to -1 if tied to 3.3V">ⓘ</span></label>
+                <input type="number" id="tft_bl" class="form-control" value="4" oninput="updateAll()">
+              </div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- 4. Touchscreen & Calibration -->
-      <div class="card" id="touchCard">
-        <div class="card-title">
-          <span><span class="icon">👆</span> 4. Touch Controller</span>
+      <!-- 4. Touchscreen Controller -->
+      <div class="Box" id="touchCard">
+        <div class="Box-header">
+          <span>4. Touchscreen Controller</span>
         </div>
-
-        <div class="form-grid">
-          <div class="form-group">
-            <label>Touch Controller</label>
-            <select id="touchType" onchange="onTouchTypeChange()">
-              <option value="CST816S" selected>CST816S (I2C Capacitive)</option>
-              <option value="FT6336">FT6336U (I2C Capacitive)</option>
-              <option value="GT911">GT911 (I2C Capacitive)</option>
-              <option value="XPT2046">XPT2046 (SPI Resistive)</option>
-              <option value="NONE">No Touchscreen</option>
-            </select>
+        <div class="Box-body">
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label class="form-label">Touch Controller</label>
+              <select id="touchType" class="form-control" onchange="onTouchTypeChange()">
+                <option value="CST816S" selected>CST816S (I2C Capacitive)</option>
+                <option value="FT6336">FT6336U (I2C Capacitive)</option>
+                <option value="GT911">GT911 (I2C Capacitive)</option>
+                <option value="XPT2046">XPT2046 (SPI Resistive)</option>
+                <option value="NONE">No Touchscreen</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Coordinate Alignment</label>
+              <select id="touchMapping" class="form-control" onchange="updateAll()">
+                <option value="DEFAULT">Match Screen Orientation</option>
+                <option value="INVERT_Y">Invert Y-Axis (Most Common)</option>
+                <option value="INVERT_X">Invert X-Axis</option>
+                <option value="SWAP_XY">Swap X / Y</option>
+              </select>
+            </div>
           </div>
 
-          <div class="form-group">
-            <label>Touch Coordinate Mapping</label>
-            <select id="touchMapping" onchange="updateAll()">
-              <option value="DEFAULT">Standard (Match LCD)</option>
-              <option value="SWAP_XY">Swap X/Y</option>
-              <option value="INVERT_X">Invert X</option>
-              <option value="INVERT_Y">Invert Y</option>
-              <option value="SWAP_INVERT_X">Swap X/Y + Invert X</option>
-              <option value="SWAP_INVERT_Y">Swap X/Y + Invert Y</option>
-            </select>
-          </div>
-
-          <div id="touchPinsGroup" class="form-grid full-width" style="margin-top: 8px;">
-            <div class="form-group">
-              <label id="touchPin1Label">Touch SDA / CS</label>
-              <input type="number" id="touch_pin1" value="43" oninput="updateAll()">
-            </div>
-            <div class="form-group">
-              <label id="touchPin2Label">Touch SCL / IRQ</label>
-              <input type="number" id="touch_pin2" value="6" oninput="updateAll()">
-            </div>
-            <div class="form-group">
-              <label>Touch INT (IRQ)</label>
-              <input type="number" id="touch_int" value="5" oninput="updateAll()">
-            </div>
-            <div class="form-group">
-              <label>Touch RST</label>
-              <input type="number" id="touch_rst" value="-1" oninput="updateAll()">
+          <div id="touchPinsGroup">
+            <div class="form-grid-3">
+              <div class="form-group">
+                <label class="form-label" id="touchPin1Label">Touch SDA / CS</label>
+                <input type="number" id="touch_pin1" class="form-control" value="43" oninput="updateAll()">
+              </div>
+              <div class="form-group">
+                <label class="form-label" id="touchPin2Label">Touch SCL / IRQ</label>
+                <input type="number" id="touch_pin2" class="form-control" value="6" oninput="updateAll()">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Touch INT</label>
+                <input type="number" id="touch_int" class="form-control" value="5" oninput="updateAll()">
+              </div>
             </div>
           </div>
         </div>
       </div>
 
       <!-- 5. Peripherals & RiV MUI Extras -->
-      <div class="card">
-        <div class="card-title">
-          <span><span class="icon">✨</span> 5. Peripherals & RiV MUI Extras</span>
+      <div class="Box">
+        <div class="Box-header">
+          <span>5. Peripherals & RiV MUI Feature Pack</span>
         </div>
+        <div class="Box-body">
+          <div class="form-grid-2" style="margin-bottom: 12px;">
+            <div class="form-group">
+              <label class="form-label">Notification Buzzer Pin</label>
+              <input type="number" id="buzzer_pin" class="form-control" value="48" oninput="updateAll()">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Battery Voltage Monitor</label>
+              <select id="batteryMode" class="form-control" onchange="updateAll()">
+                <option value="INA219">I2C INA219/INA226 (Addr 0x40/0x41)</option>
+                <option value="ADC">Analog ADC Voltage Divider</option>
+                <option value="NONE">None / USB Powered Only</option>
+              </select>
+            </div>
+          </div>
 
-        <div class="form-grid" style="margin-bottom: 14px;">
-          <div class="form-group">
-            <label>Buzzer GPIO <span class="helper-icon" data-tooltip="Pin for notification tone buzzer (e.g. GPIO 48 for Xiao S3)">?</span></label>
-            <input type="number" id="buzzer_pin" value="48" oninput="updateAll()">
+          <div class="gh-toggle-item">
+            <div>
+              <div style="font-weight: 600; font-size: 13px;">Full Color Emoji Pack</div>
+              <div style="font-size: 12px; color: var(--color-fg-muted);">650 high-res color emojis in flash + 1300 mono.</div>
+            </div>
+            <label class="gh-switch">
+              <input type="checkbox" id="feat_emoji" checked onchange="updateAll()">
+              <span class="gh-slider"></span>
+            </label>
           </div>
-          <div class="form-group">
-            <label>Battery Monitor Mode</label>
-            <select id="batteryMode" onchange="updateAll()">
-              <option value="INA219">I2C INA219/INA226 (Addr 0x40/0x41)</option>
-              <option value="ADC">Analog ADC Voltage Divider</option>
-              <option value="NONE">None / USB Powered Only</option>
-            </select>
-          </div>
-        </div>
 
-        <div class="toggle-row">
-          <div class="toggle-info">
-            <span class="toggle-title">Full Color Emoji Pack</span>
-            <span class="toggle-desc">650 color emojis in flash + 1300 mono.</span>
+          <div class="gh-toggle-item">
+            <div>
+              <div style="font-weight: 600; font-size: 13px;">Rich Chat Bubbles & Reactions</div>
+              <div style="font-size: 12px; color: var(--color-fg-muted);">Long-press emoji reactions on bubbles, reply quotes.</div>
+            </div>
+            <label class="gh-switch">
+              <input type="checkbox" id="feat_chat" checked onchange="updateAll()">
+              <span class="gh-slider"></span>
+            </label>
           </div>
-          <label class="switch">
-            <input type="checkbox" id="feat_emoji" checked onchange="updateAll()">
-            <span class="slider"></span>
-          </label>
-        </div>
 
-        <div class="toggle-row">
-          <div class="toggle-info">
-            <span class="toggle-title">Rich Chat Bubbles & Reactions</span>
-            <span class="toggle-desc">Emoji reactions on bubbles, quoted reply headers.</span>
+          <div class="gh-toggle-item">
+            <div>
+              <div style="font-weight: 600; font-size: 13px;">Advanced UI & Ringtone Composer</div>
+              <div style="font-size: 12px; color: var(--color-fg-muted);">Quiet hours, welcome melody, live RTTTL composer.</div>
+            </div>
+            <label class="gh-switch">
+              <input type="checkbox" id="feat_advanced" checked onchange="updateAll()">
+              <span class="gh-slider"></span>
+            </label>
           </div>
-          <label class="switch">
-            <input type="checkbox" id="feat_chat" checked onchange="updateAll()">
-            <span class="slider"></span>
-          </label>
-        </div>
 
-        <div class="toggle-row">
-          <div class="toggle-info">
-            <span class="toggle-title">Advanced UI & RTTTL Ringtone Composer</span>
-            <span class="toggle-desc">Quiet hours, custom welcome melody, live tune composer.</span>
+          <div class="gh-toggle-item">
+            <div>
+              <div style="font-weight: 600; font-size: 13px;">Screensaver & Animated Stickman</div>
+              <div style="font-size: 12px; color: var(--color-fg-muted);">Dimmed clock status page with walking stickman.</div>
+            </div>
+            <label class="gh-switch">
+              <input type="checkbox" id="feat_screensaver" checked onchange="updateAll()">
+              <span class="gh-slider"></span>
+            </label>
           </div>
-          <label class="switch">
-            <input type="checkbox" id="feat_advanced" checked onchange="updateAll()">
-            <span class="slider"></span>
-          </label>
-        </div>
 
-        <div class="toggle-row">
-          <div class="toggle-info">
-            <span class="toggle-title">Clock Screensaver & Stickman</span>
-            <span class="toggle-desc">Dimmed screen with clock, node status, and stickman animation.</span>
+          <div class="gh-toggle-item">
+            <div>
+              <div style="font-weight: 600; font-size: 13px;">MeshBot Chat Theme</div>
+              <div style="font-size: 12px; color: var(--color-fg-muted);">Clean white bubble theme with solid high-contrast borders.</div>
+            </div>
+            <label class="gh-switch">
+              <input type="checkbox" id="feat_meshbot" onchange="updateAll()">
+              <span class="gh-slider"></span>
+            </label>
           </div>
-          <label class="switch">
-            <input type="checkbox" id="feat_screensaver" checked onchange="updateAll()">
-            <span class="slider"></span>
-          </label>
-        </div>
-
-        <div class="toggle-row">
-          <div class="toggle-info">
-            <span class="toggle-title">MeshBot Custom Theme</span>
-            <span class="toggle-desc">Clean white bubble layout with solid contrast.</span>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="feat_meshbot" onchange="updateAll()">
-            <span class="slider"></span>
-          </label>
         </div>
       </div>
-
     </div>
 
-    <!-- RIGHT COLUMN: Realtime Code Preview & Export -->
-    <div class="column">
-      <div class="card" style="position: sticky; top: 20px;">
-        <div class="card-title">
-          <span><span class="icon">📄</span> Generated Variant Files</span>
-          <span class="badge badge-primary" id="previewFilename">variant.h</span>
+    <!-- RIGHT: Code Editor & Export -->
+    <div>
+      <div class="file-box">
+        <div class="file-header">
+          <div class="file-tabs">
+            <button class="file-tab-btn active" onclick="switchTab('variant.h')">variant.h</button>
+            <button class="file-tab-btn" onclick="switchTab('platformio_env.ini')">platformio_env.ini</button>
+            <button class="file-tab-btn" onclick="switchTab('README.md')">README.md</button>
+          </div>
+          <div style="display: flex; gap: 6px;">
+            <button class="btn btn-sm" onclick="resetCurrentTabCode()" title="Reset any custom edits back to generated values">
+              ↺ Reset
+            </button>
+            <button class="btn btn-sm" onclick="copyActiveCode()" title="Copy active file content">
+              <svg height="14" width="14" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path></svg>
+              Copy
+            </button>
+          </div>
         </div>
 
-        <div class="tab-header">
-          <button class="tab-btn active" onclick="switchTab('variant.h')">variant.h</button>
-          <button class="tab-btn" onclick="switchTab('platformio_env.ini')">platformio_env.ini</button>
-          <button class="tab-btn" onclick="switchTab('README.md')">README.md</button>
-        </div>
+        <textarea id="codeEditor" class="code-editor-area" spellcheck="false" oninput="onEditorInput()"></textarea>
 
-        <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 0.8rem; color: var(--text-muted);">
-            ✏️ <strong>Live Code Editor</strong> (Directly edit below or tweak controls on the left)
-          </span>
-          <button class="btn btn-secondary" onclick="resetCurrentTabCode()" style="padding: 4px 10px; font-size: 0.75rem;">
-            ↺ Reset from Form
-          </button>
-        </div>
-        <textarea id="codeEditor" spellcheck="false" oninput="onEditorInput()" style="width: 100%; height: 480px; background: var(--code-bg); border: 1px solid var(--card-border); border-radius: 8px; color: #d1d8e0; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace; font-size: 0.84rem; padding: 14px; line-height: 1.5; resize: vertical; outline: none; white-space: pre; tab-size: 2; box-sizing: border-box;"></textarea>
-
-        <div class="action-bar">
-          <button class="btn btn-primary" onclick="downloadVariantZip()">
-            <span>📦</span> Download Variant ZIP
-          </button>
-          <button class="btn btn-secondary" onclick="openCompileModal()" style="border-color: var(--primary); color: var(--primary);">
-            <span>⚡</span> Compile Online (.bin)
-          </button>
-          <button class="btn btn-secondary" onclick="copyActiveCode()">
-            <span>📋</span> Copy to Clipboard
-          </button>
+        <div class="file-footer">
+          <div style="font-size: 12px; color: var(--color-fg-muted);">
+            <span id="fileLineCount">0 lines</span> &bull; <span id="fileByteCount">0 bytes</span> &bull; Live editable
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-primary btn-sm" onclick="downloadVariantZip()">
+              📦 Download ZIP
+            </button>
+            <button class="btn btn-sm" onclick="openCompileModal()" style="color: var(--color-success-fg); border-color: var(--color-success-fg);">
+              ⚡ Compile (.bin)
+            </button>
+          </div>
         </div>
       </div>
     </div>
   </div>
 </div>
 
+<!-- Compile Online Modal -->
+<div id="compileModal" class="gh-modal-backdrop">
+  <div class="gh-modal">
+    <div class="gh-modal-header">
+      <span>⚡ Compile Variant Online</span>
+      <button onclick="closeCompileModal()" style="background: none; border: none; color: var(--color-fg-muted); font-size: 20px; cursor: pointer;">&times;</button>
+    </div>
+    <div class="gh-modal-body">
+      <p style="font-size: 13px; color: var(--color-fg-muted); margin-bottom: 14px;">
+        Compile your custom variant <strong id="modalVariantTitle" style="color: var(--color-fg-default);"></strong> in the cloud on GitHub Actions runners and download ready-to-flash <code>.bin</code> files.
+      </p>
+
+      <div class="Box" style="margin-bottom: 14px;">
+        <div class="Box-header" style="font-size: 13px;">Option 1: 1-Click Free Cloud Build (via GitHub Issue)</div>
+        <div class="Box-body">
+          <p style="font-size: 12px; color: var(--color-fg-muted); margin-bottom: 12px;">
+            No token or configuration needed. Opens an issue in your repository. GitHub Actions automatically starts compiling, attaches the <code>.factory.bin</code>, comments with the download link, and closes the issue.
+          </p>
+          <button class="btn btn-primary" onclick="triggerIssueCompile()" style="width: 100%; justify-content: center;">
+            🚀 Open GitHub Build Issue (Auto-Builds .bin)
+          </button>
+        </div>
+      </div>
+
+      <div class="Box" style="margin-bottom: 14px;">
+        <div class="Box-header" style="font-size: 13px;">Option 2: Direct API Build (with GitHub Token)</div>
+        <div class="Box-body">
+          <p style="font-size: 12px; color: var(--color-fg-muted); margin-bottom: 8px;">
+            Enter a personal access token (<code>workflow</code> scope) to trigger the build directly from this page:
+          </p>
+          <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+            <input type="password" id="ghTokenInput" class="form-control" placeholder="github_pat_..." style="flex: 1;">
+            <button class="btn" onclick="triggerWorkflowDispatch()">Dispatch Build</button>
+          </div>
+          <div id="dispatchStatus" style="font-size: 12px; display: none;"></div>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
+        <a href="https://github.com/richardvsw/firmware/actions" target="_blank" style="color: var(--color-accent-fg); text-decoration: none;">
+          View Live Action Runs &rarr;
+        </a>
+        <button class="btn" onclick="closeCompileModal()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
-// Official board presets database
+// Comprehensive database of real existing variants
 const BOARD_PRESETS = {
   // --- Seeed Studio ---
   seeed_xiao_s3: {
@@ -944,28 +1180,25 @@ const BOARD_PRESETS = {
 };
 
 let currentTab = 'variant.h';
+const userEditedCode = {
+  'variant.h': null,
+  'platformio_env.ini': null,
+  'README.md': null
+};
 
 function onBoardChange() {
   const key = document.getElementById('boardSelect').value;
   const p = BOARD_PRESETS[key];
   if (!p) return;
 
+  const isOfficial = p.category === 'official';
+  const badge = document.getElementById('boardCategoryBadge');
+  badge.textContent = isOfficial ? "Official Board" : "Proven DIY";
+  badge.className = isOfficial ? "gh-badge" : "gh-badge";
+
   const nameInput = document.getElementById('customVariantName');
   if (nameInput) {
-    nameInput.value = (p.category === 'official' ? 'my_' : '') + key.replace(/-/g, '_');
-  }
-  const key = document.getElementById('boardSelect').value;
-  const p = BOARD_PRESETS[key];
-  if (!p) return;
-
-  const isOfficial = p.category === 'official';
-  document.getElementById('boardCategoryBadge').textContent = isOfficial ? "Official Board" : "DIY Target";
-  document.getElementById('boardCategoryBadge').className = isOfficial ? "badge badge-primary" : "badge badge-warn";
-  document.getElementById('virginOptionContainer').style.display = isOfficial ? "block" : "none";
-
-  // Check virgin toggle by default for official boards
-  if (isOfficial) {
-    document.getElementById('virginStockToggle').checked = true;
+    nameInput.value = (isOfficial ? 'my_' : '') + key.replace(/-/g, '_');
   }
 
   loadPreset(p);
@@ -995,7 +1228,6 @@ function loadPreset(p) {
   document.getElementById('touch_pin1').value = p.touch.pin1;
   document.getElementById('touch_pin2').value = p.touch.pin2;
   document.getElementById('touch_int').value = p.touch.int;
-  document.getElementById('touch_rst').value = p.touch.rst;
 
   document.getElementById('buzzer_pin').value = p.buzzer;
   document.getElementById('boardHintText').textContent = p.hint;
@@ -1009,7 +1241,7 @@ function onVirginToggle() {
   const isOfficial = document.getElementById('boardCategoryBadge').textContent.includes("Official");
   const isVirgin = isOfficial && document.getElementById('virginStockToggle').checked;
 
-  const inputs = document.querySelectorAll('#lora_sck, #lora_miso, #lora_mosi, #lora_cs, #lora_reset, #lora_dio1, #lora_busy, #lora_dio0, #tft_cs, #tft_dc, #tft_rst, #tft_bl, #touch_pin1, #touch_pin2, #touch_int, #touch_rst, #loraType, #displayType, #touchType');
+  const inputs = document.querySelectorAll('#lora_sck, #lora_miso, #lora_mosi, #lora_cs, #lora_reset, #lora_dio1, #lora_busy, #lora_dio0, #tft_cs, #tft_dc, #tft_rst, #tft_bl, #touch_pin1, #touch_pin2, #touch_int, #loraType, #displayType, #touchType');
   inputs.forEach(el => {
     el.disabled = isVirgin;
   });
@@ -1028,20 +1260,13 @@ function onLoraTypeChange() {
   const isSx126x = (lora === 'SX1262' || lora === 'SX1268' || lora === 'LR1121');
   document.getElementById('busyPinGroup').style.display = isSx126x ? 'flex' : 'none';
   document.getElementById('dio0PinGroup').style.display = isSx126x ? 'none' : 'flex';
-
-  const helper = document.getElementById('loraHelperText');
-  if (isSx126x) {
-    helper.innerHTML = `💡 <strong>${lora}:</strong> Requires <code>BUSY</code> pin. Typically uses DIO2 for RF antenna switch and DIO3 for TCXO power (1.8V).`;
-  } else {
-    helper.innerHTML = `💡 <strong>${lora} (RFM95):</strong> Legacy Semtech SX1276 core. Requires <code>DIO0</code> pin as packet RX/TX done interrupt.`;
-  }
   updateAll();
 }
 
 function onDisplayTypeChange() {
   const dt = document.getElementById('displayType').value;
   const isSpiTft = ['ST7789', 'ST7796', 'ST7735', 'ILI9341'].includes(dt);
-  document.getElementById('tftPinsGroup').style.display = isSpiTft ? 'grid' : 'none';
+  document.getElementById('tftPinsGroup').style.display = isSpiTft ? 'block' : 'none';
   document.getElementById('touchCard').style.display = (dt === 'NONE') ? 'none' : 'block';
   updateAll();
 }
@@ -1049,7 +1274,7 @@ function onDisplayTypeChange() {
 function onTouchTypeChange() {
   const tt = document.getElementById('touchType').value;
   const hasTouch = (tt !== 'NONE');
-  document.getElementById('touchPinsGroup').style.display = hasTouch ? 'grid' : 'none';
+  document.getElementById('touchPinsGroup').style.display = hasTouch ? 'block' : 'none';
 
   if (tt === 'XPT2046') {
     document.getElementById('touchPin1Label').textContent = "Touch CS (SPI)";
@@ -1061,8 +1286,8 @@ function onTouchTypeChange() {
   updateAll();
 }
 
-// Conflict Detection
-function checkConflicts() {
+// Smart Strapping Pin & Conflict Verification
+function runSmartSafetyChecks() {
   const pinFields = [
     { name: 'LoRa CS', val: parseInt(document.getElementById('lora_cs').value) },
     { name: 'LoRa RST', val: parseInt(document.getElementById('lora_reset').value) },
@@ -1099,6 +1324,7 @@ function checkConflicts() {
   const buz = parseInt(document.getElementById('buzzer_pin').value);
   if (buz >= 0) pinFields.push({ name: 'Buzzer', val: buz });
 
+  // 1. Direct Duplicate Clash Check
   const seen = {};
   const conflicts = [];
   pinFields.forEach(item => {
@@ -1110,29 +1336,82 @@ function checkConflicts() {
 
   for (const gpio in seen) {
     if (seen[gpio].length > 1) {
-      conflicts.push(`GPIO ${gpio} is assigned to [${seen[gpio].join(' & ')}]`);
+      conflicts.push(`GPIO ${gpio} assigned to [${seen[gpio].join(' & ')}]`);
     }
   }
 
-  const alertBox = document.getElementById('conflictAlert');
+  const clashAlert = document.getElementById('hardwareConflictAlert');
   if (conflicts.length > 0) {
-    alertBox.style.display = 'block';
-    document.getElementById('conflictList').textContent = ' ' + conflicts.join(', ');
+    clashAlert.style.display = 'flex';
+    document.getElementById('conflictListText').textContent = conflicts.join(' • ');
   } else {
-    alertBox.style.display = 'none';
+    clashAlert.style.display = 'none';
   }
+
+  // 2. Strapping Pin Advisory (ESP32-S3 GPIO 0, 45, 46, 19, 20)
+  const strappings = [
+    { pin: 0, msg: "GPIO 0 is the ESP32 Boot Mode strapping pin (pulled HIGH normally)." },
+    { pin: 45, msg: "GPIO 45 is a strapping pin on ESP32-S3 (VDD_SPI voltage)." },
+    { pin: 46, msg: "GPIO 46 is a strapping pin (ROM boot log)." },
+    { pin: 19, msg: "GPIO 19 is native USB D-." },
+    { pin: 20, msg: "GPIO 20 is native USB D+." }
+  ];
+
+  const strappWarnings = [];
+  pinFields.forEach(f => {
+    const s = strappings.find(st => st.pin === f.val);
+    if (s && !strappWarnings.includes(s.msg)) {
+      strappWarnings.push(`${f.name} (GPIO ${f.val}): ${s.msg}`);
+    }
+  });
+
+  const strapAlert = document.getElementById('strappingWarningAlert');
+  if (strappWarnings.length > 0) {
+    strapAlert.style.display = 'flex';
+    document.getElementById('strappingText').textContent = strappWarnings.join(' • ');
+  } else {
+    strapAlert.style.display = 'none';
+  }
+
+  // 3. Smart Flash & Memory Meter Calculation
+  let baseFlash = 1.9;
+  let uiFlash = 0.0;
+  let emojiFlash = 0.0;
+
+  if (dt !== 'NONE') uiFlash += 0.8;
+  if (document.getElementById('feat_chat').checked) uiFlash += 0.2;
+  if (document.getElementById('feat_advanced').checked) uiFlash += 0.2;
+  if (document.getElementById('feat_screensaver').checked) uiFlash += 0.2;
+
+  if (document.getElementById('feat_emoji').checked) {
+    emojiFlash = 1.6;
+  }
+
+  const total = baseFlash + uiFlash + emojiFlash;
+  const pct = Math.min(100, Math.round((total / 6.0) * 100));
+
+  document.getElementById('meterBaseSeg').style.width = ((baseFlash / 6.0) * 100) + '%';
+  document.getElementById('meterUiSeg').style.width = ((uiFlash / 6.0) * 100) + '%';
+  document.getElementById('meterEmojiSeg').style.width = ((emojiFlash / 6.0) * 100) + '%';
+  document.getElementById('meterPercentLabel').textContent = `${total.toFixed(2)} MB / 6.00 MB (${pct}%)`;
 }
 
-// Code Generators
+function getCustomVariantName() {
+  const el = document.getElementById('customVariantName');
+  let name = el ? el.value.trim() : '';
+  if (!name) name = 'my_custom_variant';
+  return name.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
 function generateVariantH() {
   const bKey = document.getElementById('boardSelect').value;
-  const p = BOARD_PRESETS[bKey];
+  const p = BOARD_PRESETS[bKey] || BOARD_PRESETS.seeed_xiao_s3;
   const isVirgin = p.category === 'official' && document.getElementById('virginStockToggle').checked;
 
   if (isVirgin) {
     return `// =========================================================================
 // Meshtastic Official Stock Variant: ${p.name}
-// Generated via Meshtastic RiV Web Configurator
+// Generated via Meshtastic Variant Studio (develop 2.8.2)
 // (Virgin stock hardware definitions)
 // =========================================================================
 
@@ -1158,7 +1437,7 @@ ${p.display.type === 'ST7735' ? '#define USE_ST7735\n#define TFT_CS         ' + 
 `;
   }
 
-  // Custom DIY Generator
+  // Custom Modified Variant
   const lora = document.getElementById('loraType').value;
   const sck = document.getElementById('lora_sck').value;
   const miso = document.getElementById('lora_miso').value;
@@ -1187,8 +1466,8 @@ ${p.display.type === 'ST7735' ? '#define USE_ST7735\n#define TFT_CS         ' + 
 
   let code = `// =========================================================================
 // Custom Meshtastic Variant Configuration
-// Target Board: ${p.name}
-// Generated via Meshtastic RiV Web Configurator
+// Target Base: ${p.name}
+// Generated via Meshtastic Variant Studio (develop 2.8.2)
 // =========================================================================
 
 #pragma once
@@ -1253,8 +1532,6 @@ ${p.display.type === 'ST7735' ? '#define USE_ST7735\n#define TFT_CS         ' + 
     if (tMap === 'SWAP_XY') code += `#define TOUCH_SWAP_XY\n`;
     else if (tMap === 'INVERT_X') code += `#define TOUCH_INVERT_X\n`;
     else if (tMap === 'INVERT_Y') code += `#define TOUCH_INVERT_Y\n`;
-    else if (tMap === 'SWAP_INVERT_X') code += `#define TOUCH_SWAP_XY\n#define TOUCH_INVERT_X\n`;
-    else if (tMap === 'SWAP_INVERT_Y') code += `#define TOUCH_SWAP_XY\n#define TOUCH_INVERT_Y\n`;
   }
 
   if (buz >= 0) {
@@ -1267,7 +1544,7 @@ ${p.display.type === 'ST7735' ? '#define USE_ST7735\n#define TFT_CS         ' + 
   if (bat === 'INA219') {
     code += `\n// ─── Battery Monitoring (I2C INA219/INA226) ─────────────────────────
 #define HAS_INA219
-#define BATTERY_PIN     10 // Virtual pin to enable battery path
+#define BATTERY_PIN     10 // Virtual pin to activate power path
 `;
   } else if (bat === 'ADC') {
     code += `\n// ─── Battery Monitoring (Analog ADC) ──────────────────────────────────
@@ -1318,12 +1595,10 @@ function generatePlatformIoEnv() {
     .filter(Boolean)
     .join(" ");
 
-  // Resolution detection
   let w = 240, h = 320;
   if (dt === 'ST7796') { w = 320; h = 480; }
   else if (dt === 'ST7735') { w = 128; h = 160; }
 
-  // Touch rotation helper
   let touchRot = rot;
   const tMap = document.getElementById('touchMapping').value;
   if (tMap === 'INVERT_Y') touchRot = 2;
@@ -1396,7 +1671,6 @@ build_flags =
 `;
   }
 
-  // MUI Extras script and config
   ini += `
 ; RiV MUI Extras Configuration
 custom_riv_mui_features = ${features}
@@ -1414,52 +1688,31 @@ extra_scripts =
 
 function generateReadme() {
   const bKey = document.getElementById('boardSelect').value;
-  const p = BOARD_PRESETS[bKey];
+  const p = BOARD_PRESETS[bKey] || BOARD_PRESETS.seeed_xiao_s3;
   const envName = getCustomVariantName();
 
-  return `# Custom Meshtastic Variant: ${p.name}
+  return `# Custom Meshtastic Variant: ${envName}
 
-Generated via **Meshtastic RiV Web Configurator**.
+Target Base Board: **${p.name}**
+Generated via **Meshtastic Variant Studio** on GitHub Pages.
 
-## Included Files in this ZIP:
-- \`variant.h\`: Hardware definition, pinouts, display, and radio config.
-- \`platformio_env.ini\`: Environment build flags and MUI extras configuration.
+## Included in this Package:
+- \`variant.h\`: C/C++ pin definitions, LoRa radio configuration, display and touch pins.
+- \`platformio_env.ini\`: PlatformIO build flags, LovyanGFX display drivers, and RiV MUI extras options.
 
-## How to Install into your Meshtastic Source:
+## Quick Install into your Meshtastic Firmware:
 1. Extract this folder into your firmware repository under:
    \`variants/esp32s3/diy/${envName}/\`
-2. Open \`platformio.ini\` in the firmware root and append the snippet from \`platformio_env.ini\`.
-3. Build using PlatformIO CLI:
+2. Open \`platformio.ini\` in the repository root and append the \`[env:${envName}]\` block from \`platformio_env.ini\`.
+3. Build with PlatformIO CLI:
    \`\`\`bash
    pio run -e ${envName}
    \`\`\`
-4. Flash to your board:
+4. Flash over USB:
    \`\`\`bash
    pio run -e ${envName} -t upload
    \`\`\`
-
-## Notes & Helpers:
-- Buzzer alert is configured on GPIO \`${document.getElementById('buzzer_pin').value}\`.
-- Full color emojis and quiet hours are enabled.
 `;
-}
-
-const userEditedCode = {
-  'variant.h': null,
-  'platformio_env.ini': null,
-  'README.md': null
-};
-
-function onEditorInput() {
-  const editor = document.getElementById('codeEditor');
-  if (editor) {
-    userEditedCode[currentTab] = editor.value;
-  }
-}
-
-function resetCurrentTabCode() {
-  userEditedCode[currentTab] = null;
-  updateAll();
 }
 
 function getActiveCode(tab) {
@@ -1472,23 +1725,47 @@ function getActiveCode(tab) {
   return '';
 }
 
+function onEditorInput() {
+  const editor = document.getElementById('codeEditor');
+  if (editor) {
+    userEditedCode[currentTab] = editor.value;
+    updateFileStats();
+  }
+}
+
+function resetCurrentTabCode() {
+  userEditedCode[currentTab] = null;
+  updateAll();
+}
+
+function updateFileStats() {
+  const editor = document.getElementById('codeEditor');
+  if (!editor) return;
+  const text = editor.value;
+  const lines = text.split('\\n').length;
+  const bytes = new Blob([text]).size;
+  document.getElementById('fileLineCount').textContent = `${lines} lines`;
+  document.getElementById('fileByteCount').textContent = `${bytes} bytes`;
+}
+
 function updateAll() {
-  checkConflicts();
+  runSmartSafetyChecks();
   const editor = document.getElementById('codeEditor');
   if (editor) {
     editor.value = getActiveCode(currentTab);
+    updateFileStats();
   }
 }
 
 function switchTab(tab) {
   currentTab = tab;
-  document.getElementById('previewFilename').textContent = tab;
-  document.querySelectorAll('.tab-btn').forEach(b => {
+  document.querySelectorAll('.file-tab-btn').forEach(b => {
     b.classList.toggle('active', b.textContent === tab);
   });
   const editor = document.getElementById('codeEditor');
   if (editor) {
     editor.value = getActiveCode(tab);
+    updateFileStats();
   }
 }
 
@@ -1506,9 +1783,7 @@ function downloadVariantZip() {
     return;
   }
 
-  const bKey = document.getElementById('boardSelect').value;
   const envName = getCustomVariantName();
-
   const zip = new JSZip();
   const folder = zip.folder(envName);
 
@@ -1526,15 +1801,6 @@ function downloadVariantZip() {
   });
 }
 
-// Initial initialization
-
-function getCustomVariantName() {
-  const el = document.getElementById('customVariantName');
-  let name = el ? el.value.trim() : '';
-  if (!name) name = 'my_custom_variant';
-  return name.replace(/[^a-zA-Z0-9_-]/g, '_');
-}
-
 function openCompileModal() {
   const name = getCustomVariantName();
   document.getElementById('modalVariantTitle').textContent = name;
@@ -1548,7 +1814,7 @@ function closeCompileModal() {
 function triggerIssueCompile() {
   const varName = getCustomVariantName();
   const bKey = document.getElementById('boardSelect').value;
-  const p = BOARD_PRESETS[bKey] || BOARD_PRESETS.diy_esp32s3_generic;
+  const p = BOARD_PRESETS[bKey] || BOARD_PRESETS.seeed_xiao_s3;
 
   const headerB64 = btoa(unescape(encodeURIComponent(getActiveCode("variant.h"))));
   const envB64 = btoa(unescape(encodeURIComponent(getActiveCode("platformio_env.ini"))));
@@ -1562,9 +1828,9 @@ function triggerIssueCompile() {
 
   const title = encodeURIComponent("[Compile] " + varName);
   const body = encodeURIComponent(
-    "### Automated Firmware Compilation Request\n\n" +
-    "Please compile the custom variant **`" + varName + "`**.\n\n" +
-    "```json\n" + JSON.stringify(payload, null, 2) + "\n```\n"
+    "### Automated Firmware Compilation Request\\n\\n" +
+    "Please compile the custom variant **`" + varName + "`**.\\n\\n" +
+    "```json\\n" + JSON.stringify(payload, null, 2) + "\\n```\\n"
   );
 
   const url = "https://github.com/richardvsw/firmware/issues/new?title=" + title + "&body=" + body + "&labels=compile";
@@ -1577,15 +1843,15 @@ async function triggerWorkflowDispatch() {
   statusEl.style.display = 'block';
 
   if (!token) {
-    statusEl.innerHTML = '<span style="color: var(--danger);">Please enter a GitHub Personal Access Token.</span>';
+    statusEl.innerHTML = '<span style="color: var(--color-danger-fg);">Please enter a GitHub Personal Access Token.</span>';
     return;
   }
 
-  statusEl.innerHTML = '<span style="color: var(--warning);">Sending dispatch request to GitHub Actions...</span>';
+  statusEl.innerHTML = '<span style="color: var(--color-attention-fg);">Sending dispatch request to GitHub Actions...</span>';
 
   const varName = getCustomVariantName();
   const bKey = document.getElementById('boardSelect').value;
-  const p = BOARD_PRESETS[bKey] || BOARD_PRESETS.diy_esp32s3_generic;
+  const p = BOARD_PRESETS[bKey] || BOARD_PRESETS.seeed_xiao_s3;
 
   const headerB64 = btoa(unescape(encodeURIComponent(getActiveCode("variant.h"))));
   const envB64 = btoa(unescape(encodeURIComponent(getActiveCode("platformio_env.ini"))));
@@ -1610,13 +1876,13 @@ async function triggerWorkflowDispatch() {
     });
 
     if (res.status === 204) {
-      statusEl.innerHTML = '<span style="color: var(--primary);">✅ Build triggered successfully! <a href="https://github.com/richardvsw/firmware/actions" target="_blank" style="color: var(--info);">View progress in GitHub Actions &rarr;</a></span>';
+      statusEl.innerHTML = '<span style="color: var(--color-success-fg);">✅ Build triggered successfully! <a href="https://github.com/richardvsw/firmware/actions" target="_blank" style="color: var(--color-accent-fg);">View progress in GitHub Actions &rarr;</a></span>';
     } else {
       const data = await res.json();
-      statusEl.innerHTML = '<span style="color: var(--danger);">Error (' + res.status + '): ' + (data.message || 'Failed to dispatch workflow') + '</span>';
+      statusEl.innerHTML = '<span style="color: var(--color-danger-fg);">Error (' + res.status + '): ' + (data.message || 'Failed to dispatch workflow') + '</span>';
     }
   } catch (err) {
-    statusEl.innerHTML = '<span style="color: var(--danger);">Network error: ' + err.message + '</span>';
+    statusEl.innerHTML = '<span style="color: var(--color-danger-fg);">Network error: ' + err.message + '</span>';
   }
 }
 
@@ -1624,49 +1890,5 @@ window.addEventListener('DOMContentLoaded', () => {
   onBoardChange();
 });
 </script>
-
-
-<!-- Compile Online Modal -->
-<div id="compileModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.75); z-index: 1000; align-items: center; justify-content: center; padding: 20px;">
-  <div class="card" style="max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto;">
-    <div class="card-title">
-      <span><span class="icon">⚡</span> Compile Online via GitHub Actions</span>
-      <button onclick="closeCompileModal()" style="background: none; border: none; color: var(--text-muted); font-size: 1.5rem; cursor: pointer;">&times;</button>
-    </div>
-    <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 16px;">
-      Compile your custom variant <strong id="modalVariantTitle" style="color: var(--primary);"></strong> in the cloud on GitHub Actions runners and download ready-to-flash <code>.bin</code> files!
-    </p>
-
-    <div style="background: var(--input-bg); padding: 14px; border-radius: 8px; border: 1px solid var(--input-border); margin-bottom: 16px;">
-      <h4 style="font-size: 0.95rem; margin-bottom: 6px; color: var(--text);">Option 1: 1-Click Free Cloud Build (via GitHub Issue)</h4>
-      <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px;">
-        No token or login required! Opens a pre-filled issue in your repo. Once submitted, GitHub Actions automatically builds the firmware, attaches the <code>.factory.bin</code>, comments on the issue with the download link, and closes it!
-      </p>
-      <button class="btn btn-primary" onclick="triggerIssueCompile()" style="width: 100%; justify-content: center;">
-        <span>🚀</span> Open GitHub Build Issue (Auto-Builds .bin)
-      </button>
-    </div>
-
-    <div style="background: var(--input-bg); padding: 14px; border-radius: 8px; border: 1px solid var(--input-border); margin-bottom: 16px;">
-      <h4 style="font-size: 0.95rem; margin-bottom: 6px; color: var(--text);">Option 2: Direct API Build (with Personal Access Token)</h4>
-      <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 8px;">
-        Enter a GitHub PAT with <code>workflow</code> or <code>repo</code> scope to trigger the build instantly from this page:
-      </p>
-      <div style="display: flex; gap: 8px; margin-bottom: 8px;">
-        <input type="password" id="ghTokenInput" placeholder="github_pat_..." style="flex: 1;">
-        <button class="btn btn-secondary" onclick="triggerWorkflowDispatch()">Dispatch Build</button>
-      </div>
-      <div id="dispatchStatus" style="font-size: 0.8rem; display: none;"></div>
-    </div>
-
-    <div style="display: flex; justify-content: space-between; align-items: center;">
-      <a href="https://github.com/richardvsw/firmware/actions" target="_blank" style="color: var(--info); font-size: 0.85rem; text-decoration: none;">
-        <span>📋</span> View Live GitHub Action Runs &rarr;
-      </a>
-      <button class="btn btn-secondary" onclick="closeCompileModal()">Close</button>
-    </div>
-  </div>
-</div>
-
 </body>
 </html>
