@@ -1051,6 +1051,7 @@ def main():
              "        [](int ch) {\n"
              "            if (ch < 0 || ch >= c_max_channels) return;\n"
              "            if (THIS->channel_scratch) THIS->db.channel[ch] = THIS->channel_scratch[ch];\n"
+             "            THIS->updateChannelConfig(THIS->db.channel[ch]);\n"
              "            THIS->controller->sendConfig(THIS->db.channel[ch], THIS->ownNode);\n"
              "            for (int b = 0; b < c_max_channels; b++) {\n"
              "                if ((signed long)THIS->ch_label[b]->user_data == ch) {\n"
