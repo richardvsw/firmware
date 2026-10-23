@@ -715,10 +715,78 @@
         </div>
       </div>
 
-      <!-- 2. LoRa Transceiver -->
+            <!-- 2. UI Framework Architecture (Base UI vs MUI vs InkHUD) -->
+      <div class="Box" style="margin-bottom: 20px;">
+        <div class="Box-header">
+          <span>2. UI Framework Architecture</span>
+          <span class="gh-badge" id="uiFrameworkBadge" style="border-color: #8957e5; color: #d2a8ff;">MUI (LVGL)</span>
+        </div>
+        <div class="Box-body">
+          <div class="ui-framework-grid">
+            <!-- Option A: Base UI -->
+            <label class="ui-framework-card" id="card_ui_baseui" onclick="selectUiFramework('baseui')">
+              <input type="radio" name="uiFrameworkRadio" value="baseui" id="radio_ui_baseui">
+              <div class="ui-card-header">
+                <span class="ui-card-title">🟢 Base UI</span>
+                <span class="gh-badge">Stock C++</span>
+              </div>
+              <div class="ui-card-desc">
+                Official Meshtastic native display engine. Ultra-light (~1.9 MB flash), lowest RAM. Perfect for SSD1306/SH1106 OLEDs, simple TFTs, or headless nodes.
+              </div>
+            </label>
+
+            <!-- Option B: MUI -->
+            <label class="ui-framework-card active active-mui" id="card_ui_mui" onclick="selectUiFramework('mui')">
+              <input type="radio" name="uiFrameworkRadio" value="mui" id="radio_ui_mui" checked>
+              <div class="ui-card-header">
+                <span class="ui-card-title">🟣 MUI</span>
+                <span class="gh-badge" style="border-color: #8957e5; color: #d2a8ff;">LVGL 9 + Touch</span>
+              </div>
+              <div class="ui-card-desc">
+                Interactive touchscreen UI with on-screen virtual keyboard, color emoji packs, notification banners, canned messages, and themes.
+              </div>
+            </label>
+
+            <!-- Option C: InkHUD -->
+            <label class="ui-framework-card" id="card_ui_inkhud" onclick="selectUiFramework('inkhud')">
+              <input type="radio" name="uiFrameworkRadio" value="inkhud" id="radio_ui_inkhud">
+              <div class="ui-card-header">
+                <span class="ui-card-title">📄 InkHUD</span>
+                <span class="gh-badge" style="border-color: #238636; color: #3fb950;">E-Paper HUD</span>
+              </div>
+              <div class="ui-card-desc">
+                Multi-tile sunlight-readable E-Ink HUD with partial-refresh ghosting resilience. Optimized for low-power E-Paper paper displays.
+              </div>
+            </label>
+          </div>
+
+          <!-- InkHUD Specific Options (Hidden unless InkHUD is selected) -->
+          <div id="inkhudConfigBox" style="display: none; background: var(--color-canvas-subtle); border: 1px solid var(--color-border-default); border-radius: 6px; padding: 12px; margin-top: 10px;">
+            <div style="font-weight: 600; font-size: 12px; margin-bottom: 8px; color: #3fb950;">📄 InkHUD E-Paper Hardware Settings</div>
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label class="form-label">E-Ink Panel Driver</label>
+                <select id="inkhudDriver" class="form-control" onchange="updateAll()">
+                  <option value="HINK_E0213A289" selected>HINK_E0213A289 (2.13" 250x122 Heltec T114 / B/W E-Paper)</option>
+                  <option value="ZJY200200_0154DAAMFGN">ZJY200200_0154DAAMFGN (1.54" 200x200 Square E-Ink)</option>
+                  <option value="ZJY128296_029EAAMFGN">ZJY128296_029EAAMFGN (2.9" 296x128 E-Ink)</option>
+                  <option value="HINK_E042A87">HINK_E042A87 (4.2" 400x300 Large E-Ink)</option>
+                  <option value="DEPG0213BN">DEPG0213BN (2.13" Waveshare / DKE E-Paper)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Display Resilience (1-20) <span class="tip" title="Higher value resists ghosting on fast redraws. Recommended: 10-15.">ⓘ</span></label>
+                <input type="number" id="inkhudResilience" class="form-control" value="12" min="1" max="30" oninput="updateAll()">
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. LoRa Transceiver -->
       <div class="Box">
         <div class="Box-header">
-          <span>2. LoRa Transceiver</span>
+          <span>3. LoRa Transceiver</span>
           <span class="gh-badge" id="loraBadge">SX1262</span>
         </div>
         <div class="Box-body">
@@ -783,10 +851,10 @@
         </div>
       </div>
 
-      <!-- 3. Display & Screen -->
+      <!-- 4. Display & LovyanGFX Driver -->
       <div class="Box">
         <div class="Box-header">
-          <span>3. Display & LovyanGFX Driver</span>
+          <span>4. Display & Driver Settings</span>
         </div>
         <div class="Box-body">
           <div class="form-grid-2">
@@ -837,10 +905,10 @@
         </div>
       </div>
 
-      <!-- 4. Touchscreen Controller -->
+      <!-- 5. Touchscreen Controller -->
       <div class="Box" id="touchCard">
         <div class="Box-header">
-          <span>4. Touchscreen Controller</span>
+          <span>5. Touchscreen Controller</span>
         </div>
         <div class="Box-body">
           <div class="form-grid-2">
@@ -884,10 +952,10 @@
         </div>
       </div>
 
-      <!-- 5. Peripherals & RiV MUI Extras -->
+      <!-- 6. Peripherals & Feature Pack -->
       <div class="Box">
         <div class="Box-header">
-          <span>5. Peripherals & RiV MUI Feature Pack</span>
+          <span>6. Peripherals & Feature Pack</span>
         </div>
         <div class="Box-body">
           <div class="form-grid-2" style="margin-bottom: 12px;">
@@ -1375,6 +1443,65 @@ const BOARD_PRESETS = {
   }
 };
 
+let currentUiFramework = 'mui';
+
+function selectUiFramework(type, skipUpdate = false) {
+  currentUiFramework = type;
+  const radio = document.getElementById('radio_ui_' + type);
+  if (radio) radio.checked = true;
+
+  // Update card styles
+  ['baseui', 'mui', 'inkhud'].forEach(t => {
+    const card = document.getElementById('card_ui_' + t);
+    if (!card) return;
+    card.classList.remove('active', 'active-mui', 'active-inkhud');
+    if (t === type) {
+      card.classList.add('active');
+      if (t === 'mui') card.classList.add('active-mui');
+      if (t === 'inkhud') card.classList.add('active-inkhud');
+    }
+  });
+
+  // Update badge
+  const badge = document.getElementById('uiFrameworkBadge');
+  if (badge) {
+    if (type === 'baseui') {
+      badge.textContent = 'Base UI (Stock C++)';
+      badge.style.borderColor = '#388bfd';
+      badge.style.color = '#58a6ff';
+    } else if (type === 'mui') {
+      badge.textContent = 'MUI (LVGL 9 + Touch)';
+      badge.style.borderColor = '#8957e5';
+      badge.style.color = '#d2a8ff';
+    } else if (type === 'inkhud') {
+      badge.textContent = 'InkHUD (E-Paper HUD)';
+      badge.style.borderColor = '#238636';
+      badge.style.color = '#3fb950';
+    }
+  }
+
+  // Toggle InkHUD config box
+  const inkBox = document.getElementById('inkhudConfigBox');
+  if (inkBox) {
+    inkBox.style.display = (type === 'inkhud') ? 'block' : 'none';
+  }
+
+  // Toggle touch card (InkHUD does not use capacitive TFT touch)
+  const touchCard = document.getElementById('touchCard');
+  if (touchCard) {
+    if (type === 'inkhud') {
+      touchCard.style.display = 'none';
+    } else {
+      const dt = document.getElementById('displayType').value;
+      touchCard.style.display = (dt === 'NONE') ? 'none' : 'block';
+    }
+  }
+
+  if (!skipUpdate) {
+    updateAll();
+  }
+}
+
 let currentTab = 'variant.h';
 const userEditedCode = {
   'variant.h': null,
@@ -1402,6 +1529,19 @@ function onBoardChange() {
 }
 
 function loadPreset(p) {
+  // Determine UI Framework from preset
+  let targetUi = 'mui';
+  if (p.uiFramework) {
+    targetUi = p.uiFramework;
+  } else if (p.category === 'riv') {
+    targetUi = (p.name.includes('E-Paper') || p.name.includes('eink')) ? 'inkhud' : (p.name.includes('OLED') || p.display.type === 'NONE' || p.display.type === 'SSD1306' ? 'baseui' : 'mui');
+  } else if (p.category === 'official') {
+    targetUi = (p.display.type === 'NONE' || p.display.type === 'SSD1306' || p.display.type === 'ST7735') ? 'baseui' : 'mui';
+  } else {
+    targetUi = 'baseui';
+  }
+  selectUiFramework(targetUi, true);
+
   document.getElementById('loraType').value = p.lora.type;
   document.getElementById('lora_sck').value = p.lora.sck;
   document.getElementById('lora_miso').value = p.lora.miso;
@@ -1574,13 +1714,21 @@ function runSmartSafetyChecks() {
   let uiFlash = 0.0;
   let emojiFlash = 0.0;
 
-  if (dt !== 'NONE') uiFlash += 0.8;
-  if (document.getElementById('feat_chat').checked) uiFlash += 0.2;
-  if (document.getElementById('feat_advanced').checked) uiFlash += 0.2;
-  if (document.getElementById('feat_screensaver').checked) uiFlash += 0.2;
-
-  if (document.getElementById('feat_emoji').checked) {
-    emojiFlash = 1.6;
+  if (currentUiFramework === 'baseui') {
+    uiFlash = (dt !== 'NONE') ? 0.08 : 0.0; // Minimal stock Screen driver
+    emojiFlash = 0.0;
+  } else if (currentUiFramework === 'inkhud') {
+    uiFlash = 0.22; // InkHUD applets + GFX_Root + E-Ink driver
+    emojiFlash = 0.0;
+  } else {
+    // MUI (LVGL 9 + LovyanGFX)
+    if (dt !== 'NONE') uiFlash += 0.8;
+    if (document.getElementById('feat_chat').checked) uiFlash += 0.2;
+    if (document.getElementById('feat_advanced').checked) uiFlash += 0.2;
+    if (document.getElementById('feat_screensaver').checked) uiFlash += 0.2;
+    if (document.getElementById('feat_emoji').checked) {
+      emojiFlash = 1.6;
+    }
   }
 
   const total = baseFlash + uiFlash + emojiFlash;
@@ -1634,6 +1782,8 @@ ${p.display.type === 'ST7735' ? '#define USE_ST7735\n#define TFT_CS         ' + 
   }
 
   // Custom Modified Variant
+  const uiFw = currentUiFramework;
+  const inkhudDrv = document.getElementById('inkhudDriver') ? document.getElementById('inkhudDriver').value : 'HINK_E0213A289';
   const lora = document.getElementById('loraType').value;
   const sck = document.getElementById('lora_sck').value;
   const miso = document.getElementById('lora_miso').value;
@@ -1747,6 +1897,23 @@ ${p.display.type === 'ST7735' ? '#define USE_ST7735\n#define TFT_CS         ' + 
 #define BATTERY_PIN     1
 #define ADC_CHANNEL     ADC_CHANNEL_0
 #define ADC_MULTIPLIER  2.0
+`;
+  }
+
+  // UI Framework Specific Defines
+  if (uiFw === 'inkhud') {
+    code += `\n// ─── InkHUD E-Paper Graphics Framework ──────────────────────────────
+#define MESHTASTIC_INCLUDE_NICHE_GRAPHICS
+#define MESHTASTIC_INCLUDE_INKHUD
+#define MESHTASTIC_EXCLUDE_SCREEN
+#define MESHTASTIC_EXCLUDE_INPUTBROKER
+#define HAS_BUTTON      0
+#define INKHUD_BUILDCONF_DRIVER ${inkhudDrv}
+`;
+  } else if (uiFw === 'mui') {
+    code += `\n// ─── Meshtastic UI (MUI) & LovyanGFX ────────────────────────────────
+#define USE_LOVYAN_GFX
+#define HAS_MUI         1
 `;
   }
 
