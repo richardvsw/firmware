@@ -694,6 +694,10 @@ def patch_mui_node_and_channel(tft, UI):
     # Auto-capture Wi-Fi into encrypted vault on save
     edit(tft, "strcpy(THIS->db.config.network.wifi_psk, psk);\n", "strcpy(THIS->db.config.network.wifi_psk, psk);\n            emoji_wifi_vault_add(ssid, psk);\n")
 
+        # Log message to SD card if enabled
+    edit(tft, "void TFTView_320x240::newMessage(uint32_t from, uint32_t to, uint8_t ch, const char *msg, uint32_t &msgTime, bool restore)\n{\n",
+         "void TFTView_320x240::newMessage(uint32_t from, uint32_t to, uint8_t ch, const char *msg, uint32_t &msgTime, bool restore)\n{\n    if (!restore) { auto itlog = nodes.find(from); emoji_log_message_to_sd(itlog != nodes.end() ? lv_label_get_text(itlog->second->LV_OBJ_IDX(node_lbl_idx)) : \"\", msg); }\n", "replace")
+
     # Top bar Wi-Fi icon status update
     edit(tft, "void TFTView_320x240::updateConnectionStatus(const meshtastic_DeviceConnectionStatus &status)\n{\n    db.connectionStatus = status;\n",
          "void TFTView_320x240::updateConnectionStatus(const meshtastic_DeviceConnectionStatus &status)\n{\n    db.connectionStatus = status;\n    emoji_top_wifi_update(status.has_wifi && status.wifi.has_status && status.wifi.status.is_connected, objects.battery_panel);\n", "replace")
@@ -899,6 +903,30 @@ extern "C" bool emoji_node_distance_str(uint32_t nodeNum, char *out, size_t outS
     else
         snprintf(out, outSize, "%.1fkm %s", dist, dir);
     return true;
+}
+
+
+extern "C" bool emoji_logger_enabled(void) __attribute__((weak));
+
+extern "C" void emoji_log_message_to_sd(const char *sender, const char *msg)
+{
+    if (!msg || !msg[0]) return;
+    if (emoji_logger_enabled && !emoji_logger_enabled()) return;
+#ifdef HAS_SDCARD
+    ISpiLock::Guard bus;
+    FsFile f = SDFs.open("/chat_log.txt", O_WRONLY | O_CREAT | O_APPEND);
+    if (f) {
+        if (sender && sender[0]) {
+            f.print("[");
+            f.print(sender);
+            f.print("]: ");
+        } else {
+            f.print("[You]: ");
+        }
+        f.println(msg);
+        f.close();
+    }
+#endif
 }
 
 static lv_obj_t *g_topWifiIcon = nullptr;\nextern "C" void emoji_top_wifi_update(bool connected, lv_obj_t *parent)\n{\n    if (!parent) return;\n    if (!g_topWifiIcon) {\n        g_topWifiIcon = lv_label_create(parent);\n        lv_label_set_text(g_topWifiIcon, LV_SYMBOL_WIFI);\n        lv_obj_set_style_text_color(g_topWifiIcon, lv_color_hex(0x38bdf8), 0);\n        lv_obj_set_style_text_font(g_topWifiIcon, &ui_font_montserrat_12, 0);\n        lv_obj_set_style_align(g_topWifiIcon, LV_ALIGN_RIGHT_MID, 0);\n        lv_obj_set_pos(g_topWifiIcon, -70, 0);\n    }\n    if (connected)\n        lv_obj_clear_flag(g_topWifiIcon, LV_OBJ_FLAG_HIDDEN);\n    else\n        lv_obj_add_flag(g_topWifiIcon, LV_OBJ_FLAG_HIDDEN);\n}\n\nextern "C" void emoji_trigger_traceroute(uint32_t toNode, uint8_t ch)\n{\n    if (!toNode || !TDeckGUI::instance()) return;\n    TFTView_320x240 *view = TDeckGUI::instance();\n    uint8_t hopLimit = view->db.config.lora.hop_limit ? view->db.config.lora.hop_limit : 3;\n    uint32_t reqId = view->requests.addRequest(toNode, ResponseHandler::TraceRouteRequest);\n    view->controller->traceRoute(toNode, ch, hopLimit, reqId);\n}\n'\n'extern "C" void emoji_suggest_init(lv_obj_t *);\n'

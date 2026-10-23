@@ -502,7 +502,9 @@ static void refresh(void)
     if (g_bat > 100)
         set_txt(g_battery, LV_SYMBOL_CHARGE " plugged");
     else {
-        snprintf(buf, sizeof(buf), LV_SYMBOL_BATTERY_FULL " %u%%", (unsigned)g_bat);
+        unsigned hours = (g_bat * 18) / 100;
+        if (hours < 1) hours = 1;
+        snprintf(buf, sizeof(buf), LV_SYMBOL_BATTERY_FULL " %u%% (~%uh)", (unsigned)g_bat, hours);
         set_txt(g_battery, buf);
     }
     show_if(g_nodes, g_cfg[5]);

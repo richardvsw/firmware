@@ -6619,6 +6619,8 @@ static void dist_cb(lv_event_t *e)
     p.putBool("show_dist", !cur);
     p.end();
     dist_text();
+
+    logger_text();
 }
 
 static void hops_cb(lv_event_t *e)
@@ -6627,6 +6629,8 @@ static void hops_cb(lv_event_t *e)
     hops_text();
 
     dist_text();
+
+    logger_text();
 }
 
 static lv_obj_t *g_snrLabel = nullptr;
@@ -7123,11 +7127,15 @@ static void build_adv_panel(void)
 
     dist_text();
 
+    logger_text();
+
     lv_obj_t *distBtn = make_nav(content, "", dist_cb);
 
     g_distLabel = distBtn;
 
     dist_text();
+
+    logger_text();
 
     make_nav(content, "Canned Messages", canned_adv_open_cb);
 
@@ -7175,6 +7183,12 @@ static void build_adv_panel(void)
 
     make_section_header(content, "SYSTEM & HARDWARE");
 
+    lv_obj_t *logBtn = make_nav(content, "", logger_cb);
+
+    g_loggerLabel = logBtn;
+
+    logger_text();
+
     if (g_nodesFn)
 
         make_nav(content, "Nodes", nd_open_cb);
@@ -7214,6 +7228,8 @@ static void adv_open_cb(lv_event_t *e)
     hops_text();
 
     dist_text();
+
+    logger_text();
 
     proxy_text();
 
