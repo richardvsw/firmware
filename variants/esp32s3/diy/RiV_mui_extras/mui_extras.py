@@ -259,7 +259,7 @@ def patch_keyboard_emoji(compose):
 def patch_mui_node_and_channel(tft, UI):
     tft_h = os.path.join(UI, "include", "graphics", "view", "TFT", "TFTView_320x240.h")
     edit(tft_h, "    static void ui_event_NodeButton(lv_event_t *e);\n",
-         "    static void ui_event_search_ta(lv_event_t *e);\n    static void ui_event_search_kb(lv_event_t *e);\n", "after")
+         "public:\n    static void emoji_traceroute(uint32_t to, uint8_t ch);\nprotected:\n    static void ui_event_search_ta(lv_event_t *e);\n    static void ui_event_search_kb(lv_event_t *e);\n", "after")
 
     decl_block = (
         'extern "C" __attribute__((weak)) void get_node_details_string(uint32_t nodeNum, char *idStr, size_t idLen,\n'
@@ -311,6 +311,130 @@ def patch_mui_node_and_channel(tft, UI):
         '    }\n'
         '}\n\n'
     )
+    decl_block += r"""
+struct SimplePos {
+    uint32_t nodeNum;
+    int32_t lat;
+    int32_t lon;
+};
+static SimplePos g_nodePositions[32];
+static int g_nodePosCount = 0;
+static int32_t g_myLat = 0, g_myLon = 0;
+
+extern "C" void emoji_record_node_pos(uint32_t nodeNum, int32_t lat, int32_t lon, bool isOwn)
+{
+    if (isOwn) {
+        g_myLat = lat;
+        g_myLon = lon;
+    }
+    if (!nodeNum || (lat == 0 && lon == 0)) return;
+    for (int i = 0; i < g_nodePosCount; i++) {
+        if (g_nodePositions[i].nodeNum == nodeNum) {
+            g_nodePositions[i].lat = lat;
+            g_nodePositions[i].lon = lon;
+            return;
+        }
+    }
+    if (g_nodePosCount < 32) {
+        g_nodePositions[g_nodePosCount++] = {nodeNum, lat, lon};
+    }
+}
+
+extern "C" bool emoji_distance_enabled(void) __attribute__((weak));
+
+extern "C" bool emoji_node_distance_str(uint32_t nodeNum, char *out, size_t outSize)
+{
+    if (!out || outSize < 16) return false;
+    out[0] = 0;
+    if (emoji_distance_enabled && !emoji_distance_enabled()) return false;
+    if (g_myLat == 0 && g_myLon == 0) return false;
+    int32_t tLat = 0, tLon = 0;
+    for (int i = 0; i < g_nodePosCount; i++) {
+        if (g_nodePositions[i].nodeNum == nodeNum) {
+            tLat = g_nodePositions[i].lat;
+            tLon = g_nodePositions[i].lon;
+            break;
+        }
+    }
+    if (tLat == 0 && tLon == 0) return false;
+
+    float dx = 71.5f * 1e-7f * (float)(tLon - g_myLon);
+    float dy = 111.3f * 1e-7f * (float)(tLat - g_myLat);
+    float dist = sqrtf(dx * dx + dy * dy);
+    float rad = atan2f(dx, dy);
+    float deg = rad * 57.29578f;
+    if (deg < 0.0f) deg += 360.0f;
+
+    const char *dir = "N";
+    if (deg >= 22.5f && deg < 67.5f) dir = "NE";
+    else if (deg >= 67.5f && deg < 112.5f) dir = "E";
+    else if (deg >= 112.5f && deg < 157.5f) dir = "SE";
+    else if (deg >= 157.5f && deg < 202.5f) dir = "S";
+    else if (deg >= 202.5f && deg < 247.5f) dir = "SW";
+    else if (deg >= 247.5f && deg < 292.5f) dir = "W";
+    else if (deg >= 292.5f && deg < 337.5f) dir = "NW";
+
+    if (dist < 1.0f)
+        snprintf(out, outSize, "%dm %s", (int)(dist * 1000.0f), dir);
+    else
+        snprintf(out, outSize, "%.1fkm %s", dist, dir);
+    return true;
+}
+
+extern "C" bool emoji_logger_enabled(void) __attribute__((weak));
+
+extern "C" void emoji_log_message_to_sd(const char *sender, const char *msg)
+{
+    if (!msg || !msg[0]) return;
+    if (emoji_logger_enabled && !emoji_logger_enabled()) return;
+#ifdef HAS_SDCARD
+    ISpiLock::Guard bus;
+    FsFile f = SDFs.open("/chat_log.txt", O_WRONLY | O_CREAT | O_APPEND);
+    if (f) {
+        if (sender && sender[0]) {
+            f.print("[");
+            f.print(sender);
+            f.print("]: ");
+        } else {
+            f.print("[You]: ");
+        }
+        f.println(msg);
+        f.close();
+    }
+#endif
+}
+
+static lv_obj_t *g_topWifiIcon = nullptr;
+extern "C" void emoji_top_wifi_update(bool connected, lv_obj_t *parent)
+{
+    if (!parent) return;
+    if (!g_topWifiIcon) {
+        g_topWifiIcon = lv_label_create(parent);
+        lv_label_set_text(g_topWifiIcon, LV_SYMBOL_WIFI);
+        lv_obj_set_style_text_color(g_topWifiIcon, lv_color_hex(0x38bdf8), 0);
+        lv_obj_set_style_text_font(g_topWifiIcon, &ui_font_montserrat_12, 0);
+        lv_obj_set_style_align(g_topWifiIcon, LV_ALIGN_RIGHT_MID, 0);
+        lv_obj_set_pos(g_topWifiIcon, -70, 0);
+    }
+    if (connected)
+        lv_obj_clear_flag(g_topWifiIcon, LV_OBJ_FLAG_HIDDEN);
+    else
+        lv_obj_add_flag(g_topWifiIcon, LV_OBJ_FLAG_HIDDEN);
+}
+
+void TFTView_320x240::emoji_traceroute(uint32_t to, uint8_t ch)
+{
+    if (!to || !THIS || !THIS->controller) return;
+    uint8_t hopLimit = THIS->db.config.lora.hop_limit ? THIS->db.config.lora.hop_limit : 3;
+    uint32_t reqId = THIS->requests.addRequest(to, ResponseHandler::TraceRouteRequest);
+    THIS->controller->traceRoute(to, ch, hopLimit, reqId);
+}
+
+extern "C" void emoji_trigger_traceroute(uint32_t toNode, uint8_t ch)
+{
+    TFTView_320x240::emoji_traceroute(toNode, ch);
+}
+"""
     edit(tft, "void TFTView_320x240::ui_set_active(lv_obj_t *b, lv_obj_t *p, lv_obj_t *tp)\n{",
          decl_block, "before")
 
@@ -689,7 +813,19 @@ def patch_mui_node_and_channel(tft, UI):
 
         # Hook updatePosition to track node coordinates for distance & bearing
     edit(tft, "void TFTView_320x240::updatePosition(uint32_t nodeNum, int32_t lat, int32_t lon, int32_t alt, uint32_t sats, uint32_t precision)\n{\n",
-         "void TFTView_320x240::updatePosition(uint32_t nodeNum, int32_t lat, int32_t lon, int32_t alt, uint32_t sats, uint32_t precision)\n{\n    emoji_record_node_pos(nodeNum, lat, lon, nodeNum == ownNode);\n", "replace")
+         "void TFTView_320x240::updatePosition(uint32_t nodeNum, int32_t lat, int32_t lon, int32_t alt, uint32_t sats, uint32_t precision)\n{\n    emoji_record_node_pos(nodeNum, lat, lon, nodeNum == ownNode);\n    emoji_tools_record_pos(nodeNum, lat, lon, alt, nodeNum == ownNode);\n", "replace")
+
+    edit(tft, "void TFTView_320x240::updateMetrics(uint32_t nodeNum, uint32_t bat_level, float voltage, float chUtil, float airUtil)\n{\n",
+         "void TFTView_320x240::updateMetrics(uint32_t nodeNum, uint32_t bat_level, float voltage, float chUtil, float airUtil)\n{\n    emoji_tools_record_metrics(chUtil, airUtil);\n", "replace")
+
+    edit(tft, "void TFTView_320x240::updateSignalStrength(uint32_t nodeNum, int32_t rssi, float snr)\n{\n",
+         "void TFTView_320x240::updateSignalStrength(uint32_t nodeNum, int32_t rssi, float snr)\n{\n    emoji_tools_record_signal(nodeNum, rssi, snr);\n", "replace")
+
+    edit(tft, "void TFTView_320x240::packetReceived(const meshtastic_MeshPacket &p)\n{\n",
+         "void TFTView_320x240::packetReceived(const meshtastic_MeshPacket &p)\n{\n    emoji_tools_record_packet(false, false);\n", "replace")
+
+    edit(tft, "void TFTView_320x240::addNode(uint32_t nodeNum, uint8_t ch, const char *userShort, const char *userLong, uint32_t lastHeard,\n                              eRole role, bool hasKey, bool unmessagable)\n{\n",
+         "void TFTView_320x240::addNode(uint32_t nodeNum, uint8_t ch, const char *userShort, const char *userLong, uint32_t lastHeard,\n                              eRole role, bool hasKey, bool unmessagable)\n{\n    emoji_tools_record_node(nodeNum, userShort, userLong, lastHeard);\n", "replace")
 
     # Auto-capture Wi-Fi into encrypted vault on save
     edit(tft, "strcpy(THIS->db.config.network.wifi_psk, psk);\n", "strcpy(THIS->db.config.network.wifi_psk, psk);\n            emoji_wifi_vault_add(ssid, psk);\n")
@@ -820,8 +956,7 @@ def main():
             # B-48 / RiV-meshBot chat: white background with the bot logo and solid bubbles
             copy("meshbot_bg.cpp.in", dst)
             copy("meshbot_logo.inc", dst)
-            tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);
-'
+            tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);\n'
 'extern "C" void emoji_mention_host(void (*)(const char *, void (*)(const char *, const char *, uint32_t)));\n'
                          'extern "C" void emoji_chat_style(lv_obj_t *, const char *, const char *);\n'
                          'extern "C" void emoji_bubble_style(lv_obj_t *, lv_obj_t *, bool);\n')
@@ -833,103 +968,17 @@ def main():
             edit(tft, group, "    emoji_chat_style(nullptr, nullptr, nullptr);\n")
         else:
             copy("bot_stub.cpp.in", dst, "emoji_bot_stub.cpp")
-        tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);
-'
-'\n
-struct SimplePos {
-    uint32_t nodeNum;
-    int32_t lat;
-    int32_t lon;
-};
-static SimplePos g_nodePositions[32];
-static int g_nodePosCount = 0;
-static int32_t g_myLat = 0, g_myLon = 0;
-
-extern "C" void emoji_record_node_pos(uint32_t nodeNum, int32_t lat, int32_t lon, bool isOwn)
-{
-    if (isOwn) {
-        g_myLat = lat;
-        g_myLon = lon;
-    }
-    if (!nodeNum || (lat == 0 && lon == 0)) return;
-    for (int i = 0; i < g_nodePosCount; i++) {
-        if (g_nodePositions[i].nodeNum == nodeNum) {
-            g_nodePositions[i].lat = lat;
-            g_nodePositions[i].lon = lon;
-            return;
-        }
-    }
-    if (g_nodePosCount < 32) {
-        g_nodePositions[g_nodePosCount++] = {nodeNum, lat, lon};
-    }
-}
-
-extern "C" bool emoji_distance_enabled(void) __attribute__((weak));
-
-extern "C" bool emoji_node_distance_str(uint32_t nodeNum, char *out, size_t outSize)
-{
-    if (!out || outSize < 16) return false;
-    out[0] = 0;
-    if (emoji_distance_enabled && !emoji_distance_enabled()) return false;
-    if (g_myLat == 0 && g_myLon == 0) return false;
-    int32_t tLat = 0, tLon = 0;
-    for (int i = 0; i < g_nodePosCount; i++) {
-        if (g_nodePositions[i].nodeNum == nodeNum) {
-            tLat = g_nodePositions[i].lat;
-            tLon = g_nodePositions[i].lon;
-            break;
-        }
-    }
-    if (tLat == 0 && tLon == 0) return false;
-
-    float dx = 71.5f * 1e-7f * (float)(tLon - g_myLon);
-    float dy = 111.3f * 1e-7f * (float)(tLat - g_myLat);
-    float dist = sqrtf(dx * dx + dy * dy);
-    float rad = atan2f(dx, dy);
-    float deg = rad * 57.29578f;
-    if (deg < 0.0f) deg += 360.0f;
-
-    const char *dir = "N";
-    if (deg >= 22.5f && deg < 67.5f) dir = "NE";
-    else if (deg >= 67.5f && deg < 112.5f) dir = "E";
-    else if (deg >= 112.5f && deg < 157.5f) dir = "SE";
-    else if (deg >= 157.5f && deg < 202.5f) dir = "S";
-    else if (deg >= 202.5f && deg < 247.5f) dir = "SW";
-    else if (deg >= 247.5f && deg < 292.5f) dir = "W";
-    else if (deg >= 292.5f && deg < 337.5f) dir = "NW";
-
-    if (dist < 1.0f)
-        snprintf(out, outSize, "%dm %s", (int)(dist * 1000.0f), dir);
-    else
-        snprintf(out, outSize, "%.1fkm %s", dist, dir);
-    return true;
-}
-
-
-extern "C" bool emoji_logger_enabled(void) __attribute__((weak));
-
-extern "C" void emoji_log_message_to_sd(const char *sender, const char *msg)
-{
-    if (!msg || !msg[0]) return;
-    if (emoji_logger_enabled && !emoji_logger_enabled()) return;
-#ifdef HAS_SDCARD
-    ISpiLock::Guard bus;
-    FsFile f = SDFs.open("/chat_log.txt", O_WRONLY | O_CREAT | O_APPEND);
-    if (f) {
-        if (sender && sender[0]) {
-            f.print("[");
-            f.print(sender);
-            f.print("]: ");
-        } else {
-            f.print("[You]: ");
-        }
-        f.println(msg);
-        f.close();
-    }
-#endif
-}
-
-static lv_obj_t *g_topWifiIcon = nullptr;\nextern "C" void emoji_top_wifi_update(bool connected, lv_obj_t *parent)\n{\n    if (!parent) return;\n    if (!g_topWifiIcon) {\n        g_topWifiIcon = lv_label_create(parent);\n        lv_label_set_text(g_topWifiIcon, LV_SYMBOL_WIFI);\n        lv_obj_set_style_text_color(g_topWifiIcon, lv_color_hex(0x38bdf8), 0);\n        lv_obj_set_style_text_font(g_topWifiIcon, &ui_font_montserrat_12, 0);\n        lv_obj_set_style_align(g_topWifiIcon, LV_ALIGN_RIGHT_MID, 0);\n        lv_obj_set_pos(g_topWifiIcon, -70, 0);\n    }\n    if (connected)\n        lv_obj_clear_flag(g_topWifiIcon, LV_OBJ_FLAG_HIDDEN);\n    else\n        lv_obj_add_flag(g_topWifiIcon, LV_OBJ_FLAG_HIDDEN);\n}\n\nextern "C" void emoji_trigger_traceroute(uint32_t toNode, uint8_t ch)\n{\n    if (!toNode || !TDeckGUI::instance()) return;\n    TFTView_320x240 *view = TDeckGUI::instance();\n    uint8_t hopLimit = view->db.config.lora.hop_limit ? view->db.config.lora.hop_limit : 3;\n    uint32_t reqId = view->requests.addRequest(toNode, ResponseHandler::TraceRouteRequest);\n    view->controller->traceRoute(toNode, ch, hopLimit, reqId);\n}\n'\n'extern "C" void emoji_suggest_init(lv_obj_t *);\n'
+        old_adv = os.path.join(dst, "emoji_advanced.cpp")
+        if os.path.exists(old_adv):
+            try: os.remove(old_adv)
+            except: pass
+        tft_decl += ('extern "C" void emoji_record_node_pos(uint32_t, int32_t, int32_t, bool);\n'
+                     'extern "C" bool emoji_node_distance_str(uint32_t, char *, size_t);\n'
+                     'extern "C" void emoji_top_wifi_update(bool, lv_obj_t *);\n'
+                     'extern "C" void emoji_trigger_traceroute(uint32_t, uint8_t);\n'
+                     'extern "C" void emoji_log_message_to_sd(const char *, const char *);\n'
+                     'extern "C" void emoji_suggest_init(lv_obj_t *);\n'
+                     'extern "C" void emoji_suggest_init(lv_obj_t *);\n'
                      'extern "C" bool emoji_long_names(void);\n'
                      'extern "C" void emoji_bubble_register(lv_obj_t *, uint32_t);\n'
                      'extern "C" void emoji_chip_expect(bool);\n'
@@ -1074,8 +1123,7 @@ static lv_obj_t *g_topWifiIcon = nullptr;\nextern "C" void emoji_top_wifi_update
                                         "#include \"lvgl.h\"\nextern lv_font_t ui_emoji_color_font;\n#ifdef LV_LVGL_H_INCLUDE_SIMPLE", 1)
                 write(os.path.join(dst, fname + ".c"), ftxt, False)
         edit(conf, "#define LV_USE_SPAN       0", "#define LV_USE_SPAN       1", "replace")
-        tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);
-'
+        tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);\n'
 'extern "C" void emoji_compose_init(lv_obj_t *, lv_obj_t *, lv_obj_t *, void (*)(lv_obj_t *));\n'
                      'extern "C" int emoji_strip_height(void);\n')
         edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n",
@@ -1118,14 +1166,15 @@ static lv_obj_t *g_topWifiIcon = nullptr;\nextern "C" void emoji_top_wifi_update
     if "advanced" in feat:
         copy("MuiPrefs.h", dst)
         copy("mui_advanced.cpp.in", dst)
+        copy("mui_tools_extras.cpp.in", dst)
         themes_cpp3 = os.path.join(UI, "source", "graphics", "TFT", "Themes.cpp")
         edit(themes_cpp3, "void Themes::set(enum Theme th)\n{",
-             'extern "C" void emoji_advanced_theme(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\n', "before")
+             'extern "C" void emoji_advanced_theme(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\nextern "C" void emoji_tools_theme(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\n', "before")
         edit(themes_cpp3, "apply_style_statistics_table_style_ITEMS_DEFAULT();\n",
              "apply_style_statistics_table_style_ITEMS_DEFAULT();\n"
-             "    emoji_advanced_theme(THEME(ePanelBg), THEME(eTopPanelBg), THEME(eTopPanelText), THEME(eNodePanelBg), THEME(eNodePanelText), THEME(eSettingsButtonBg), THEME(eSettingsButtonText), THEME(eColorTextLabel), THEME(eNodePanelBorder), THEME(ePanelPressedBg));\n")
-        tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);
-'
+             "    emoji_advanced_theme(THEME(ePanelBg), THEME(eTopPanelBg), THEME(eTopPanelText), THEME(eNodePanelBg), THEME(eNodePanelText), THEME(eSettingsButtonBg), THEME(eSettingsButtonText), THEME(eColorTextLabel), THEME(eNodePanelBorder), THEME(ePanelPressedBg));\n"
+             "    emoji_tools_theme(THEME(ePanelBg), THEME(eTopPanelBg), THEME(eTopPanelText), THEME(eNodePanelBg), THEME(eNodePanelText), THEME(eSettingsButtonBg), THEME(eSettingsButtonText), THEME(eColorTextLabel), THEME(eNodePanelBorder), THEME(ePanelPressedBg));\n")
+        tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);\n'
 'extern "C" bool emoji_long_names(void);\n'
                      'extern "C" void emoji_settings_init(lv_obj_t *, lv_obj_t *, lv_obj_t *, void *(*)(void), void (*)(void), '
                      'void (*)(lv_obj_t *));\n'
@@ -1133,14 +1182,20 @@ static lv_obj_t *g_topWifiIcon = nullptr;\nextern "C" void emoji_top_wifi_update
                      'void (*)(void), void (*)(void), void (*)(void), void (*)(void));\n'
                      'extern "C" void emoji_settings_host2(void *(*)(void), void (*)(void), int, void (*)(const char *));\n'
                      'extern "C" void emoji_settings_host3(void *(*)(void), void (*)(void), void *(*)(void), void (*)(void));\n'
-                     'extern "C" void emoji_settings_channels(void *(*)(int), void (*)(int), int (*)(void));\n')
+                     'extern "C" void emoji_settings_channels(void *(*)(int), void (*)(int), int (*)(void));\n'
+                     'extern "C" void emoji_tools_extras_init(lv_obj_t *, lv_obj_t *, lv_obj_t *, void (*)(lv_obj_t *));\n'
+                     'extern "C" void emoji_tools_record_pos(uint32_t, int32_t, int32_t, int32_t, bool);\n'
+                     'extern "C" void emoji_tools_record_node(uint32_t, const char *, const char *, uint32_t);\n'
+                     'extern "C" void emoji_tools_record_signal(uint32_t, int32_t, float);\n'
+                     'extern "C" void emoji_tools_record_metrics(float, float);\n'
+                     'extern "C" void emoji_tools_record_packet(bool, bool);\n'
+                     'extern "C" void emoji_tools_theme(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\n')
         vc_decl += 'extern "C" void emoji_gps_record(const void *);\n'
         # renaming the node shows "Rebooting ..." but nothing asks the node to reboot, so the screen would wait for ever
         edit(tft, '                THIS->controller->sendConfig(user, THIS->ownNode);\n                THIS->notifyReboot(true);\n',
              '                THIS->controller->sendConfig(user, THIS->ownNode);\n                THIS->controller->requestReboot(3, THIS->ownNode);\n                THIS->notifyReboot(true);\n', "replace")
         vc_decl += 'extern "C" void emoji_node_flags(uint32_t, bool, bool);\n'
-        tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);
-'
+        tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);\n'
 'extern "C" void emoji_nodes_host(uint32_t (*)(uint32_t, bool, uint32_t *));\n'
                      'extern "C" bool emoji_node_protected(uint32_t);\n'
                      '#include <vector>\n')
@@ -1208,6 +1263,13 @@ static lv_obj_t *g_topWifiIcon = nullptr;\nextern "C" void emoji_top_wifi_update
              "        objects.basic_settings_language_button, objects.main_screen, objects.keyboard,\n"
              "        []() -> void * { return &THIS->db.module_config.mqtt; },\n"
              "        []() { THIS->controller->sendConfig(meshtastic_ModuleConfig_MQTTConfig{THIS->db.module_config.mqtt}); },\n"
+             "        [](lv_obj_t *ta) {\n"
+             "            lv_obj_remove_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN);\n"
+             "            lv_obj_move_foreground(objects.keyboard);\n"
+             "            THIS->showKeyboard(ta);\n"
+             "        });\n"
+             "    emoji_tools_extras_init(\n"
+             "        objects.tab_page_tools, objects.main_screen, objects.keyboard,\n"
              "        [](lv_obj_t *ta) {\n"
              "            lv_obj_remove_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN);\n"
              "            lv_obj_move_foreground(objects.keyboard);\n"
@@ -1313,8 +1375,7 @@ static lv_obj_t *g_topWifiIcon = nullptr;\nextern "C" void emoji_top_wifi_update
         edit(os.path.join(LV, "src", "libs", "tjpgd", "lv_tjpgd.c"),
              "    const uint8_t jpg_signature[] = {0xFF, 0xD8, 0xFF,  0xE0,  0x00,  0x10, 0x4A,  0x46, 0x49, 0x46};\n",
              "    const uint8_t jpg_signature[] = {0xFF, 0xD8, 0xFF};\n", "replace")
-        tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);
-'
+        tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);\n'
 'extern "C" void emoji_ss_init(void (*)(uint32_t *));\n'
                      'extern "C" void emoji_ss_metrics(uint32_t, float, float);\n'
                      'extern "C" void emoji_ss_message(const char *, const char *);\n')
@@ -1525,4 +1586,4 @@ if os.path.isdir(UI) and os.path.isdir(LV):
         pdecl = 'extern "C" bool emoji_effective_mqtt_proxy(bool, bool) __attribute__((weak));\n'
         edit(phone_src, '#include "PhoneAPI.h"\n', pdecl, "after")
         edit(phone_src, "if (mqtt && moduleConfig.mqtt.proxy_to_client_enabled && moduleConfig.mqtt.enabled &&",
-             "bool pActive = emoji_effective_mqtt_proxy ? emoji_effective_mqtt_proxy(moduleConfig.mqtt.proxy_to_client_enabled, WiFi.isConnected()) : moduleConfig.mqtt.proxy_to_client_enabled;\n            if (mqtt && pActive && moduleConfig.mqtt.enabled &&", "replace")
+             "if (mqtt && (emoji_effective_mqtt_proxy ? emoji_effective_mqtt_proxy(moduleConfig.mqtt.proxy_to_client_enabled, WiFi.isConnected()) : moduleConfig.mqtt.proxy_to_client_enabled) && moduleConfig.mqtt.enabled &&", "replace")

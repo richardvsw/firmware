@@ -6611,6 +6611,39 @@ static void dist_text(void)
                           emoji_distance_enabled() ? "Message Distance: Show" : "Message Distance: Hide");
 }
 
+static lv_obj_t *g_loggerLabel = nullptr;
+
+extern "C" bool emoji_logger_enabled(void)
+{
+    Preferences p;
+    if (!p.begin("adv_settings", true))
+        return false;
+    bool enabled = p.getBool("sd_logger", false);
+    p.end();
+    return enabled;
+}
+
+static void logger_text(void)
+{
+    if (!g_loggerLabel) return;
+    bool cur = emoji_logger_enabled();
+    char buf[48];
+    snprintf(buf, sizeof(buf), "SD Chat Log: %s", cur ? "Enabled" : "Disabled");
+    lv_obj_t *lbl = g_loggerLabel ? lv_obj_get_child(g_loggerLabel, 0) : nullptr;
+    if (lbl) lv_label_set_text(lbl, buf);
+}
+
+static void logger_cb(lv_event_t *e)
+{
+    bool cur = emoji_logger_enabled();
+    Preferences p;
+    if (!p.begin("adv_settings", false))
+        return;
+    p.putBool("sd_logger", !cur);
+    p.end();
+    logger_text();
+}
+
 static void dist_cb(lv_event_t *e)
 {
     Preferences p;
@@ -7097,6 +7130,42 @@ static void nd_open_cb(lv_event_t *e)
 
 
 
+
+extern "C" void emoji_wifi_vault_add(const char *ssid, const char *psk)
+{
+    if (!ssid || !ssid[0]) return;
+    Preferences p;
+    if (p.begin("wifi_vault", false)) {
+        int cnt = p.getInt("cnt", 0);
+        for (int i = 0; i < cnt; i++) {
+            char k[16]; snprintf(k, sizeof(k), "s%d", i);
+            if (p.getString(k, "") == String(ssid)) {
+                snprintf(k, sizeof(k), "p%d", i);
+                p.putString(k, psk ? psk : "");
+                p.end();
+                return;
+            }
+        }
+        if (cnt < 12) {
+            char k[16]; snprintf(k, sizeof(k), "s%d", cnt);
+            p.putString(k, ssid);
+            snprintf(k, sizeof(k), "p%d", cnt);
+            p.putString(k, psk ? psk : "");
+            p.putInt("cnt", cnt + 1);
+        }
+        p.end();
+    }
+}
+
+static void wifi_vault_open_cb(lv_event_t *e)
+{
+    // Saved Wi-Fi vault dialog
+}
+
+static void canned_adv_open_cb(lv_event_t *e)
+{
+    // Canned messages editor dialog
+}
 static void build_adv_panel(void)
 
 {

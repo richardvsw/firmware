@@ -70,6 +70,10 @@ extern "C" bool emoji_node_distance_str(uint32_t nodeNum, char *out, size_t outS
 extern "C" void emoji_trigger_traceroute(uint32_t toNode, uint8_t ch) __attribute__((weak));
 extern "C" void emoji_show_paste_pill(void) __attribute__((weak));
 
+static BubbleRef g_bubbles[24];
+static uint32_t g_popupId = 0;
+static void close_popup(void);
+
 static BubbleRef *find_bubble_by_id(uint32_t id)
 {
     for (int i = 0; i < 24; i++) {
@@ -92,7 +96,6 @@ static void traceroute_cb(lv_event_t *e)
     }
 }
 
-static BubbleRef g_bubbles[24];
 static int g_bubbleNext = 0;
 static uint32_t g_pendingId = 0;
 
@@ -105,7 +108,6 @@ static uint32_t g_sendEmoji = 0;
 static lv_obj_t *g_replyStrip = nullptr;
 static lv_obj_t *g_replyLabel = nullptr;
 static lv_obj_t *g_backdrop = nullptr;
-static uint32_t g_popupId = 0;
 
 // colours for the two kinds of helper labels, light variant for the white bot chat
 extern "C" void emoji_aux_restyle(lv_obj_t *label, bool quote, bool bot)

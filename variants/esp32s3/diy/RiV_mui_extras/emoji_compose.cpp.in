@@ -1,3 +1,4 @@
+extern "C" bool emoji_reply_active(void);
 // Message compose extras: recent emoji strip above the keyboard, format keys with their popups (bold, italic, strike, code, link, alert
 // bell), a copy/cut/paste bar for the message box, formatted bubbles drawn with spans, red alert bubbles, and the keyboard colours that
 // follow the selected theme.

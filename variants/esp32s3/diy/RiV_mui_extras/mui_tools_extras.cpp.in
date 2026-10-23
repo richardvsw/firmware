@@ -1,0 +1,1217 @@
+// Tools Extras: Waypoints & Backtrack Compass, Node Radar, RF Channel Monitor, and Field Notes.
+// All custom handheld field tools grouped cleanly under the "EXTRAS" section in MUI Tools tab.
+
+#include "lvgl.h"
+#include <Arduino.h>
+#include <vector>
+#include <string>
+#include <math.h>
+#include "MuiPrefs.h"
+
+#ifdef HAS_SDCARD
+#include <SdFat.h>
+#include "util/ISpiLock.h"
+extern SdFs SDFs;
+#endif
+
+extern "C" {
+extern const lv_font_t ui_font_montserrat_12;
+extern const lv_font_t ui_font_montserrat_14;
+extern const lv_font_t ui_font_montserrat_16;
+extern const lv_font_t ui_font_montserrat_20;
+extern const lv_font_t mui_font_bold_14;
+
+void add_style_settings_button_style(lv_obj_t *);
+void add_style_top_panel_style(lv_obj_t *);
+void emoji_trigger_traceroute(uint32_t toNode, uint8_t ch);
+bool emoji_sd_ready(void) __attribute__((weak));
+}
+
+typedef void (*KbFn)(lv_obj_t *);
+
+static lv_obj_t *g_screen = nullptr;
+static lv_obj_t *g_kb = nullptr;
+static KbFn g_showKb = nullptr;
+
+// Theme colors
+static uint32_t g_tBg = 0x121820;
+static uint32_t g_tTopBg = 0x1a2332;
+static uint32_t g_tTopText = 0xffffff;
+static uint32_t g_tItemBg = 0x1f2937;
+static uint32_t g_tItemText = 0xffffff;
+static uint32_t g_tBtnBg = 0x2563eb;
+static uint32_t g_tBtnText = 0xffffff;
+static uint32_t g_tAccent = 0x38bdf8;
+static uint32_t g_tBorder = 0x374151;
+static uint32_t g_tPressed = 0x1d4ed8;
+
+extern "C" void emoji_tools_theme(uint32_t bg, uint32_t topBg, uint32_t topText,
+                                 uint32_t itemBg, uint32_t itemText,
+                                 uint32_t btnBg, uint32_t btnText,
+                                 uint32_t accent, uint32_t border,
+                                 uint32_t pressedBg)
+{
+    g_tBg = bg;
+    g_tTopBg = topBg;
+    g_tTopText = topText;
+    g_tItemBg = itemBg;
+    g_tItemText = itemText;
+    g_tBtnBg = btnBg;
+    g_tBtnText = btnText;
+    g_tAccent = accent;
+    g_tBorder = border;
+    g_tPressed = pressedBg;
+}
+
+// -------------------------------------------------------------
+// Data Tracking: Position, Nodes, RF Metrics
+// -------------------------------------------------------------
+
+struct Waypoint {
+    char name[24];
+    int32_t lat; // * 1e-7
+    int32_t lon; // * 1e-7
+    int32_t alt; // meters
+};
+
+static Waypoint g_waypoints[16];
+static int g_numWaypoints = 0;
+static int32_t g_myLat = 0, g_myLon = 0, g_myAlt = 0;
+
+struct RadarNode {
+    uint32_t nodeNum;
+    char name[24];
+    int32_t lat;
+    int32_t lon;
+    int32_t alt;
+    int32_t rssi;
+    float snr;
+    uint32_t lastHeard;
+};
+
+static RadarNode g_radarNodes[32];
+static int g_radarCount = 0;
+
+// RF Metrics
+static float g_chUtil = 0.0f;
+static float g_airUtil = 0.0f;
+static uint32_t g_rxPkts = 0;
+static uint32_t g_txPkts = 0;
+static uint32_t g_badPkts = 0;
+static float g_avgRssi = -105.0f;
+static float g_avgSnr = 0.0f;
+static int g_sigSamples = 0;
+
+extern "C" void emoji_tools_record_pos(uint32_t nodeNum, int32_t lat, int32_t lon, int32_t alt, bool isOwn)
+{
+    if (isOwn) {
+        g_myLat = lat;
+        g_myLon = lon;
+        g_myAlt = alt;
+    }
+    if (!nodeNum || (lat == 0 && lon == 0)) return;
+
+    for (int i = 0; i < g_radarCount; i++) {
+        if (g_radarNodes[i].nodeNum == nodeNum) {
+            g_radarNodes[i].lat = lat;
+            g_radarNodes[i].lon = lon;
+            g_radarNodes[i].alt = alt;
+            return;
+        }
+    }
+    if (g_radarCount < 32) {
+        RadarNode &rn = g_radarNodes[g_radarCount++];
+        rn.nodeNum = nodeNum;
+        snprintf(rn.name, sizeof(rn.name), "!%08x", (unsigned)nodeNum);
+        rn.lat = lat;
+        rn.lon = lon;
+        rn.alt = alt;
+        rn.rssi = -120;
+        rn.snr = 0.0f;
+        rn.lastHeard = millis() / 1000;
+    }
+}
+
+extern "C" void emoji_tools_record_node(uint32_t nodeNum, const char *shortName, const char *longName, uint32_t lastHeard)
+{
+    if (!nodeNum) return;
+    for (int i = 0; i < g_radarCount; i++) {
+        if (g_radarNodes[i].nodeNum == nodeNum) {
+            if (shortName && shortName[0]) {
+                snprintf(g_radarNodes[i].name, sizeof(g_radarNodes[i].name), "%s", shortName);
+            }
+            if (lastHeard) g_radarNodes[i].lastHeard = lastHeard;
+            return;
+        }
+    }
+    if (g_radarCount < 32) {
+        RadarNode &rn = g_radarNodes[g_radarCount++];
+        rn.nodeNum = nodeNum;
+        if (shortName && shortName[0])
+            snprintf(rn.name, sizeof(rn.name), "%s", shortName);
+        else
+            snprintf(rn.name, sizeof(rn.name), "!%08x", (unsigned)nodeNum);
+        rn.lat = 0;
+        rn.lon = 0;
+        rn.alt = 0;
+        rn.rssi = -120;
+        rn.snr = 0.0f;
+        rn.lastHeard = lastHeard ? lastHeard : (millis() / 1000);
+    }
+}
+
+extern "C" void emoji_tools_record_signal(uint32_t nodeNum, int32_t rssi, float snr)
+{
+    if (rssi != 0) {
+        if (g_sigSamples == 0) {
+            g_avgRssi = (float)rssi;
+            g_avgSnr = snr;
+        } else {
+            g_avgRssi = g_avgRssi * 0.85f + (float)rssi * 0.15f;
+            g_avgSnr = g_avgSnr * 0.85f + snr * 0.15f;
+        }
+        g_sigSamples++;
+    }
+
+    if (!nodeNum) return;
+    for (int i = 0; i < g_radarCount; i++) {
+        if (g_radarNodes[i].nodeNum == nodeNum) {
+            g_radarNodes[i].rssi = rssi;
+            g_radarNodes[i].snr = snr;
+            g_radarNodes[i].lastHeard = millis() / 1000;
+            return;
+        }
+    }
+}
+
+extern "C" void emoji_tools_record_metrics(float chUtil, float airUtil)
+{
+    g_chUtil = chUtil;
+    g_airUtil = airUtil;
+}
+
+extern "C" void emoji_tools_record_packet(bool isTx, bool isBad)
+{
+    if (isTx) g_txPkts++;
+    else g_rxPkts++;
+    if (isBad) g_badPkts++;
+}
+
+// -------------------------------------------------------------
+// Distance & Bearing Math
+// -------------------------------------------------------------
+
+static void calc_dist_bearing(int32_t lat1, int32_t lon1, int32_t lat2, int32_t lon2,
+                             float &distKm, float &bearingDeg, const char *&cardinal)
+{
+    float dx = 71.5f * 1e-7f * (float)(lon2 - lon1);
+    float dy = 111.3f * 1e-7f * (float)(lat2 - lat1);
+    distKm = sqrtf(dx * dx + dy * dy);
+    float rad = atan2f(dx, dy);
+    bearingDeg = rad * 57.29578f;
+    if (bearingDeg < 0.0f) bearingDeg += 360.0f;
+
+    cardinal = "N";
+    if (bearingDeg >= 22.5f && bearingDeg < 67.5f) cardinal = "NE";
+    else if (bearingDeg >= 67.5f && bearingDeg < 112.5f) cardinal = "E";
+    else if (bearingDeg >= 112.5f && bearingDeg < 157.5f) cardinal = "SE";
+    else if (bearingDeg >= 157.5f && bearingDeg < 202.5f) cardinal = "S";
+    else if (bearingDeg >= 202.5f && bearingDeg < 247.5f) cardinal = "SW";
+    else if (bearingDeg >= 247.5f && bearingDeg < 292.5f) cardinal = "W";
+    else if (bearingDeg >= 292.5f && bearingDeg < 337.5f) cardinal = "NW";
+}
+
+// -------------------------------------------------------------
+// Waypoints Persistence (SD & NVS)
+// -------------------------------------------------------------
+
+static void load_waypoints()
+{
+    g_numWaypoints = 0;
+#ifdef HAS_SDCARD
+    if (emoji_sd_ready && emoji_sd_ready()) {
+        ISpiLock::Guard bus;
+        if (SDFs.exists("/waypoints.txt")) {
+            FsFile f = SDFs.open("/waypoints.txt", O_RDONLY);
+            if (f) {
+                char line[96];
+                while (f.fgets(line, sizeof(line)) > 0 && g_numWaypoints < 16) {
+                    char name[24] = {0};
+                    int32_t lat = 0, lon = 0, alt = 0;
+                    if (sscanf(line, "%23[^,],%d,%d,%d", name, &lat, &lon, &alt) >= 3) {
+                        snprintf(g_waypoints[g_numWaypoints].name, sizeof(g_waypoints[g_numWaypoints].name), "%s", name);
+                        g_waypoints[g_numWaypoints].lat = lat;
+                        g_waypoints[g_numWaypoints].lon = lon;
+                        g_waypoints[g_numWaypoints].alt = alt;
+                        g_numWaypoints++;
+                    }
+                }
+                f.close();
+                if (g_numWaypoints > 0) return;
+            }
+        }
+    }
+#endif
+    // NVS Fallback
+    Preferences p;
+    if (p.begin("waypts", true)) {
+        g_numWaypoints = p.getInt("cnt", 0);
+        if (g_numWaypoints > 16) g_numWaypoints = 16;
+        for (int i = 0; i < g_numWaypoints; i++) {
+            char k[16];
+            snprintf(k, sizeof(k), "n%d", i);
+            snprintf(g_waypoints[i].name, sizeof(g_waypoints[i].name), "%s", p.getString(k, "WP").c_str());
+            snprintf(k, sizeof(k), "la%d", i);
+            g_waypoints[i].lat = p.getInt(k, 0);
+            snprintf(k, sizeof(k), "lo%d", i);
+            g_waypoints[i].lon = p.getInt(k, 0);
+            snprintf(k, sizeof(k), "al%d", i);
+            g_waypoints[i].alt = p.getInt(k, 0);
+        }
+        p.end();
+    }
+}
+
+static void save_waypoints()
+{
+#ifdef HAS_SDCARD
+    if (emoji_sd_ready && emoji_sd_ready()) {
+        ISpiLock::Guard bus;
+        FsFile f = SDFs.open("/waypoints.txt", O_WRONLY | O_CREAT | O_TRUNC);
+        if (f) {
+            for (int i = 0; i < g_numWaypoints; i++) {
+                char buf[96];
+                snprintf(buf, sizeof(buf), "%s,%d,%d,%d\n", g_waypoints[i].name,
+                         (int)g_waypoints[i].lat, (int)g_waypoints[i].lon, (int)g_waypoints[i].alt);
+                f.write(buf);
+            }
+            f.close();
+        }
+    }
+#endif
+    Preferences p;
+    if (p.begin("waypts", false)) {
+        p.putInt("cnt", g_numWaypoints);
+        for (int i = 0; i < g_numWaypoints; i++) {
+            char k[16];
+            snprintf(k, sizeof(k), "n%d", i);
+            p.putString(k, g_waypoints[i].name);
+            snprintf(k, sizeof(k), "la%d", i);
+            p.putInt(k, g_waypoints[i].lat);
+            snprintf(k, sizeof(k), "lo%d", i);
+            p.putInt(k, g_waypoints[i].lon);
+            snprintf(k, sizeof(k), "al%d", i);
+            p.putInt(k, g_waypoints[i].alt);
+        }
+        p.end();
+    }
+}
+
+// -------------------------------------------------------------
+// Sub-Screen Factory (Clean Full-Screen View with Native Top Bar)
+// -------------------------------------------------------------
+
+static void on_subscreen_back(lv_event_t *e)
+{
+    lv_obj_t *root = (lv_obj_t *)lv_event_get_user_data(e);
+    if (root) {
+        lv_obj_del_async(root);
+    }
+    if (g_kb) lv_obj_add_flag(g_kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+static lv_obj_t *create_subscreen(const char *title, lv_obj_t **outBody)
+{
+    if (!g_screen) return nullptr;
+
+    lv_obj_t *root = lv_obj_create(g_screen);
+    lv_obj_remove_style_all(root);
+    lv_obj_set_size(root, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(root, lv_color_hex(g_tBg), 0);
+    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(root, 0, 0);
+
+    // Top Bar
+    lv_obj_t *bar = lv_obj_create(root);
+    lv_obj_remove_style_all(bar);
+    lv_obj_set_size(bar, lv_pct(100), 38);
+    add_style_top_panel_style(bar);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(g_tTopBg), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(bar, 0, 0);
+    lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Back Button [ < Back ]
+    lv_obj_t *backBtn = lv_button_create(bar);
+    lv_obj_set_size(backBtn, 64, 28);
+    lv_obj_set_style_align(backBtn, LV_ALIGN_LEFT_MID, 0);
+    lv_obj_set_pos(backBtn, 6, 0);
+    lv_obj_set_style_bg_color(backBtn, lv_color_hex(g_tBtnBg), 0);
+    lv_obj_set_style_bg_opa(backBtn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(backBtn, 4, 0);
+    lv_obj_set_style_shadow_width(backBtn, 0, 0);
+    lv_obj_add_event_cb(backBtn, on_subscreen_back, LV_EVENT_CLICKED, root);
+
+    lv_obj_t *backLbl = lv_label_create(backBtn);
+    lv_label_set_text(backLbl, "< Back");
+    lv_obj_set_style_text_color(backLbl, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(backLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_align(backLbl, LV_ALIGN_CENTER, 0);
+
+    // Title
+    lv_obj_t *titleLbl = lv_label_create(bar);
+    lv_label_set_text(titleLbl, title);
+    lv_obj_set_style_text_color(titleLbl, lv_color_hex(g_tTopText), 0);
+    lv_obj_set_style_text_font(titleLbl, &ui_font_montserrat_14, 0);
+    lv_obj_set_style_align(titleLbl, LV_ALIGN_CENTER, 0);
+
+    // Body
+    lv_obj_t *body = lv_obj_create(root);
+    lv_obj_remove_style_all(body);
+    lv_obj_set_size(body, lv_pct(100), LV_PCT(100));
+    lv_obj_set_flex_grow(body, 1);
+    lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(body, 8, 0);
+    lv_obj_set_style_pad_row(body, 6, 0);
+    lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scroll_dir(body, LV_DIR_VER);
+
+    if (outBody) *outBody = body;
+    return root;
+}
+
+// -------------------------------------------------------------
+// 1. Waypoints & Backtrack Compass Screen
+// -------------------------------------------------------------
+
+static lv_obj_t *g_wpListContainer = nullptr;
+static int g_guideWpIdx = -1;
+
+static void refresh_waypoints_list();
+
+static void on_guide_screen_timer(lv_timer_t *t)
+{
+    lv_obj_t *lblDist = (lv_obj_t *)lv_timer_get_user_data(t);
+    if (!lblDist || !lv_obj_is_valid(lblDist) || g_guideWpIdx < 0 || g_guideWpIdx >= g_numWaypoints) return;
+
+    Waypoint &wp = g_waypoints[g_guideWpIdx];
+    if (g_myLat == 0 && g_myLon == 0) {
+        lv_label_set_text(lblDist, "Waiting GPS fix...");
+        return;
+    }
+
+    float distKm = 0.0f, bearingDeg = 0.0f;
+    const char *card = "N";
+    calc_dist_bearing(g_myLat, g_myLon, wp.lat, wp.lon, distKm, bearingDeg, card);
+
+    char buf[64];
+    if (distKm < 1.0f)
+        snprintf(buf, sizeof(buf), "%dm  %s  (%03d°)", (int)(distKm * 1000.0f), card, (int)bearingDeg);
+    else
+        snprintf(buf, sizeof(buf), "%.2fkm  %s  (%03d°)", distKm, card, (int)bearingDeg);
+    lv_label_set_text(lblDist, buf);
+}
+
+static void on_open_guidance(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= g_numWaypoints) return;
+    g_guideWpIdx = idx;
+
+    Waypoint &wp = g_waypoints[idx];
+    char title[40];
+    snprintf(title, sizeof(title), "Guide: %s", wp.name);
+
+    lv_obj_t *body = nullptr;
+    lv_obj_t *root = create_subscreen(title, &body);
+    if (!root || !body) return;
+
+    // Card container
+    lv_obj_t *card = lv_obj_create(body);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_size(card, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(card, lv_color_hex(g_tItemBg), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, 8, 0);
+    lv_obj_set_style_pad_all(card, 12, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(card, 8, 0);
+
+    // Target Name
+    lv_obj_t *nameLbl = lv_label_create(card);
+    lv_label_set_text(nameLbl, wp.name);
+    lv_obj_set_style_text_font(nameLbl, &ui_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(nameLbl, lv_color_hex(g_tAccent), 0);
+
+    // Big Distance & Bearing Label
+    lv_obj_t *distLbl = lv_label_create(card);
+    lv_obj_set_style_text_font(distLbl, &ui_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(distLbl, lv_color_hex(0xffffff), 0);
+    lv_label_set_text(distLbl, "Calculating...");
+
+    // Target Coordinates
+    lv_obj_t *coordLbl = lv_label_create(card);
+    char cBuf[64];
+    snprintf(cBuf, sizeof(cBuf), "Target: %.5f, %.5f", (double)wp.lat * 1e-7, (double)wp.lon * 1e-7);
+    lv_label_set_text(coordLbl, cBuf);
+    lv_obj_set_style_text_font(coordLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(coordLbl, lv_color_hex(0x9ca3af), 0);
+
+    // Elevation Delta
+    lv_obj_t *altLbl = lv_label_create(card);
+    int32_t dAlt = (g_myAlt && wp.alt) ? (wp.alt - g_myAlt) : 0;
+    snprintf(cBuf, sizeof(cBuf), "Elev delta: %+dm (Target: %dm)", (int)dAlt, (int)wp.alt);
+    lv_label_set_text(altLbl, cBuf);
+    lv_obj_set_style_text_font(altLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(altLbl, lv_color_hex(0x9ca3af), 0);
+
+    // Refresh immediately & start 1s live timer
+    lv_timer_t *tmr = lv_timer_create(on_guide_screen_timer, 1000, distLbl);
+    on_guide_screen_timer(tmr);
+
+    // Clean up timer when screen is deleted
+    lv_obj_add_event_cb(root, [](lv_event_t *e) {
+        lv_timer_t *t = (lv_timer_t *)lv_event_get_user_data(e);
+        if (t) lv_timer_delete(t);
+    }, LV_EVENT_DELETE, tmr);
+}
+
+static void on_delete_waypoint(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= g_numWaypoints) return;
+    for (int i = idx; i < g_numWaypoints - 1; i++) {
+        g_waypoints[i] = g_waypoints[i + 1];
+    }
+    g_numWaypoints--;
+    save_waypoints();
+    refresh_waypoints_list();
+}
+
+static void refresh_waypoints_list()
+{
+    if (!g_wpListContainer) return;
+    lv_obj_clean(g_wpListContainer);
+
+    if (g_numWaypoints == 0) {
+        lv_obj_t *emptyLbl = lv_label_create(g_wpListContainer);
+        lv_label_set_text(emptyLbl, "No waypoints saved yet.\nTap '+ Mark Current GPS' to save your spot.");
+        lv_obj_set_style_text_color(emptyLbl, lv_color_hex(0x9ca3af), 0);
+        lv_obj_set_style_text_font(emptyLbl, &ui_font_montserrat_12, 0);
+        lv_obj_set_style_pad_all(emptyLbl, 12, 0);
+        return;
+    }
+
+    for (int i = 0; i < g_numWaypoints; i++) {
+        Waypoint &wp = g_waypoints[i];
+
+        lv_obj_t *row = lv_obj_create(g_wpListContainer);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, lv_pct(100), 44);
+        lv_obj_set_style_bg_color(row, lv_color_hex(g_tItemBg), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(row, 6, 0);
+        lv_obj_set_style_pad_hor(row, 8, 0);
+        lv_obj_set_style_pad_ver(row, 4, 0);
+
+        // Name and Dist Info
+        lv_obj_t *infoCol = lv_obj_create(row);
+        lv_obj_remove_style_all(infoCol);
+        lv_obj_set_size(infoCol, 120, LV_PCT(100));
+        lv_obj_set_flex_flow(infoCol, LV_FLEX_FLOW_COLUMN);
+
+        lv_obj_t *nameLbl = lv_label_create(infoCol);
+        lv_label_set_text(nameLbl, wp.name);
+        lv_obj_set_style_text_font(nameLbl, &ui_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(nameLbl, lv_color_hex(0xffffff), 0);
+
+        lv_obj_t *distLbl = lv_label_create(infoCol);
+        lv_obj_set_style_text_font(distLbl, &ui_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(distLbl, lv_color_hex(g_tAccent), 0);
+        if (g_myLat != 0 || g_myLon != 0) {
+            float distKm = 0.0f, bearingDeg = 0.0f;
+            const char *card = "N";
+            calc_dist_bearing(g_myLat, g_myLon, wp.lat, wp.lon, distKm, bearingDeg, card);
+            char dBuf[32];
+            if (distKm < 1.0f) snprintf(dBuf, sizeof(dBuf), "%dm %s", (int)(distKm * 1000.0f), card);
+            else snprintf(dBuf, sizeof(dBuf), "%.1fkm %s", distKm, card);
+            lv_label_set_text(distLbl, dBuf);
+        } else {
+            lv_label_set_text(distLbl, "No GPS");
+        }
+
+        // [ Guide ] Button
+        lv_obj_t *guideBtn = lv_button_create(row);
+        lv_obj_set_size(guideBtn, 56, 28);
+        lv_obj_set_style_align(guideBtn, LV_ALIGN_RIGHT_MID, 0);
+        lv_obj_set_pos(guideBtn, -36, 0);
+        lv_obj_set_style_bg_color(guideBtn, lv_color_hex(g_tBtnBg), 0);
+        lv_obj_set_style_bg_opa(guideBtn, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(guideBtn, 4, 0);
+        lv_obj_set_style_shadow_width(guideBtn, 0, 0);
+        lv_obj_add_event_cb(guideBtn, on_open_guidance, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+
+        lv_obj_t *gLbl = lv_label_create(guideBtn);
+        lv_label_set_text(gLbl, "Guide");
+        lv_obj_set_style_text_color(gLbl, lv_color_hex(0xffffff), 0);
+        lv_obj_set_style_text_font(gLbl, &ui_font_montserrat_12, 0);
+        lv_obj_set_style_align(gLbl, LV_ALIGN_CENTER, 0);
+
+        // [ Del ] Button
+        lv_obj_t *delBtn = lv_button_create(row);
+        lv_obj_set_size(delBtn, 30, 28);
+        lv_obj_set_style_align(delBtn, LV_ALIGN_RIGHT_MID, 0);
+        lv_obj_set_pos(delBtn, 0, 0);
+        lv_obj_set_style_bg_color(delBtn, lv_color_hex(0xd9534f), 0);
+        lv_obj_set_style_bg_opa(delBtn, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(delBtn, 4, 0);
+        lv_obj_set_style_shadow_width(delBtn, 0, 0);
+        lv_obj_add_event_cb(delBtn, on_delete_waypoint, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+
+        lv_obj_t *dLbl = lv_label_create(delBtn);
+        lv_label_set_text(dLbl, "X");
+        lv_obj_set_style_text_color(dLbl, lv_color_hex(0xffffff), 0);
+        lv_obj_set_style_text_font(dLbl, &ui_font_montserrat_12, 0);
+        lv_obj_set_style_align(dLbl, LV_ALIGN_CENTER, 0);
+    }
+}
+
+static void on_mark_gps_click(lv_event_t *e)
+{
+    if (g_myLat == 0 && g_myLon == 0) {
+        // GPS not locked yet
+        return;
+    }
+    if (g_numWaypoints >= 16) return;
+
+    // Default label: Camp, Car, Trail, or WP#
+    const char *presets[] = {"Camp", "Car", "Trailhead", "Rendezvous", "Water", "Base"};
+    char name[24];
+    if (g_numWaypoints < 6) {
+        snprintf(name, sizeof(name), "%s", presets[g_numWaypoints]);
+    } else {
+        snprintf(name, sizeof(name), "WP %d", g_numWaypoints + 1);
+    }
+
+    snprintf(g_waypoints[g_numWaypoints].name, sizeof(g_waypoints[g_numWaypoints].name), "%s", name);
+    g_waypoints[g_numWaypoints].lat = g_myLat;
+    g_waypoints[g_numWaypoints].lon = g_myLon;
+    g_waypoints[g_numWaypoints].alt = g_myAlt;
+    g_numWaypoints++;
+
+    save_waypoints();
+    refresh_waypoints_list();
+}
+
+static void open_waypoints_screen(lv_event_t *e)
+{
+    load_waypoints();
+    lv_obj_t *body = nullptr;
+    lv_obj_t *root = create_subscreen("Waypoints & Compass", &body);
+    if (!root || !body) return;
+
+    // Top Action Row
+    lv_obj_t *topRow = lv_obj_create(body);
+    lv_obj_remove_style_all(topRow);
+    lv_obj_set_size(topRow, lv_pct(100), 34);
+    lv_obj_set_flex_flow(topRow, LV_FLEX_FLOW_ROW);
+
+    lv_obj_t *markBtn = lv_button_create(topRow);
+    lv_obj_set_size(markBtn, lv_pct(100), 32);
+    lv_obj_set_style_bg_color(markBtn, lv_color_hex(g_tBtnBg), 0);
+    lv_obj_set_style_bg_opa(markBtn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(markBtn, 6, 0);
+    lv_obj_set_style_shadow_width(markBtn, 0, 0);
+    lv_obj_add_event_cb(markBtn, on_mark_gps_click, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *mbLbl = lv_label_create(markBtn);
+    if (g_myLat != 0 || g_myLon != 0) {
+        lv_label_set_text(mbLbl, "+ Mark Current GPS");
+    } else {
+        lv_label_set_text(mbLbl, "Waiting for GPS Fix...");
+    }
+    lv_obj_set_style_text_color(mbLbl, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(mbLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_align(mbLbl, LV_ALIGN_CENTER, 0);
+
+    // Waypoints Container
+    g_wpListContainer = lv_obj_create(body);
+    lv_obj_remove_style_all(g_wpListContainer);
+    lv_obj_set_size(g_wpListContainer, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(g_wpListContainer, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(g_wpListContainer, 6, 0);
+
+    refresh_waypoints_list();
+}
+
+// -------------------------------------------------------------
+// 2. Node Radar (Proximity Finder) Screen
+// -------------------------------------------------------------
+
+static lv_obj_t *g_radarCard = nullptr;
+static lv_obj_t *g_radarNameLbl = nullptr;
+static lv_obj_t *g_radarDistLbl = nullptr;
+static lv_obj_t *g_radarSigLbl = nullptr;
+static lv_obj_t *g_radarBarsLbl = nullptr;
+static lv_obj_t *g_radarHeardLbl = nullptr;
+static lv_obj_t *g_radarPingStatusLbl = nullptr;
+static int g_radarSelectedIdx = 0;
+
+static void update_radar_display()
+{
+    if (g_radarCount == 0 || g_radarSelectedIdx < 0 || g_radarSelectedIdx >= g_radarCount) {
+        if (g_radarNameLbl) lv_label_set_text(g_radarNameLbl, "No nodes discovered yet");
+        if (g_radarDistLbl) lv_label_set_text(g_radarDistLbl, "--");
+        if (g_radarSigLbl) lv_label_set_text(g_radarSigLbl, "RSSI: -- dBm  SNR: -- dB");
+        if (g_radarBarsLbl) lv_label_set_text(g_radarBarsLbl, "[ . . . . . ]");
+        if (g_radarHeardLbl) lv_label_set_text(g_radarHeardLbl, "Last contact: --");
+        return;
+    }
+
+    RadarNode &rn = g_radarNodes[g_radarSelectedIdx];
+    if (g_radarNameLbl) {
+        char nBuf[48];
+        snprintf(nBuf, sizeof(nBuf), "%s (!%08x)", rn.name, (unsigned)rn.nodeNum);
+        lv_label_set_text(g_radarNameLbl, nBuf);
+    }
+
+    // Distance & Bearing
+    if (g_radarDistLbl) {
+        if (g_myLat != 0 && g_myLon != 0 && rn.lat != 0 && rn.lon != 0) {
+            float distKm = 0.0f, bearingDeg = 0.0f;
+            const char *card = "N";
+            calc_dist_bearing(g_myLat, g_myLon, rn.lat, rn.lon, distKm, bearingDeg, card);
+            char dBuf[48];
+            if (distKm < 1.0f) snprintf(dBuf, sizeof(dBuf), "%dm %s (%03d°)", (int)(distKm * 1000.0f), card, (int)bearingDeg);
+            else snprintf(dBuf, sizeof(dBuf), "%.2fkm %s (%03d°)", distKm, card, (int)bearingDeg);
+            lv_label_set_text(g_radarDistLbl, dBuf);
+        } else {
+            lv_label_set_text(g_radarDistLbl, "No GPS position from node");
+        }
+    }
+
+    // Signal Bars
+    if (g_radarBarsLbl) {
+        const char *bars = "[ . . . . . ]";
+        if (rn.rssi > -80) bars = "[ ##### ] (Excellent)";
+        else if (rn.rssi > -95) bars = "[ ####. ] (Good)";
+        else if (rn.rssi > -105) bars = "[ ###.. ] (Fair)";
+        else if (rn.rssi > -115) bars = "[ ##... ] (Weak)";
+        else if (rn.rssi > -128) bars = "[ #.... ] (Marginal)";
+        lv_label_set_text(g_radarBarsLbl, bars);
+    }
+
+    if (g_radarSigLbl) {
+        char sBuf[48];
+        snprintf(sBuf, sizeof(sBuf), "RSSI: %d dBm  |  SNR: %+.1f dB", (int)rn.rssi, rn.snr);
+        lv_label_set_text(g_radarSigLbl, sBuf);
+    }
+
+    if (g_radarHeardLbl) {
+        uint32_t nowSec = millis() / 1000;
+        uint32_t age = (nowSec > rn.lastHeard) ? (nowSec - rn.lastHeard) : 0;
+        char hBuf[32];
+        if (age < 60) snprintf(hBuf, sizeof(hBuf), "Last heard: %ds ago", (int)age);
+        else snprintf(hBuf, sizeof(hBuf), "Last heard: %dm ago", (int)(age / 60));
+        lv_label_set_text(g_radarHeardLbl, hBuf);
+    }
+}
+
+static void on_radar_dropdown_changed(lv_event_t *e)
+{
+    lv_obj_t *dd = (lv_obj_t *)lv_event_get_target(e);
+    if (!dd) return;
+    g_radarSelectedIdx = lv_dropdown_get_selected(dd);
+    update_radar_display();
+}
+
+static void on_radar_ping(lv_event_t *e)
+{
+    if (g_radarCount == 0 || g_radarSelectedIdx < 0 || g_radarSelectedIdx >= g_radarCount) return;
+    RadarNode &rn = g_radarNodes[g_radarSelectedIdx];
+    emoji_trigger_traceroute(rn.nodeNum, 0);
+    if (g_radarPingStatusLbl) {
+        lv_label_set_text(g_radarPingStatusLbl, "Ping dispatched! Listening for ACK...");
+        lv_obj_set_style_text_color(g_radarPingStatusLbl, lv_color_hex(g_tAccent), 0);
+    }
+}
+
+static void open_node_radar_screen(lv_event_t *e)
+{
+    lv_obj_t *body = nullptr;
+    lv_obj_t *root = create_subscreen("Node Radar", &body);
+    if (!root || !body) return;
+
+    // Dropdown Node Picker
+    lv_obj_t *dd = lv_dropdown_create(body);
+    lv_obj_set_size(dd, lv_pct(100), 36);
+    lv_dropdown_clear_options(dd);
+
+    if (g_radarCount == 0) {
+        lv_dropdown_add_option(dd, "No contacts discovered", 0);
+    } else {
+        for (int i = 0; i < g_radarCount; i++) {
+            char opt[32];
+            snprintf(opt, sizeof(opt), "%s", g_radarNodes[i].name);
+            lv_dropdown_add_option(dd, opt, i);
+        }
+    }
+    lv_dropdown_set_selected(dd, g_radarSelectedIdx);
+    lv_obj_add_event_cb(dd, on_radar_dropdown_changed, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    // Radar Card
+    g_radarCard = lv_obj_create(body);
+    lv_obj_remove_style_all(g_radarCard);
+    lv_obj_set_size(g_radarCard, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(g_radarCard, lv_color_hex(g_tItemBg), 0);
+    lv_obj_set_style_bg_opa(g_radarCard, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(g_radarCard, 8, 0);
+    lv_obj_set_style_pad_all(g_radarCard, 12, 0);
+    lv_obj_set_flex_flow(g_radarCard, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(g_radarCard, 6, 0);
+
+    g_radarNameLbl = lv_label_create(g_radarCard);
+    lv_obj_set_style_text_font(g_radarNameLbl, &ui_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(g_radarNameLbl, lv_color_hex(g_tAccent), 0);
+
+    g_radarDistLbl = lv_label_create(g_radarCard);
+    lv_obj_set_style_text_font(g_radarDistLbl, &ui_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(g_radarDistLbl, lv_color_hex(0xffffff), 0);
+
+    g_radarBarsLbl = lv_label_create(g_radarCard);
+    lv_obj_set_style_text_font(g_radarBarsLbl, &ui_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(g_radarBarsLbl, lv_color_hex(0x4ade80), 0); // Light green
+
+    g_radarSigLbl = lv_label_create(g_radarCard);
+    lv_obj_set_style_text_font(g_radarSigLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(g_radarSigLbl, lv_color_hex(0x9ca3af), 0);
+
+    g_radarHeardLbl = lv_label_create(g_radarCard);
+    lv_obj_set_style_text_font(g_radarHeardLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(g_radarHeardLbl, lv_color_hex(0x9ca3af), 0);
+
+    // Action: [ Ping Node ]
+    lv_obj_t *pingBtn = lv_button_create(body);
+    lv_obj_set_size(pingBtn, lv_pct(100), 34);
+    lv_obj_set_style_bg_color(pingBtn, lv_color_hex(g_tBtnBg), 0);
+    lv_obj_set_style_bg_opa(pingBtn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(pingBtn, 6, 0);
+    lv_obj_set_style_shadow_width(pingBtn, 0, 0);
+    lv_obj_add_event_cb(pingBtn, on_radar_ping, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *pLbl = lv_label_create(pingBtn);
+    lv_label_set_text(pLbl, "Ping Node");
+    lv_obj_set_style_text_color(pLbl, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(pLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_align(pLbl, LV_ALIGN_CENTER, 0);
+
+    g_radarPingStatusLbl = lv_label_create(body);
+    lv_label_set_text(g_radarPingStatusLbl, "");
+    lv_obj_set_style_text_font(g_radarPingStatusLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_align(g_radarPingStatusLbl, LV_ALIGN_CENTER, 0);
+
+    update_radar_display();
+}
+
+// -------------------------------------------------------------
+// 3. RF Channel Monitor (Passive Health Overview) Screen
+// -------------------------------------------------------------
+
+static void on_rf_timer(lv_timer_t *t)
+{
+    lv_obj_t *body = (lv_obj_t *)lv_timer_get_user_data(t);
+    if (!body || !lv_obj_is_valid(body)) return;
+
+    // Refresh gauges and texts
+    lv_obj_t *chBar = (lv_obj_t *)lv_obj_get_user_data(body);
+    if (chBar && lv_obj_is_valid(chBar)) {
+        int v = (int)g_chUtil;
+        if (v > 100) v = 100;
+        lv_bar_set_value(chBar, v, LV_ANIM_ON);
+    }
+}
+
+static void open_rf_monitor_screen(lv_event_t *e)
+{
+    lv_obj_t *body = nullptr;
+    lv_obj_t *root = create_subscreen("RF Channel Monitor", &body);
+    if (!root || !body) return;
+
+    // Section 1: Channel Utilization Gauge
+    lv_obj_t *cCard = lv_obj_create(body);
+    lv_obj_remove_style_all(cCard);
+    lv_obj_set_size(cCard, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(cCard, lv_color_hex(g_tItemBg), 0);
+    lv_obj_set_style_bg_opa(cCard, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(cCard, 8, 0);
+    lv_obj_set_style_pad_all(cCard, 10, 0);
+    lv_obj_set_flex_flow(cCard, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(cCard, 6, 0);
+
+    lv_obj_t *chLbl = lv_label_create(cCard);
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Channel Air Util: %.1f%%", g_chUtil);
+    lv_label_set_text(chLbl, buf);
+    lv_obj_set_style_text_font(chLbl, &ui_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(chLbl, lv_color_hex(0xffffff), 0);
+
+    lv_obj_t *bar = lv_bar_create(cCard);
+    lv_obj_set_size(bar, lv_pct(100), 10);
+    lv_bar_set_range(bar, 0, 100);
+    lv_bar_set_value(bar, (int)g_chUtil, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0x374151), LV_PART_MAIN);
+    // Dynamic color: green if low, red if high
+    uint32_t barCol = (g_chUtil > 50.0f) ? 0xef4444 : (g_chUtil > 25.0f ? 0xf59e0b : 0x10b981);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(barCol), LV_PART_INDICATOR);
+
+    // Section 2: Tx Air Util & Noise
+    lv_obj_t *txCard = lv_obj_create(body);
+    lv_obj_remove_style_all(txCard);
+    lv_obj_set_size(txCard, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(txCard, lv_color_hex(g_tItemBg), 0);
+    lv_obj_set_style_bg_opa(txCard, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(txCard, 8, 0);
+    lv_obj_set_style_pad_all(txCard, 10, 0);
+    lv_obj_set_flex_flow(txCard, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(txCard, 4, 0);
+
+    lv_obj_t *txLbl = lv_label_create(txCard);
+    snprintf(buf, sizeof(buf), "Device Tx Airtime: %.2f%% (Duty Cycle OK)", g_airUtil);
+    lv_label_set_text(txLbl, buf);
+    lv_obj_set_style_text_font(txLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(txLbl, lv_color_hex(g_tAccent), 0);
+
+    lv_obj_t *sigLbl = lv_label_create(txCard);
+    snprintf(buf, sizeof(buf), "Avg Mesh Signal: %.0f dBm (SNR %+.1f dB)", g_avgRssi, g_avgSnr);
+    lv_label_set_text(sigLbl, buf);
+    lv_obj_set_style_text_font(sigLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(sigLbl, lv_color_hex(0x9ca3af), 0);
+
+    // Section 3: Traffic Counters
+    lv_obj_t *cntCard = lv_obj_create(body);
+    lv_obj_remove_style_all(cntCard);
+    lv_obj_set_size(cntCard, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(cntCard, lv_color_hex(g_tItemBg), 0);
+    lv_obj_set_style_bg_opa(cntCard, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(cntCard, 8, 0);
+    lv_obj_set_style_pad_all(cntCard, 10, 0);
+    lv_obj_set_flex_flow(cntCard, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(cntCard, 4, 0);
+
+    lv_obj_t *rxLbl = lv_label_create(cntCard);
+    snprintf(buf, sizeof(buf), "RX Packets: %u", (unsigned)g_rxPkts);
+    lv_label_set_text(rxLbl, buf);
+    lv_obj_set_style_text_font(rxLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(rxLbl, lv_color_hex(0xffffff), 0);
+
+    lv_obj_t *txCntLbl = lv_label_create(cntCard);
+    snprintf(buf, sizeof(buf), "TX Packets: %u", (unsigned)g_txPkts);
+    lv_label_set_text(txCntLbl, buf);
+    lv_obj_set_style_text_font(txCntLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(txCntLbl, lv_color_hex(0xffffff), 0);
+
+    lv_obj_t *badLbl = lv_label_create(cntCard);
+    snprintf(buf, sizeof(buf), "CRC Errors / Drops: %u", (unsigned)g_badPkts);
+    lv_label_set_text(badLbl, buf);
+    lv_obj_set_style_text_font(badLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(badLbl, (g_badPkts > 0) ? lv_color_hex(0xf87171) : lv_color_hex(0x9ca3af), 0);
+
+    // Note at bottom
+    lv_obj_t *noteLbl = lv_label_create(body);
+    lv_label_set_text(noteLbl, "100% passive RF monitoring.\nZero transmissions, no LoRa RX interference.");
+    lv_obj_set_style_text_font(noteLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(noteLbl, lv_color_hex(0x6b7280), 0);
+    lv_obj_set_style_pad_all(noteLbl, 6, 0);
+
+    lv_obj_set_user_data(body, bar);
+    lv_timer_t *tmr = lv_timer_create(on_rf_timer, 1000, body);
+    lv_obj_add_event_cb(root, [](lv_event_t *e) {
+        lv_timer_t *t = (lv_timer_t *)lv_event_get_user_data(e);
+        if (t) lv_timer_delete(t);
+    }, LV_EVENT_DELETE, tmr);
+}
+
+// -------------------------------------------------------------
+// 4. Field Notes (SD Card Offline Scratchpad) Screen
+// -------------------------------------------------------------
+
+static lv_obj_t *g_notesList = nullptr;
+static char g_currentNotePath[64] = {0};
+static lv_obj_t *g_noteTa = nullptr;
+
+static void refresh_notes_list();
+
+static void on_save_note(lv_event_t *e)
+{
+    if (!g_noteTa || !g_currentNotePath[0]) return;
+    const char *txt = lv_textarea_get_text(g_noteTa);
+
+#ifdef HAS_SDCARD
+    if (emoji_sd_ready && emoji_sd_ready()) {
+        ISpiLock::Guard bus;
+        if (!SDFs.exists("/notes")) SDFs.mkdir("/notes");
+        FsFile f = SDFs.open(g_currentNotePath, O_WRONLY | O_CREAT | O_TRUNC);
+        if (f) {
+            if (txt) f.write(txt);
+            f.close();
+        }
+    }
+#endif
+    // Also save to NVS backup
+    Preferences p;
+    if (p.begin("fnotes", false)) {
+        p.putString("note", txt ? txt : "");
+        p.end();
+    }
+
+    lv_obj_t *saveBtn = (lv_obj_t *)lv_event_get_target(e);
+    if (saveBtn) {
+        lv_obj_t *lbl = lv_obj_get_child(saveBtn, 0);
+        if (lbl) lv_label_set_text(lbl, "Saved!");
+    }
+}
+
+static void open_note_editor(const char *path, const char *title)
+{
+    snprintf(g_currentNotePath, sizeof(g_currentNotePath), "%s", path);
+
+    lv_obj_t *body = nullptr;
+    lv_obj_t *root = create_subscreen(title, &body);
+    if (!root || !body) return;
+
+    // Top action bar inside body: [ Save Note ]
+    lv_obj_t *saveBtn = lv_button_create(body);
+    lv_obj_set_size(saveBtn, lv_pct(100), 30);
+    lv_obj_set_style_bg_color(saveBtn, lv_color_hex(0x10b981), 0); // Emerald green
+    lv_obj_set_style_bg_opa(saveBtn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(saveBtn, 4, 0);
+    lv_obj_set_style_shadow_width(saveBtn, 0, 0);
+    lv_obj_add_event_cb(saveBtn, on_save_note, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *sLbl = lv_label_create(saveBtn);
+    lv_label_set_text(sLbl, "Save Note");
+    lv_obj_set_style_text_color(sLbl, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(sLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_align(sLbl, LV_ALIGN_CENTER, 0);
+
+    // Text Area
+    g_noteTa = lv_textarea_create(body);
+    lv_obj_set_size(g_noteTa, lv_pct(100), 180);
+    lv_obj_set_style_bg_color(g_noteTa, lv_color_hex(g_tItemBg), 0);
+    lv_obj_set_style_text_color(g_noteTa, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(g_noteTa, &ui_font_montserrat_14, 0);
+    lv_obj_set_style_radius(g_noteTa, 6, 0);
+    lv_textarea_set_placeholder_text(g_noteTa, "Type field notes here...");
+
+    // Click handler to summon keyboard
+    lv_obj_add_event_cb(g_noteTa, [](lv_event_t *e) {
+        lv_event_code_t code = lv_event_get_code(e);
+        if (code == LV_EVENT_CLICKED || code == LV_EVENT_FOCUSED) {
+            if (g_kb) {
+                lv_obj_clear_flag(g_kb, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_move_foreground(g_kb);
+            }
+            if (g_showKb) g_showKb(g_noteTa);
+        }
+    }, LV_EVENT_ALL, nullptr);
+
+    // Load existing content
+    char content[512] = {0};
+#ifdef HAS_SDCARD
+    if (emoji_sd_ready && emoji_sd_ready()) {
+        ISpiLock::Guard bus;
+        if (SDFs.exists(path)) {
+            FsFile f = SDFs.open(path, O_RDONLY);
+            if (f) {
+                f.read(content, sizeof(content) - 1);
+                f.close();
+            }
+        }
+    }
+#endif
+    if (content[0] == 0) {
+        Preferences p;
+        if (p.begin("fnotes", true)) {
+            snprintf(content, sizeof(content), "%s", p.getString("note", "").c_str());
+            p.end();
+        }
+    }
+    lv_textarea_set_text(g_noteTa, content);
+}
+
+static void on_open_note_click(lv_event_t *e)
+{
+    const char *name = (const char *)lv_event_get_user_data(e);
+    char path[64];
+    snprintf(path, sizeof(path), "/notes/%s", name);
+    open_note_editor(path, name);
+}
+
+static void on_new_note_click(lv_event_t *e)
+{
+    open_note_editor("/notes/scratchpad.txt", "Scratchpad");
+}
+
+static void refresh_notes_list()
+{
+    if (!g_notesList) return;
+    lv_obj_clean(g_notesList);
+
+    std::vector<std::string> files;
+#ifdef HAS_SDCARD
+    if (emoji_sd_ready && emoji_sd_ready()) {
+        ISpiLock::Guard bus;
+        if (!SDFs.exists("/notes")) SDFs.mkdir("/notes");
+        FsFile dir = SDFs.open("/notes");
+        if (dir && dir.isDir()) {
+            FsFile entry;
+            char fn[32];
+            while (entry.openNext(&dir, O_RDONLY)) {
+                if (!entry.isDir()) {
+                    entry.getName(fn, sizeof(fn));
+                    if (strstr(fn, ".txt")) {
+                        files.push_back(fn);
+                    }
+                }
+                entry.close();
+            }
+            dir.close();
+        }
+    }
+#endif
+
+    if (files.empty()) {
+        // Show default Scratchpad row
+        files.push_back("scratchpad.txt");
+    }
+
+    for (const auto &fn : files) {
+        lv_obj_t *row = lv_obj_create(g_notesList);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, lv_pct(100), 38);
+        lv_obj_set_style_bg_color(row, lv_color_hex(g_tItemBg), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(row, 6, 0);
+        lv_obj_set_style_pad_hor(row, 8, 0);
+
+        lv_obj_t *lbl = lv_label_create(row);
+        lv_label_set_text(lbl, fn.c_str());
+        lv_obj_set_style_text_font(lbl, &ui_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xffffff), 0);
+        lv_obj_set_style_align(lbl, LV_ALIGN_LEFT_MID, 0);
+
+        lv_obj_t *openBtn = lv_button_create(row);
+        lv_obj_set_size(openBtn, 56, 26);
+        lv_obj_set_style_align(openBtn, LV_ALIGN_RIGHT_MID, 0);
+        lv_obj_set_style_bg_color(openBtn, lv_color_hex(g_tBtnBg), 0);
+        lv_obj_set_style_bg_opa(openBtn, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(openBtn, 4, 0);
+        lv_obj_set_style_shadow_width(openBtn, 0, 0);
+        lv_obj_add_event_cb(openBtn, on_open_note_click, LV_EVENT_CLICKED, (void *)strdup(fn.c_str()));
+
+        lv_obj_t *oLabel = lv_label_create(openBtn);
+        lv_label_set_text(oLabel, "Open");
+        lv_obj_set_style_text_font(oLabel, &ui_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(oLabel, lv_color_hex(0xffffff), 0);
+        lv_obj_set_style_align(oLabel, LV_ALIGN_CENTER, 0);
+    }
+}
+
+static void open_field_notes_screen(lv_event_t *e)
+{
+    lv_obj_t *body = nullptr;
+    lv_obj_t *root = create_subscreen("Field Notes", &body);
+    if (!root || !body) return;
+
+    // [ + New Note ] Button
+    lv_obj_t *newBtn = lv_button_create(body);
+    lv_obj_set_size(newBtn, lv_pct(100), 32);
+    lv_obj_set_style_bg_color(newBtn, lv_color_hex(g_tBtnBg), 0);
+    lv_obj_set_style_bg_opa(newBtn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(newBtn, 6, 0);
+    lv_obj_set_style_shadow_width(newBtn, 0, 0);
+    lv_obj_add_event_cb(newBtn, on_new_note_click, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *nLbl = lv_label_create(newBtn);
+    lv_label_set_text(nLbl, "+ Open Scratchpad");
+    lv_obj_set_style_text_color(nLbl, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(nLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_align(nLbl, LV_ALIGN_CENTER, 0);
+
+    g_notesList = lv_obj_create(body);
+    lv_obj_remove_style_all(g_notesList);
+    lv_obj_set_size(g_notesList, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(g_notesList, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(g_notesList, 6, 0);
+
+    refresh_notes_list();
+}
+
+// -------------------------------------------------------------
+// Native Tools Tab Hook (EXTRAS Section Divider + 4 Buttons)
+// -------------------------------------------------------------
+
+static lv_obj_t *create_extras_tool_button(lv_obj_t *parent, const char *text, lv_event_cb_t cb)
+{
+    lv_obj_t *btn = lv_button_create(parent);
+    lv_obj_set_pos(btn, 0, 0);
+    lv_obj_set_size(btn, lv_pct(95), 30);
+    add_style_settings_button_style(btn);
+    lv_obj_set_style_align(btn, LV_ALIGN_TOP_MID, 0);
+    lv_obj_set_style_shadow_width(btn, 0, 0);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x4db270), LV_STATE_PRESSED);
+    lv_obj_set_style_text_color(btn, lv_color_hex(0x015114), LV_STATE_PRESSED);
+    lv_obj_set_style_text_color(btn, lv_color_hex(0x808080), LV_STATE_DISABLED);
+
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_obj_set_size(lbl, lv_pct(100), LV_SIZE_CONTENT);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_align(lbl, LV_ALIGN_CENTER, 0);
+    lv_label_set_text(lbl, text);
+
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
+    return btn;
+}
+
+extern "C" void emoji_tools_extras_init(lv_obj_t *tab_page_tools, lv_obj_t *screen, lv_obj_t *keyboard, KbFn showKb)
+{
+    if (!tab_page_tools || !screen) return;
+    g_screen = screen;
+    g_kb = keyboard;
+    g_showKb = showKb;
+
+    // Section Separator: ── EXTRAS ──
+    lv_obj_t *sep = lv_obj_create(tab_page_tools);
+    lv_obj_remove_style_all(sep);
+    lv_obj_set_size(sep, lv_pct(95), 24);
+    lv_obj_set_style_pad_top(sep, 6, 0);
+    lv_obj_set_style_pad_bottom(sep, 2, 0);
+    lv_obj_set_flex_flow(sep, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(sep, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *line1 = lv_obj_create(sep);
+    lv_obj_remove_style_all(line1);
+    lv_obj_set_size(line1, 56, 1);
+    lv_obj_set_style_bg_color(line1, lv_color_hex(0x4b5563), 0);
+    lv_obj_set_style_bg_opa(line1, LV_OPA_COVER, 0);
+
+    lv_obj_t *sepLbl = lv_label_create(sep);
+    lv_label_set_text(sepLbl, "  EXTRAS  ");
+    lv_obj_set_style_text_color(sepLbl, lv_color_hex(g_tAccent), 0);
+    lv_obj_set_style_text_font(sepLbl, &ui_font_montserrat_12, 0);
+
+    lv_obj_t *line2 = lv_obj_create(sep);
+    lv_obj_remove_style_all(line2);
+    lv_obj_set_size(line2, 56, 1);
+    lv_obj_set_style_bg_color(line2, lv_color_hex(0x4b5563), 0);
+    lv_obj_set_style_bg_opa(line2, LV_OPA_COVER, 0);
+
+    // 4 Field Tools Buttons
+    create_extras_tool_button(tab_page_tools, "Waypoints & Compass", open_waypoints_screen);
+    create_extras_tool_button(tab_page_tools, "Node Radar", open_node_radar_screen);
+    create_extras_tool_button(tab_page_tools, "RF Channel Monitor", open_rf_monitor_screen);
+    create_extras_tool_button(tab_page_tools, "Field Notes", open_field_notes_screen);
+}
