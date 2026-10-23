@@ -626,29 +626,45 @@
               <span class="tip" title="Start with a real, tested board configuration.">ⓘ</span>
             </label>
             <select id="boardSelect" class="form-control" onchange="onBoardChange()">
-              <optgroup label="Seeed Studio">
-                <option value="seeed_xiao_s3" selected>Seeed Studio XIAO ESP32-S3 (Wio-SX1262)</option>
-                <option value="seeed_sensecap_indicator">Seeed SenseCAP Indicator (4" Touch + SX1262)</option>
+              <optgroup label="🌟 RiV Xiao S3 Series (Seeed Xiao ESP32-S3)">
+                <option value="riv_xiao_s3_tft_portrait_emoji" selected>RiV Xiao S3 TFT Portrait + Emoji (Flagship)</option>
+                <option value="riv_xiao_s3_tft_portrait">RiV Xiao S3 TFT Portrait (Clean)</option>
+                <option value="riv_xiao_s3_tft_landscape">RiV Xiao S3 TFT Landscape (480x320)</option>
+                <option value="riv_xiao_s3_tft_i2c">RiV Xiao S3 TFT (I2C Mode + SD D7)</option>
+                <option value="riv_xiao_s3_st7735">RiV Xiao S3 ST7735 (Compact 128x160 TFT)</option>
+                <option value="riv_xiao_s3_st7735_gps">RiV Xiao S3 ST7735 + GPS</option>
+                <option value="riv_xiao_s3_joystick">RiV Xiao S3 Joystick (5-Way Trackball)</option>
               </optgroup>
-              <optgroup label="Heltec Automation">
+              <optgroup label="📱 RiV Mesh-Tab Series">
+                <option value="riv_mesh_tab_st7796">RiV Mesh-Tab ST7796 (3.5" 320x480 Tablet)</option>
+              </optgroup>
+              <optgroup label="🎮 RiV Handheld S3 Series (ESP32-S3)">
+                <option value="riv_handheld_s3">RiV Handheld S3 (3.5" ILI9488/ST7796 + Touch)</option>
+                <option value="riv_handheld_s3_st7789">RiV Handheld S3 ST7789 (240x320)</option>
+                <option value="riv_handheld_s3_joystick">RiV Handheld S3 + Joystick</option>
+              </optgroup>
+              <optgroup label="📡 RiV MeshNode S3 Series (DevKit ESP32-S3)">
+                <option value="riv_meshnode_s3">RiV Meshnode S3 (RFM95 / SX1276 Classic)</option>
+                <option value="riv_meshnode_s3_4in">RiV Meshnode S3 4.0" (480x320 IPS)</option>
+                <option value="riv_meshnode_s3_joystick">RiV Meshnode S3 Joystick</option>
+              </optgroup>
+              <optgroup label="⚡ RiV DIY & Specialty Builds">
+                <option value="diy_esp32s3_rfm95">DIY ESP32-S3 + RFM95W</option>
+                <option value="my_esp32s3_diy_eink">DIY ESP32-S3 E-Paper (Low Power)</option>
+                <option value="my_esp32s3_diy_oled">DIY ESP32-S3 OLED (SSD1306)</option>
+                <option value="t_energy_s3_e22">T-Energy S3 + Ebyte E22 (1W High-Power)</option>
+              </optgroup>
+              <optgroup label="🏢 Official Commercial Meshtastic Boards">
+                <option value="seeed_xiao_s3">Seeed Studio XIAO ESP32-S3 (Official Stock)</option>
+                <option value="seeed_sensecap_indicator">Seeed SenseCAP Indicator (4" Touch + SX1262)</option>
                 <option value="heltec_v3">Heltec V3 (ESP32-S3 + SX1262 + OLED)</option>
                 <option value="heltec_v4">Heltec V4 (ESP32-S3 + SX1262)</option>
                 <option value="heltec_wireless_tracker">Heltec Wireless Tracker (SX1262 + TFT + GNSS)</option>
                 <option value="heltec_wireless_paper">Heltec Wireless Paper (SX1262 + E-Paper)</option>
-              </optgroup>
-              <optgroup label="LilyGO">
                 <option value="t_deck">LilyGO T-Deck (320x240 ST7789 + GT911 Touch)</option>
                 <option value="tlora_t3s3_v1">LilyGO T3S3 v1 (ESP32-S3 + SX1262)</option>
                 <option value="tbeam_s3_core">LilyGO T-Beam S3 Core (SX1262 + GNSS)</option>
-              </optgroup>
-              <optgroup label="M5Stack">
                 <option value="m5stack_cardputer_adv">M5Stack Cardputer Advanced (ST7789 + Keyboard)</option>
-              </optgroup>
-              <optgroup label="RiV Proven DIY Variants">
-                <option value="riv_xiao_s3_tft">RiV Xiao S3 TFT (ST7789/ST7796 + CST816S Touch)</option>
-                <option value="riv_mesh_tab_st7796">RiV Mesh-Tab (ST7796 320x480 + FT6336 Touch)</option>
-                <option value="riv_handheld_s3">RiV Handheld S3 (SX1262/RFM95 + ST7789)</option>
-                <option value="riv_meshnode_s3">RiV Meshnode S3 (RFM95 SX1276 Classic)</option>
               </optgroup>
             </select>
           </div>
@@ -1038,9 +1054,217 @@
 <script>
 // Comprehensive database of real existing variants
 const BOARD_PRESETS = {
-  // --- Seeed Studio ---
+  // ─── RiV Xiao S3 Series (Seeed Xiao ESP32-S3) ───────────────────────────
+  riv_xiao_s3_tft_portrait_emoji: {
+    name: "RiV Xiao S3 TFT Portrait + Emoji (Flagship)",
+    category: "riv",
+    board: "seeed-xiao-s3",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
+    display: { type: "ST7789", rotation: 0, cs: 1, dc: 2, rst: 3, bl: 4 },
+    touch: { type: "CST816S", mapping: "INVERT_Y", pin1: 43, pin2: 6, int: 5, rst: -1 },
+    buzzer: 48,
+    hint: "Flagship Xiao S3 build: Portrait 320x480 TFT, CST816S I2C touch, full color emojis, quiet hours, buzzer 48."
+  },
+  riv_xiao_s3_tft_portrait: {
+    name: "RiV Xiao S3 TFT Portrait (Clean)",
+    category: "riv",
+    board: "seeed-xiao-s3",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
+    display: { type: "ST7789", rotation: 0, cs: 1, dc: 2, rst: 3, bl: 4 },
+    touch: { type: "XPT2046", mapping: "DEFAULT", pin1: 5, pin2: 7, int: -1, rst: -1 },
+    buzzer: -1,
+    hint: "Xiao S3 portrait layout with SPI XPT2046 touch on D4."
+  },
+  riv_xiao_s3_tft_landscape: {
+    name: "RiV Xiao S3 TFT Landscape (480x320)",
+    category: "riv",
+    board: "seeed-xiao-s3",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
+    display: { type: "ST7796", rotation: 1, cs: 1, dc: 2, rst: 3, bl: 4 },
+    touch: { type: "XPT2046", mapping: "DEFAULT", pin1: 5, pin2: 7, int: -1, rst: -1 },
+    buzzer: -1,
+    hint: "Xiao S3 landscape 480x320 ILI9488/ST7796 with XPT2046 touch."
+  },
+  riv_xiao_s3_tft_i2c: {
+    name: "RiV Xiao S3 TFT (I2C Mode + SD D7)",
+    category: "riv",
+    board: "seeed-xiao-s3",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
+    display: { type: "ST7789", rotation: 0, cs: 1, dc: 2, rst: -1, bl: 4 },
+    touch: { type: "CST816S", mapping: "INVERT_Y", pin1: 43, pin2: 6, int: 5, rst: -1 },
+    buzzer: 48,
+    hint: "Xiao S3 with I2C bus enabled on D5/D6 (GPIO 6/43), SD card on D7 (GPIO 44)."
+  },
+  riv_xiao_s3_st7735: {
+    name: "RiV Xiao S3 ST7735 (Compact 128x160 TFT)",
+    category: "riv",
+    board: "seeed-xiao-s3",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
+    display: { type: "ST7735", rotation: 0, cs: 1, dc: 2, rst: 3, bl: 4 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: 48,
+    hint: "Xiao S3 with 1.8-inch ST7735 128x160 color TFT (2x downscaled MUI layout)."
+  },
+  riv_xiao_s3_st7735_gps: {
+    name: "RiV Xiao S3 ST7735 + GPS",
+    category: "riv",
+    board: "seeed-xiao-s3",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
+    display: { type: "ST7735", rotation: 0, cs: 1, dc: 2, rst: 3, bl: 4 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: 48,
+    hint: "Xiao S3 with ST7735 128x160 TFT and GPS on D5/D6 (9600 baud)."
+  },
+  riv_xiao_s3_joystick: {
+    name: "RiV Xiao S3 Joystick (5-Way Trackball)",
+    category: "riv",
+    board: "seeed-xiao-s3",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
+    display: { type: "NONE", rotation: 0, cs: -1, dc: -1, rst: -1, bl: -1 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: -1,
+    hint: "Xiao S3 with 5-way discrete joystick navigation on freed GPIOs."
+  },
+
+  // ─── RiV Mesh-Tab Series ────────────────────────────────────────────────
+  riv_mesh_tab_st7796: {
+    name: "RiV Mesh-Tab ST7796 (3.5" 320x480 Tablet)",
+    category: "riv",
+    board: "seeed-xiao-s3",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
+    display: { type: "ST7796", rotation: 0, cs: 1, dc: 2, rst: 3, bl: 4 },
+    touch: { type: "FT6336", mapping: "DEFAULT", pin1: 43, pin2: 6, int: 5, rst: -1 },
+    buzzer: 12,
+    hint: "Xiao S3 3.5" ST7796 320x480 high-res portable mesh tablet with capacitive touch."
+  },
+
+  // ─── RiV Handheld S3 Series ─────────────────────────────────────────────
+  riv_handheld_s3: {
+    name: "RiV Handheld S3 (3.5" ILI9488/ST7796 + Touch)",
+    category: "riv",
+    board: "esp32-s3-devkitc-1",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: 21, dio0: -1 },
+    display: { type: "ST7796", rotation: 0, cs: 15, dc: 16, rst: 17, bl: 18 },
+    touch: { type: "XPT2046", mapping: "DEFAULT", pin1: 4, pin2: 5, int: 6, rst: -1 },
+    buzzer: 48,
+    hint: "ESP32-S3 Handheld with 3.5" display, XPT2046 touch, and SX1262 radio."
+  },
+  riv_handheld_s3_st7789: {
+    name: "RiV Handheld S3 ST7789 (240x320)",
+    category: "riv",
+    board: "esp32-s3-devkitc-1",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: 21, dio0: -1 },
+    display: { type: "ST7789", rotation: 0, cs: 15, dc: 16, rst: 17, bl: 18 },
+    touch: { type: "CST816S", mapping: "DEFAULT", pin1: 4, pin2: 5, int: 6, rst: -1 },
+    buzzer: 48,
+    hint: "ESP32-S3 Handheld paired with ST7789 2.8" 240x320 color screen."
+  },
+  riv_handheld_s3_joystick: {
+    name: "RiV Handheld S3 + Joystick",
+    category: "riv",
+    board: "esp32-s3-devkitc-1",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: 21, dio0: -1 },
+    display: { type: "ST7789", rotation: 0, cs: 15, dc: 16, rst: 17, bl: 18 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: 48,
+    hint: "ESP32-S3 Handheld with 5-way joystick hardware controls."
+  },
+
+  // ─── RiV MeshNode S3 Series ─────────────────────────────────────────────
+  riv_meshnode_s3: {
+    name: "RiV Meshnode S3 (RFM95 / SX1276 Classic)",
+    category: "riv",
+    board: "esp32-s3-devkitc-1",
+    extends: "esp32s3_base",
+    lora: { type: "RFM95", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: -1, dio0: 21 },
+    display: { type: "ST7789", rotation: 0, cs: 15, dc: 16, rst: 17, bl: 18 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: 48,
+    hint: "ESP32-S3 paired with legacy HopeRF RFM95W (SX1276) transceiver via DIO0."
+  },
+  riv_meshnode_s3_4in: {
+    name: "RiV Meshnode S3 4.0" (480x320 IPS)",
+    category: "riv",
+    board: "esp32-s3-devkitc-1",
+    extends: "esp32s3_base",
+    lora: { type: "RFM95", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: -1, dio0: 21 },
+    display: { type: "ST7796", rotation: 1, cs: 15, dc: 16, rst: 17, bl: 18 },
+    touch: { type: "XPT2046", mapping: "DEFAULT", pin1: 4, pin2: 5, int: 6, rst: -1 },
+    buzzer: 48,
+    hint: "ESP32-S3 Meshnode with large 4.0-inch 480x320 ILI9488/ST7796 display."
+  },
+  riv_meshnode_s3_joystick: {
+    name: "RiV Meshnode S3 Joystick",
+    category: "riv",
+    board: "esp32-s3-devkitc-1",
+    extends: "esp32s3_base",
+    lora: { type: "RFM95", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: -1, dio0: 21 },
+    display: { type: "ST7789", rotation: 0, cs: 15, dc: 16, rst: 17, bl: 18 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: 48,
+    hint: "ESP32-S3 Meshnode with tactile joystick buttons."
+  },
+
+  // ─── RiV DIY & Specialty Builds ─────────────────────────────────────────
+  diy_esp32s3_rfm95: {
+    name: "DIY ESP32-S3 + RFM95W",
+    category: "riv",
+    board: "esp32-s3-devkitc-1",
+    extends: "esp32s3_base",
+    lora: { type: "RFM95", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: -1, dio0: 21 },
+    display: { type: "SSD1306", rotation: 0, cs: -1, dc: -1, rst: -1, bl: -1 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: -1,
+    hint: "Standard ESP32-S3 with HopeRF RFM95W and 0.96" I2C OLED."
+  },
+  my_esp32s3_diy_eink: {
+    name: "DIY ESP32-S3 E-Paper (Low Power)",
+    category: "riv",
+    board: "esp32-s3-devkitc-1",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: 21, dio0: -1 },
+    display: { type: "NONE", rotation: 0, cs: 15, dc: 16, rst: 17, bl: -1 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: -1,
+    hint: "ESP32-S3 with low power E-Paper / E-Ink display."
+  },
+  my_esp32s3_diy_oled: {
+    name: "DIY ESP32-S3 OLED (SSD1306)",
+    category: "riv",
+    board: "esp32-s3-devkitc-1",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: 21, dio0: -1 },
+    display: { type: "SSD1306", rotation: 0, cs: -1, dc: -1, rst: -1, bl: -1 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: -1,
+    hint: "ESP32-S3 with standard 0.96" I2C OLED display (SDA:4, SCL:5)."
+  },
+  t_energy_s3_e22: {
+    name: "T-Energy S3 + Ebyte E22 (1W High-Power)",
+    category: "riv",
+    board: "esp32-s3-devkitc-1",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: 21, dio0: -1 },
+    display: { type: "NONE", rotation: 0, cs: -1, dc: -1, rst: -1, bl: -1 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: -1,
+    hint: "T-Energy S3 with Ebyte E22 30dBm / 1 Watt high-power LoRa power amplifier."
+  },
+
+  // ─── Official Meshtastic Commercial Boards ──────────────────────────────
   seeed_xiao_s3: {
-    name: "Seeed Studio XIAO ESP32-S3 (Wio-SX1262)",
+    name: "Seeed Studio XIAO ESP32-S3 (Official Stock)",
     category: "official",
     board: "seeed-xiao-s3",
     extends: "esp32s3_base",
@@ -1061,8 +1285,6 @@ const BOARD_PRESETS = {
     buzzer: 21,
     hint: "Official 4-inch touch smart display with built-in ESP32-S3 and SX1262 LoRa module."
   },
-
-  // --- Heltec ---
   heltec_v3: {
     name: "Heltec V3 (ESP32-S3 + OLED)",
     category: "official",
@@ -1107,8 +1329,6 @@ const BOARD_PRESETS = {
     buzzer: -1,
     hint: "Heltec Wireless Paper with 2.13 inch E-Paper display and SX1262."
   },
-
-  // --- LilyGO ---
   t_deck: {
     name: "LilyGO T-Deck (320x240 TFT + Touch)",
     category: "official",
@@ -1142,8 +1362,6 @@ const BOARD_PRESETS = {
     buzzer: -1,
     hint: "LilyGO T-Beam S3 Core with GNSS and 18650 battery holder."
   },
-
-  // --- M5Stack ---
   m5stack_cardputer_adv: {
     name: "M5Stack Cardputer Advanced",
     category: "official",
@@ -1154,52 +1372,6 @@ const BOARD_PRESETS = {
     touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
     buzzer: 43,
     hint: "M5Stack Cardputer with full keyboard, 1.14 inch ST7789 display (240x135), and internal speaker."
-  },
-
-  // --- RiV Proven DIY Custom Variants ---
-  riv_xiao_s3_tft: {
-    name: "RiV Xiao S3 TFT (ST7789/ST7796 + CST816S)",
-    category: "diy",
-    board: "seeed-xiao-s3",
-    extends: "esp32s3_base",
-    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
-    display: { type: "ST7789", rotation: 0, cs: 1, dc: 2, rst: 3, bl: 4 },
-    touch: { type: "CST816S", mapping: "INVERT_Y", pin1: 43, pin2: 6, int: 5, rst: -1 },
-    buzzer: 48,
-    hint: "Proven Xiao S3 build with SPI TFT, capacitive touch (D6/D5), and GPIO 48 notification buzzer."
-  },
-  riv_mesh_tab_st7796: {
-    name: "RiV Mesh-Tab (ST7796 320x480 + FT6336 Touch)",
-    category: "diy",
-    board: "seeed-xiao-s3",
-    extends: "esp32s3_base",
-    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
-    display: { type: "ST7796", rotation: 0, cs: 1, dc: 2, rst: 3, bl: 4 },
-    touch: { type: "FT6336", mapping: "DEFAULT", pin1: 43, pin2: 6, int: 5, rst: -1 },
-    buzzer: 48,
-    hint: "High-resolution 3.5 inch ST7796 320x480 tablet build with full portrait touch UI."
-  },
-  riv_handheld_s3: {
-    name: "RiV Handheld S3 (RFM95/SX1262 + ST7789)",
-    category: "diy",
-    board: "esp32-s3-devkitc-1",
-    extends: "esp32s3_base",
-    lora: { type: "SX1262", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: 21, dio0: -1 },
-    display: { type: "ST7789", rotation: 0, cs: 15, dc: 16, rst: 17, bl: 18 },
-    touch: { type: "XPT2046", mapping: "DEFAULT", pin1: 4, pin2: 5, int: 6, rst: -1 },
-    buzzer: 48,
-    hint: "Handheld ESP32-S3 build with ST7789 color display and buzzer."
-  },
-  riv_meshnode_s3: {
-    name: "RiV Meshnode S3 (RFM95 / SX1276 Classic)",
-    category: "diy",
-    board: "esp32-s3-devkitc-1",
-    extends: "esp32s3_base",
-    lora: { type: "RFM95", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: -1, dio0: 21 },
-    display: { type: "ST7789", rotation: 0, cs: 15, dc: 16, rst: 17, bl: 18 },
-    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
-    buzzer: 48,
-    hint: "ESP32-S3 paired with legacy HopeRF RFM95W transceiver using DIO0."
   }
 };
 
@@ -1217,7 +1389,7 @@ function onBoardChange() {
 
   const isOfficial = p.category === 'official';
   const badge = document.getElementById('boardCategoryBadge');
-  badge.textContent = isOfficial ? "Official Board" : "Proven DIY";
+  badge.textContent = p.category === "riv" ? "RiV Custom Variant" : (isOfficial ? "Official Board" : "DIY Target");
   badge.className = isOfficial ? "gh-badge" : "gh-badge";
 
   const nameInput = document.getElementById('customVariantName');
