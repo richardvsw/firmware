@@ -443,18 +443,29 @@
               <span class="helper-icon" data-tooltip="Pick an official commercial Meshtastic board or a DIY ESP32 board as a starting point.">?</span>
             </label>
             <select id="boardSelect" onchange="onBoardChange()">
-              <optgroup label="Official Boards">
-                <option value="seeed_xiao_s3" selected>Seeed Studio XIAO ESP32-S3 (Wio Baseboard)</option>
-                <option value="heltec_v3">Heltec V3 (ESP32-S3 + SX1262 + OLED)</option>
-                <option value="heltec_wireless_tracker">Heltec Wireless Tracker (SX1262 + TFT + GPS)</option>
-                <option value="t_deck">LilyGO T-Deck (ESP32-S3 + SX1262 + 320x240 TFT + Touch)</option>
-                <option value="tlora_t3s3_v1">LilyGO T3S3 v1 (ESP32-S3 + SX1262)</option>
+              <optgroup label="Seeed Studio">
+                <option value="seeed_xiao_s3" selected>Seeed Studio XIAO ESP32-S3 (Wio-SX1262)</option>
+                <option value="seeed_sensecap_indicator">Seeed SenseCAP Indicator (4" Touch + SX1262)</option>
               </optgroup>
-              <optgroup label="DIY Custom Targets">
-                <option value="diy_blank">➕ Blank / From Scratch (Custom Pinout)</option>
-                <option value="diy_xiao_s3_tft">Seeed XIAO S3 + Custom SPI TFT (ST7789/ST7796)</option>
-                <option value="diy_esp32s3_generic">ESP32-S3 Generic DevKit (8MB/16MB Flash)</option>
-                <option value="diy_esp32_classic">ESP32 Classic (WROOM / WROVER)</option>
+              <optgroup label="Heltec Automation">
+                <option value="heltec_v3">Heltec V3 (ESP32-S3 + SX1262 + OLED)</option>
+                <option value="heltec_v4">Heltec V4 (ESP32-S3 + SX1262)</option>
+                <option value="heltec_wireless_tracker">Heltec Wireless Tracker (SX1262 + TFT + GNSS)</option>
+                <option value="heltec_wireless_paper">Heltec Wireless Paper (SX1262 + E-Paper)</option>
+              </optgroup>
+              <optgroup label="LilyGO">
+                <option value="t_deck">LilyGO T-Deck (320x240 ST7789 + GT911 Touch)</option>
+                <option value="tlora_t3s3_v1">LilyGO T3S3 v1 (ESP32-S3 + SX1262)</option>
+                <option value="tbeam_s3_core">LilyGO T-Beam S3 Core (SX1262 + GNSS)</option>
+              </optgroup>
+              <optgroup label="M5Stack">
+                <option value="m5stack_cardputer_adv">M5Stack Cardputer Advanced (ST7789 + Keyboard)</option>
+              </optgroup>
+              <optgroup label="RiV Proven DIY Variants">
+                <option value="riv_xiao_s3_tft">RiV Xiao S3 TFT (ST7789/ST7796 + CST816S Touch)</option>
+                <option value="riv_mesh_tab_st7796">RiV Mesh-Tab (ST7796 320x480 + FT6336 Touch)</option>
+                <option value="riv_handheld_s3">RiV Handheld S3 (SX1262/RFM95 + ST7789)</option>
+                <option value="riv_meshnode_s3">RiV Meshnode S3 (RFM95 SX1276 Classic)</option>
               </optgroup>
             </select>
           </div>
@@ -759,50 +770,82 @@
 <script>
 // Official board presets database
 const BOARD_PRESETS = {
-  diy_blank: {
-    name: "Blank / Custom Pinout",
-    category: "diy",
-    board: "esp32-s3-devkitc-1",
-    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
-    display: { type: "ST7789", rotation: 0, cs: 1, dc: 2, rst: 3, bl: 4 },
-    touch: { type: "CST816S", mapping: "DEFAULT", pin1: 43, pin2: 6, int: 5, rst: -1 },
-    buzzer: 48,
-    hint: "Completely customizable from scratch. Assign every pin manually to match your hardware."
-  },
+  // --- Seeed Studio ---
   seeed_xiao_s3: {
-    name: "Seeed Studio XIAO ESP32-S3",
+    name: "Seeed Studio XIAO ESP32-S3 (Wio-SX1262)",
     category: "official",
     board: "seeed-xiao-s3",
+    extends: "esp32s3_base",
     lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
     display: { type: "NONE", rotation: 0, cs: -1, dc: -1, rst: -1, bl: -1 },
     touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
     buzzer: -1,
-    hint: "Official Seeed Xiao S3 stock variant with Wio-SX1262 baseboard. Headless by default."
+    hint: "Official Seeed Xiao S3 stock variant with Wio-SX1262 baseboard. Standard pins D0-D10."
   },
+  seeed_sensecap_indicator: {
+    name: "Seeed SenseCAP Indicator",
+    category: "official",
+    board: "seeed-sensecap-indicator",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 41, miso: 42, mosi: 40, cs: 39, reset: 38, dio1: 45, busy: 46, dio0: -1 },
+    display: { type: "ST7789", rotation: 0, cs: 45, dc: 48, rst: -1, bl: 47 },
+    touch: { type: "FT6336", mapping: "DEFAULT", pin1: 39, pin2: 40, int: 41, rst: -1 },
+    buzzer: 21,
+    hint: "Official 4-inch touch smart display with built-in ESP32-S3 and SX1262 LoRa module."
+  },
+
+  // --- Heltec ---
   heltec_v3: {
-    name: "Heltec V3 (ESP32-S3)",
+    name: "Heltec V3 (ESP32-S3 + OLED)",
     category: "official",
     board: "heltec-v3",
+    extends: "esp32s3_base",
     lora: { type: "SX1262", sck: 9, miso: 11, mosi: 10, cs: 8, reset: 12, dio1: 14, busy: 13, dio0: -1 },
     display: { type: "SSD1306", rotation: 0, cs: -1, dc: -1, rst: 21, bl: -1 },
     touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
     buzzer: -1,
-    hint: "Official Heltec V3. Built-in 0.96 inch SSD1306 I2C OLED display on GPIO 17 (SDA) and 18 (SCL)."
+    hint: "Official Heltec V3. Onboard 0.96 inch SSD1306 I2C OLED display (SDA:17, SCL:18) and SX1262."
+  },
+  heltec_v4: {
+    name: "Heltec V4 (ESP32-S3)",
+    category: "official",
+    board: "heltec_v4",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 9, miso: 11, mosi: 10, cs: 8, reset: 12, dio1: 14, busy: 13, dio0: -1 },
+    display: { type: "SSD1306", rotation: 0, cs: -1, dc: -1, rst: 21, bl: -1 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: -1,
+    hint: "Official Heltec V4 with updated power path and SX1262."
   },
   heltec_wireless_tracker: {
-    name: "Heltec Wireless Tracker",
+    name: "Heltec Wireless Tracker (SX1262 + TFT)",
     category: "official",
     board: "heltec-wireless-tracker",
+    extends: "esp32s3_base",
     lora: { type: "SX1262", sck: 9, miso: 11, mosi: 10, cs: 8, reset: 12, dio1: 14, busy: 13, dio0: -1 },
     display: { type: "ST7735", rotation: 1, cs: 38, dc: 39, rst: 40, bl: 45 },
     touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
     buzzer: -1,
-    hint: "Heltec Wireless Tracker with onboard 0.96 inch ST7735 SPI TFT and GNSS."
+    hint: "Heltec Wireless Tracker with onboard 0.96 inch ST7735 color TFT and UC6580 GNSS."
   },
+  heltec_wireless_paper: {
+    name: "Heltec Wireless Paper (E-Paper)",
+    category: "official",
+    board: "heltec-wireless-paper",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 9, miso: 11, mosi: 10, cs: 8, reset: 12, dio1: 14, busy: 13, dio0: -1 },
+    display: { type: "NONE", rotation: 0, cs: 4, dc: 3, rst: 2, bl: -1 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: -1,
+    hint: "Heltec Wireless Paper with 2.13 inch E-Paper display and SX1262."
+  },
+
+  // --- LilyGO ---
   t_deck: {
-    name: "LilyGO T-Deck",
+    name: "LilyGO T-Deck (320x240 TFT + Touch)",
     category: "official",
     board: "t-deck",
+    extends: "esp32s3_base",
     lora: { type: "SX1262", sck: 40, miso: 38, mosi: 41, cs: 9, reset: 12, dio1: 45, busy: 13, dio0: -1 },
     display: { type: "ST7789", rotation: 1, cs: 12, dc: 11, rst: -1, bl: 42 },
     touch: { type: "GT911", mapping: "DEFAULT", pin1: 18, pin2: 8, int: 16, rst: -1 },
@@ -810,50 +853,99 @@ const BOARD_PRESETS = {
     hint: "LilyGO T-Deck with 2.8 inch 320x240 ST7789 display, GT911 touch, and trackball/keyboard."
   },
   tlora_t3s3_v1: {
-    name: "LilyGO T3S3 v1",
+    name: "LilyGO T3S3 v1 (ESP32-S3)",
     category: "official",
     board: "tlora-t3s3-v1",
+    extends: "esp32s3_base",
     lora: { type: "SX1262", sck: 5, miso: 3, mosi: 6, cs: 7, reset: 8, dio1: 33, busy: 34, dio0: -1 },
     display: { type: "SSD1306", rotation: 0, cs: -1, dc: -1, rst: -1, bl: -1 },
     touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
     buzzer: -1,
-    hint: "Official LilyGO T3S3 ESP32-S3 board with onboard OLED."
+    hint: "LilyGO T3S3 ESP32-S3 board with onboard OLED, TF/SD slot, and SX1262."
   },
-  diy_xiao_s3_tft: {
-    name: "Seeed XIAO S3 DIY TFT",
+  tbeam_s3_core: {
+    name: "LilyGO T-Beam S3 Core",
+    category: "official",
+    board: "tbeam-s3-core",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 5, dio1: 1, busy: 4, dio0: -1 },
+    display: { type: "NONE", rotation: 0, cs: -1, dc: -1, rst: -1, bl: -1 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: -1,
+    hint: "LilyGO T-Beam S3 Core with GNSS and 18650 battery holder."
+  },
+
+  // --- M5Stack ---
+  m5stack_cardputer_adv: {
+    name: "M5Stack Cardputer Advanced",
+    category: "official",
+    board: "m5stack-cardputer",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 40, miso: 39, mosi: 14, cs: 12, reset: 11, dio1: 13, busy: 15, dio0: -1 },
+    display: { type: "ST7789", rotation: 1, cs: 37, dc: 34, rst: 33, bl: 38 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: 43,
+    hint: "M5Stack Cardputer with full keyboard, 1.14 inch ST7789 display (240x135), and internal speaker."
+  },
+
+  // --- RiV Proven DIY Custom Variants ---
+  riv_xiao_s3_tft: {
+    name: "RiV Xiao S3 TFT (ST7789/ST7796 + CST816S)",
     category: "diy",
     board: "seeed-xiao-s3",
+    extends: "esp32s3_base",
     lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
     display: { type: "ST7789", rotation: 0, cs: 1, dc: 2, rst: 3, bl: 4 },
     touch: { type: "CST816S", mapping: "INVERT_Y", pin1: 43, pin2: 6, int: 5, rst: -1 },
     buzzer: 48,
-    hint: "Custom DIY Xiao S3 with ST7789/ST7796 TFT, CST816S I2C touch, and GPIO 48 notification buzzer."
+    hint: "Proven Xiao S3 build with SPI TFT, capacitive touch (D6/D5), and GPIO 48 notification buzzer."
   },
-  diy_esp32s3_generic: {
-    name: "ESP32-S3 Generic DevKit",
+  riv_mesh_tab_st7796: {
+    name: "RiV Mesh-Tab (ST7796 320x480 + FT6336 Touch)",
+    category: "diy",
+    board: "seeed-xiao-s3",
+    extends: "esp32s3_base",
+    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
+    display: { type: "ST7796", rotation: 0, cs: 1, dc: 2, rst: 3, bl: 4 },
+    touch: { type: "FT6336", mapping: "DEFAULT", pin1: 43, pin2: 6, int: 5, rst: -1 },
+    buzzer: 48,
+    hint: "High-resolution 3.5 inch ST7796 320x480 tablet build with full portrait touch UI."
+  },
+  riv_handheld_s3: {
+    name: "RiV Handheld S3 (RFM95/SX1262 + ST7789)",
     category: "diy",
     board: "esp32-s3-devkitc-1",
+    extends: "esp32s3_base",
     lora: { type: "SX1262", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: 21, dio0: -1 },
     display: { type: "ST7789", rotation: 0, cs: 15, dc: 16, rst: 17, bl: 18 },
-    touch: { type: "CST816S", mapping: "DEFAULT", pin1: 4, pin2: 5, int: 6, rst: 7 },
-    buzzer: 8,
-    hint: "Generic ESP32-S3 8MB/16MB board. Fully customizable pinout."
+    touch: { type: "XPT2046", mapping: "DEFAULT", pin1: 4, pin2: 5, int: 6, rst: -1 },
+    buzzer: 48,
+    hint: "Handheld ESP32-S3 build with ST7789 color display and buzzer."
   },
-  diy_esp32_classic: {
-    name: "ESP32 Classic DIY",
+  riv_meshnode_s3: {
+    name: "RiV Meshnode S3 (RFM95 / SX1276 Classic)",
     category: "diy",
-    board: "esp32dev",
-    lora: { type: "RFM95", sck: 18, miso: 19, mosi: 23, cs: 5, reset: 14, dio1: 33, busy: -1, dio0: 26 },
-    display: { type: "ILI9341", rotation: 1, cs: 15, dc: 2, rst: 4, bl: 21 },
-    touch: { type: "XPT2046", mapping: "DEFAULT", pin1: 27, pin2: 25, int: 32, rst: -1 },
-    buzzer: 13,
-    hint: "Classic ESP32 WROOM with RFM95W (SX1276) using DIO0, plus ILI9341 SPI TFT."
+    board: "esp32-s3-devkitc-1",
+    extends: "esp32s3_base",
+    lora: { type: "RFM95", sck: 12, miso: 13, mosi: 11, cs: 10, reset: 9, dio1: 14, busy: -1, dio0: 21 },
+    display: { type: "ST7789", rotation: 0, cs: 15, dc: 16, rst: 17, bl: 18 },
+    touch: { type: "NONE", mapping: "DEFAULT", pin1: -1, pin2: -1, int: -1, rst: -1 },
+    buzzer: 48,
+    hint: "ESP32-S3 paired with legacy HopeRF RFM95W transceiver using DIO0."
   }
 };
 
 let currentTab = 'variant.h';
 
 function onBoardChange() {
+  const key = document.getElementById('boardSelect').value;
+  const p = BOARD_PRESETS[key];
+  if (!p) return;
+
+  const nameInput = document.getElementById('customVariantName');
+  if (nameInput) {
+    nameInput.value = (p.category === 'official' ? 'my_' : '') + key.replace(/-/g, '_');
+  }
   const key = document.getElementById('boardSelect').value;
   const p = BOARD_PRESETS[key];
   if (!p) return;
