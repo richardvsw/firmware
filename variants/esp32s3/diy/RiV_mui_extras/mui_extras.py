@@ -691,6 +691,9 @@ def patch_mui_node_and_channel(tft, UI):
     edit(tft, "void TFTView_320x240::updatePosition(uint32_t nodeNum, int32_t lat, int32_t lon, int32_t alt, uint32_t sats, uint32_t precision)\n{\n",
          "void TFTView_320x240::updatePosition(uint32_t nodeNum, int32_t lat, int32_t lon, int32_t alt, uint32_t sats, uint32_t precision)\n{\n    emoji_record_node_pos(nodeNum, lat, lon, nodeNum == ownNode);\n", "replace")
 
+    # Auto-capture Wi-Fi into encrypted vault on save
+    edit(tft, "strcpy(THIS->db.config.network.wifi_psk, psk);\n", "strcpy(THIS->db.config.network.wifi_psk, psk);\n            emoji_wifi_vault_add(ssid, psk);\n")
+
     # Top bar Wi-Fi icon status update
     edit(tft, "void TFTView_320x240::updateConnectionStatus(const meshtastic_DeviceConnectionStatus &status)\n{\n    db.connectionStatus = status;\n",
          "void TFTView_320x240::updateConnectionStatus(const meshtastic_DeviceConnectionStatus &status)\n{\n    db.connectionStatus = status;\n    emoji_top_wifi_update(status.has_wifi && status.wifi.has_status && status.wifi.status.is_connected, objects.battery_panel);\n", "replace")
@@ -813,7 +816,9 @@ def main():
             # B-48 / RiV-meshBot chat: white background with the bot logo and solid bubbles
             copy("meshbot_bg.cpp.in", dst)
             copy("meshbot_logo.inc", dst)
-            tft_decl += ('extern "C" void emoji_mention_host(void (*)(const char *, void (*)(const char *, const char *, uint32_t)));\n'
+            tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);
+'
+'extern "C" void emoji_mention_host(void (*)(const char *, void (*)(const char *, const char *, uint32_t)));\n'
                          'extern "C" void emoji_chat_style(lv_obj_t *, const char *, const char *);\n'
                          'extern "C" void emoji_bubble_style(lv_obj_t *, lv_obj_t *, bool);\n')
             shown = ("    lv_obj_t *p = nodes[nodeNum];\n    if (p) {\n"
@@ -824,7 +829,9 @@ def main():
             edit(tft, group, "    emoji_chat_style(nullptr, nullptr, nullptr);\n")
         else:
             copy("bot_stub.cpp.in", dst, "emoji_bot_stub.cpp")
-        tft_decl += ('\n
+        tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);
+'
+'\n
 struct SimplePos {
     uint32_t nodeNum;
     int32_t lat;
@@ -1039,7 +1046,9 @@ static lv_obj_t *g_topWifiIcon = nullptr;\nextern "C" void emoji_top_wifi_update
                                         "#include \"lvgl.h\"\nextern lv_font_t ui_emoji_color_font;\n#ifdef LV_LVGL_H_INCLUDE_SIMPLE", 1)
                 write(os.path.join(dst, fname + ".c"), ftxt, False)
         edit(conf, "#define LV_USE_SPAN       0", "#define LV_USE_SPAN       1", "replace")
-        tft_decl += ('extern "C" void emoji_compose_init(lv_obj_t *, lv_obj_t *, lv_obj_t *, void (*)(lv_obj_t *));\n'
+        tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);
+'
+'extern "C" void emoji_compose_init(lv_obj_t *, lv_obj_t *, lv_obj_t *, void (*)(lv_obj_t *));\n'
                      'extern "C" int emoji_strip_height(void);\n')
         edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n",
              "    emoji_compose_init(objects.message_input_area, objects.main_screen, objects.keyboard, [](lv_obj_t *ta) {\n"
@@ -1087,7 +1096,9 @@ static lv_obj_t *g_topWifiIcon = nullptr;\nextern "C" void emoji_top_wifi_update
         edit(themes_cpp3, "apply_style_statistics_table_style_ITEMS_DEFAULT();\n",
              "apply_style_statistics_table_style_ITEMS_DEFAULT();\n"
              "    emoji_advanced_theme(THEME(ePanelBg), THEME(eTopPanelBg), THEME(eTopPanelText), THEME(eNodePanelBg), THEME(eNodePanelText), THEME(eSettingsButtonBg), THEME(eSettingsButtonText), THEME(eColorTextLabel), THEME(eNodePanelBorder), THEME(ePanelPressedBg));\n")
-        tft_decl += ('extern "C" bool emoji_long_names(void);\n'
+        tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);
+'
+'extern "C" bool emoji_long_names(void);\n'
                      'extern "C" void emoji_settings_init(lv_obj_t *, lv_obj_t *, lv_obj_t *, void *(*)(void), void (*)(void), '
                      'void (*)(lv_obj_t *));\n'
                      'extern "C" void emoji_settings_host(void *(*)(void), void *(*)(void), void *(*)(void), void *(*)(void), '
@@ -1100,7 +1111,9 @@ static lv_obj_t *g_topWifiIcon = nullptr;\nextern "C" void emoji_top_wifi_update
         edit(tft, '                THIS->controller->sendConfig(user, THIS->ownNode);\n                THIS->notifyReboot(true);\n',
              '                THIS->controller->sendConfig(user, THIS->ownNode);\n                THIS->controller->requestReboot(3, THIS->ownNode);\n                THIS->notifyReboot(true);\n', "replace")
         vc_decl += 'extern "C" void emoji_node_flags(uint32_t, bool, bool);\n'
-        tft_decl += ('extern "C" void emoji_nodes_host(uint32_t (*)(uint32_t, bool, uint32_t *));\n'
+        tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);
+'
+'extern "C" void emoji_nodes_host(uint32_t (*)(uint32_t, bool, uint32_t *));\n'
                      'extern "C" bool emoji_node_protected(uint32_t);\n'
                      '#include <vector>\n')
         edit(vc, '                const meshtastic_NodeInfo &node = from.node_info;\n',
@@ -1272,7 +1285,9 @@ static lv_obj_t *g_topWifiIcon = nullptr;\nextern "C" void emoji_top_wifi_update
         edit(os.path.join(LV, "src", "libs", "tjpgd", "lv_tjpgd.c"),
              "    const uint8_t jpg_signature[] = {0xFF, 0xD8, 0xFF,  0xE0,  0x00,  0x10, 0x4A,  0x46, 0x49, 0x46};\n",
              "    const uint8_t jpg_signature[] = {0xFF, 0xD8, 0xFF};\n", "replace")
-        tft_decl += ('extern "C" void emoji_ss_init(void (*)(uint32_t *));\n'
+        tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);
+'
+'extern "C" void emoji_ss_init(void (*)(uint32_t *));\n'
                      'extern "C" void emoji_ss_metrics(uint32_t, float, float);\n'
                      'extern "C" void emoji_ss_message(const char *, const char *);\n')
         edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n",

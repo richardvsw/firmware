@@ -7145,6 +7145,8 @@ static void build_adv_panel(void)
 
     proxy_text();
 
+    make_nav(content, "Saved Wi-Fi Networks", wifi_vault_open_cb);
+
     make_nav(content, "MQTT", mqtt_open_cb);
 
     make_section_header(content, "RADIO & LORA");
