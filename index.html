@@ -431,8 +431,16 @@
         <div class="form-grid">
           <div class="form-group full-width">
             <label>
-              Board Type
-              <span class="helper-icon" data-tooltip="Pick an official commercial Meshtastic board or a DIY ESP32 board.">?</span>
+              Custom Variant Name
+              <span class="helper-icon" data-tooltip="Give your custom variant a unique name. This becomes the folder and environment name.">?</span>
+            </label>
+            <input type="text" id="customVariantName" value="my_custom_variant" placeholder="e.g. my_tracker_s3" oninput="updateAll()">
+          </div>
+
+          <div class="form-group full-width">
+            <label>
+              Base Board Template
+              <span class="helper-icon" data-tooltip="Pick an official commercial Meshtastic board or a DIY ESP32 board as a starting point.">?</span>
             </label>
             <select id="boardSelect" onchange="onBoardChange()">
               <optgroup label="Official Boards">
@@ -443,6 +451,7 @@
                 <option value="tlora_t3s3_v1">LilyGO T3S3 v1 (ESP32-S3 + SX1262)</option>
               </optgroup>
               <optgroup label="DIY Custom Targets">
+                <option value="diy_blank">➕ Blank / From Scratch (Custom Pinout)</option>
                 <option value="diy_xiao_s3_tft">Seeed XIAO S3 + Custom SPI TFT (ST7789/ST7796)</option>
                 <option value="diy_esp32s3_generic">ESP32-S3 Generic DevKit (8MB/16MB Flash)</option>
                 <option value="diy_esp32_classic">ESP32 Classic (WROOM / WROVER)</option>
@@ -735,6 +744,9 @@
           <button class="btn btn-primary" onclick="downloadVariantZip()">
             <span>📦</span> Download Variant ZIP
           </button>
+          <button class="btn btn-secondary" onclick="openCompileModal()" style="border-color: var(--primary); color: var(--primary);">
+            <span>⚡</span> Compile Online (.bin)
+          </button>
           <button class="btn btn-secondary" onclick="copyActiveCode()">
             <span>📋</span> Copy to Clipboard
           </button>
@@ -747,6 +759,16 @@
 <script>
 // Official board presets database
 const BOARD_PRESETS = {
+  diy_blank: {
+    name: "Blank / Custom Pinout",
+    category: "diy",
+    board: "esp32-s3-devkitc-1",
+    lora: { type: "SX1262", sck: 7, miso: 8, mosi: 9, cs: 41, reset: 42, dio1: 39, busy: 40, dio0: -1 },
+    display: { type: "ST7789", rotation: 0, cs: 1, dc: 2, rst: 3, bl: 4 },
+    touch: { type: "CST816S", mapping: "DEFAULT", pin1: 43, pin2: 6, int: 5, rst: -1 },
+    buzzer: 48,
+    hint: "Completely customizable from scratch. Assign every pin manually to match your hardware."
+  },
   seeed_xiao_s3: {
     name: "Seeed Studio XIAO ESP32-S3",
     category: "official",
@@ -1161,7 +1183,7 @@ ${p.display.type === 'ST7735' ? '#define USE_ST7735\n#define TFT_CS         ' + 
 function generatePlatformIoEnv() {
   const bKey = document.getElementById('boardSelect').value;
   const p = BOARD_PRESETS[bKey];
-  const envName = "custom_" + bKey.replace(/-/g, '_');
+  const envName = getCustomVariantName();
 
   const featEmoji = document.getElementById('feat_emoji').checked ? "emoji" : "";
   const featChat = document.getElementById('feat_chat').checked ? "chat" : "";
@@ -1203,7 +1225,7 @@ extra_scripts =
 function generateReadme() {
   const bKey = document.getElementById('boardSelect').value;
   const p = BOARD_PRESETS[bKey];
-  const envName = "custom_" + bKey.replace(/-/g, '_');
+  const envName = getCustomVariantName();
 
   return `# Custom Meshtastic Variant: ${p.name}
 
@@ -1267,7 +1289,7 @@ function downloadVariantZip() {
   }
 
   const bKey = document.getElementById('boardSelect').value;
-  const envName = "variant_" + bKey.replace(/-/g, '_');
+  const envName = getCustomVariantName();
 
   const zip = new JSZip();
   const folder = zip.folder(envName);
@@ -1287,10 +1309,146 @@ function downloadVariantZip() {
 }
 
 // Initial initialization
+
+function getCustomVariantName() {
+  const el = document.getElementById('customVariantName');
+  let name = el ? el.value.trim() : '';
+  if (!name) name = 'my_custom_variant';
+  return name.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function openCompileModal() {
+  const name = getCustomVariantName();
+  document.getElementById('modalVariantTitle').textContent = name;
+  document.getElementById('compileModal').style.display = 'flex';
+}
+
+function closeCompileModal() {
+  document.getElementById('compileModal').style.display = 'none';
+}
+
+function triggerIssueCompile() {
+  const varName = getCustomVariantName();
+  const bKey = document.getElementById('boardSelect').value;
+  const p = BOARD_PRESETS[bKey] || BOARD_PRESETS.diy_esp32s3_generic;
+
+  const headerB64 = btoa(unescape(encodeURIComponent(generateVariantH())));
+  const envB64 = btoa(unescape(encodeURIComponent(generatePlatformIoEnv())));
+
+  const payload = {
+    variant_name: varName,
+    board: p.board,
+    variant_header_b64: headerB64,
+    platformio_env_b64: envB64
+  };
+
+  const title = encodeURIComponent("[Compile] " + varName);
+  const body = encodeURIComponent(
+    "### Automated Firmware Compilation Request\n\n" +
+    "Please compile the custom variant **`" + varName + "`**.\n\n" +
+    "```json\n" + JSON.stringify(payload, null, 2) + "\n```\n"
+  );
+
+  const url = "https://github.com/richardvsw/firmware/issues/new?title=" + title + "&body=" + body + "&labels=compile";
+  window.open(url, '_blank');
+}
+
+async function triggerWorkflowDispatch() {
+  const token = document.getElementById('ghTokenInput').value.trim();
+  const statusEl = document.getElementById('dispatchStatus');
+  statusEl.style.display = 'block';
+
+  if (!token) {
+    statusEl.innerHTML = '<span style="color: var(--danger);">Please enter a GitHub Personal Access Token.</span>';
+    return;
+  }
+
+  statusEl.innerHTML = '<span style="color: var(--warning);">Sending dispatch request to GitHub Actions...</span>';
+
+  const varName = getCustomVariantName();
+  const bKey = document.getElementById('boardSelect').value;
+  const p = BOARD_PRESETS[bKey] || BOARD_PRESETS.diy_esp32s3_generic;
+
+  const headerB64 = btoa(unescape(encodeURIComponent(generateVariantH())));
+  const envB64 = btoa(unescape(encodeURIComponent(generatePlatformIoEnv())));
+
+  try {
+    const res = await fetch('https://api.github.com/repos/richardvsw/firmware/actions/workflows/compile-on-the-go.yml/dispatches', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/vnd.github.v3+json',
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        ref: 'develop',
+        inputs: {
+          variant_name: varName,
+          board: p.board,
+          variant_header_b64: headerB64,
+          platformio_env_b64: envB64
+        }
+      })
+    });
+
+    if (res.status === 204) {
+      statusEl.innerHTML = '<span style="color: var(--primary);">✅ Build triggered successfully! <a href="https://github.com/richardvsw/firmware/actions" target="_blank" style="color: var(--info);">View progress in GitHub Actions &rarr;</a></span>';
+    } else {
+      const data = await res.json();
+      statusEl.innerHTML = '<span style="color: var(--danger);">Error (' + res.status + '): ' + (data.message || 'Failed to dispatch workflow') + '</span>';
+    }
+  } catch (err) {
+    statusEl.innerHTML = '<span style="color: var(--danger);">Network error: ' + err.message + '</span>';
+  }
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   onBoardChange();
 });
 </script>
+
+
+<!-- Compile Online Modal -->
+<div id="compileModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.75); z-index: 1000; align-items: center; justify-content: center; padding: 20px;">
+  <div class="card" style="max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto;">
+    <div class="card-title">
+      <span><span class="icon">⚡</span> Compile Online via GitHub Actions</span>
+      <button onclick="closeCompileModal()" style="background: none; border: none; color: var(--text-muted); font-size: 1.5rem; cursor: pointer;">&times;</button>
+    </div>
+    <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 16px;">
+      Compile your custom variant <strong id="modalVariantTitle" style="color: var(--primary);"></strong> in the cloud on GitHub Actions runners and download ready-to-flash <code>.bin</code> files!
+    </p>
+
+    <div style="background: var(--input-bg); padding: 14px; border-radius: 8px; border: 1px solid var(--input-border); margin-bottom: 16px;">
+      <h4 style="font-size: 0.95rem; margin-bottom: 6px; color: var(--text);">Option 1: 1-Click Free Cloud Build (via GitHub Issue)</h4>
+      <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px;">
+        No token or login required! Opens a pre-filled issue in your repo. Once submitted, GitHub Actions automatically builds the firmware, attaches the <code>.factory.bin</code>, comments on the issue with the download link, and closes it!
+      </p>
+      <button class="btn btn-primary" onclick="triggerIssueCompile()" style="width: 100%; justify-content: center;">
+        <span>🚀</span> Open GitHub Build Issue (Auto-Builds .bin)
+      </button>
+    </div>
+
+    <div style="background: var(--input-bg); padding: 14px; border-radius: 8px; border: 1px solid var(--input-border); margin-bottom: 16px;">
+      <h4 style="font-size: 0.95rem; margin-bottom: 6px; color: var(--text);">Option 2: Direct API Build (with Personal Access Token)</h4>
+      <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 8px;">
+        Enter a GitHub PAT with <code>workflow</code> or <code>repo</code> scope to trigger the build instantly from this page:
+      </p>
+      <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+        <input type="password" id="ghTokenInput" placeholder="github_pat_..." style="flex: 1;">
+        <button class="btn btn-secondary" onclick="triggerWorkflowDispatch()">Dispatch Build</button>
+      </div>
+      <div id="dispatchStatus" style="font-size: 0.8rem; display: none;"></div>
+    </div>
+
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <a href="https://github.com/richardvsw/firmware/actions" target="_blank" style="color: var(--info); font-size: 0.85rem; text-decoration: none;">
+        <span>📋</span> View Live GitHub Action Runs &rarr;
+      </a>
+      <button class="btn btn-secondary" onclick="closeCompileModal()">Close</button>
+    </div>
+  </div>
+</div>
 
 </body>
 </html>
