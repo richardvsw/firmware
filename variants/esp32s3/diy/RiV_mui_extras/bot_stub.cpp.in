@@ -4,3 +4,21 @@ extern "C" bool emoji_bot_container(lv_obj_t *container)
 {
     return false;
 }
+
+extern "C" bool emoji_meshbot_bg_enabled(void)
+{
+    return false;
+}
+
+extern "C" void emoji_meshbot_bg_set_enabled(bool)
+{
+}
+
+extern "C" bool emoji_meshbot_cmd_enabled(void)
+{
+    return false;
+}
+
+extern "C" void emoji_meshbot_cmd_set_enabled(bool)
+{
+}

@@ -259,7 +259,7 @@ def patch_keyboard_emoji(compose):
 def patch_mui_node_and_channel(tft, UI):
     tft_h = os.path.join(UI, "include", "graphics", "view", "TFT", "TFTView_320x240.h")
     edit(tft_h, "    static void ui_event_NodeButton(lv_event_t *e);\n",
-         "public:\n    static void emoji_traceroute(uint32_t to, uint8_t ch);\nprotected:\n    static void ui_event_search_ta(lv_event_t *e);\n    static void ui_event_search_kb(lv_event_t *e);\n", "after")
+         "public:\n    static void emoji_traceroute(uint32_t to, uint8_t ch);\n    static void emoji_open_node_chat_impl(uint32_t nodeNum);\n    static uint32_t emoji_find_node_by_name_impl(const char *shortName, const char *longName);\nprotected:\n    static void ui_event_search_ta(lv_event_t *e);\n    static void ui_event_search_kb(lv_event_t *e);\n", "after")
 
     decl_block = (
         'extern "C" __attribute__((weak)) void get_node_details_string(uint32_t nodeNum, char *idStr, size_t idLen,\n'
@@ -433,6 +433,38 @@ void TFTView_320x240::emoji_traceroute(uint32_t to, uint8_t ch)
 extern "C" void emoji_trigger_traceroute(uint32_t toNode, uint8_t ch)
 {
     TFTView_320x240::emoji_traceroute(toNode, ch);
+}
+
+void TFTView_320x240::emoji_open_node_chat_impl(uint32_t nodeNum)
+{
+    if (THIS && nodeNum) {
+        THIS->showMessages(nodeNum);
+    }
+}
+
+uint32_t TFTView_320x240::emoji_find_node_by_name_impl(const char *shortName, const char *longName)
+{
+    if (!THIS) return 0;
+    for (auto const &[num, p] : THIS->nodes) {
+        if (!p) continue;
+        lv_obj_t *sLbl = p->LV_OBJ_IDX(node_lbs_idx);
+        lv_obj_t *lLbl = p->LV_OBJ_IDX(node_lbl_idx);
+        const char *s = sLbl ? lv_label_get_text(sLbl) : "";
+        const char *l = lLbl ? lv_label_get_text(lLbl) : "";
+        if (shortName && s && strcasecmp(s, shortName) == 0) return num;
+        if (longName && l && strcasecmp(l, longName) == 0) return num;
+    }
+    return 0;
+}
+
+extern "C" void emoji_open_node_chat(uint32_t nodeNum)
+{
+    TFTView_320x240::emoji_open_node_chat_impl(nodeNum);
+}
+
+extern "C" uint32_t emoji_find_node_by_name(const char *shortName, const char *longName)
+{
+    return TFTView_320x240::emoji_find_node_by_name_impl(shortName, longName);
 }
 """
     edit(tft, "void TFTView_320x240::ui_set_active(lv_obj_t *b, lv_obj_t *p, lv_obj_t *tp)\n{",
@@ -983,6 +1015,8 @@ def main():
                      'extern "C" void emoji_bubble_register(lv_obj_t *, uint32_t);\n'
                      'extern "C" void emoji_chip_expect(bool);\n'
                      'extern "C" void emoji_name_chip(lv_obj_t *, uint32_t, const char *);\n'
+                     'extern "C" void emoji_open_node_chat(uint32_t);\n'
+                     'extern "C" uint32_t emoji_find_node_by_name(const char *, const char *);\n'
                      'extern "C" void emoji_set_reply(uint32_t, bool);\n'
                      'extern "C" int emoji_ctx_mode(void);\n'
                      'extern "C" uint32_t emoji_ctx_target(void);\n'

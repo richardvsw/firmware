@@ -7166,6 +7166,140 @@ static void canned_adv_open_cb(lv_event_t *e)
 {
     // Canned messages editor dialog
 }
+
+static lv_obj_t *g_meshbotPanel = nullptr;
+static lv_obj_t *g_meshbotBgBtn = nullptr;
+static lv_obj_t *g_meshbotCmdBtn = nullptr;
+static lv_obj_t *g_meshbotStatusLbl = nullptr;
+static lv_obj_t *g_meshbotChatBtn = nullptr;
+
+extern "C" bool emoji_meshbot_bg_enabled(void);
+extern "C" void emoji_meshbot_bg_set_enabled(bool);
+extern "C" bool emoji_meshbot_cmd_enabled(void);
+extern "C" void emoji_meshbot_cmd_set_enabled(bool);
+extern "C" uint32_t emoji_find_node_by_name(const char *shortName, const char *longName) __attribute__((weak));
+extern "C" void emoji_open_node_chat(uint32_t nodeNum) __attribute__((weak));
+
+static void meshbot_bg_toggle_cb(lv_event_t *e)
+{
+    bool cur = emoji_meshbot_bg_enabled();
+    emoji_meshbot_bg_set_enabled(!cur);
+    if (g_meshbotBgBtn) {
+        lv_obj_t *lbl = lv_obj_get_child(g_meshbotBgBtn, 0);
+        if (lbl) {
+            lv_label_set_text_fmt(lbl, "DM Background Logo: %s", !cur ? "Enabled" : "Disabled");
+        }
+    }
+}
+
+static void meshbot_cmd_toggle_cb(lv_event_t *e)
+{
+    bool cur = emoji_meshbot_cmd_enabled();
+    emoji_meshbot_cmd_set_enabled(!cur);
+    if (g_meshbotCmdBtn) {
+        lv_obj_t *lbl = lv_obj_get_child(g_meshbotCmdBtn, 0);
+        if (lbl) {
+            lv_label_set_text_fmt(lbl, "Command Links: %s", !cur ? "Enabled" : "Disabled");
+        }
+    }
+}
+
+static void meshbot_open_chat_cb(lv_event_t *e)
+{
+    uint32_t nodeNum = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+    if (nodeNum && emoji_open_node_chat) {
+        if (g_meshbotPanel)
+            lv_obj_add_flag(g_meshbotPanel, LV_OBJ_FLAG_HIDDEN);
+        if (g_advPanel)
+            lv_obj_add_flag(g_advPanel, LV_OBJ_FLAG_HIDDEN);
+        emoji_open_node_chat(nodeNum);
+    }
+}
+
+static void meshbot_adv_back_cb(lv_event_t *e)
+{
+    if (g_meshbotPanel)
+        lv_obj_add_flag(g_meshbotPanel, LV_OBJ_FLAG_HIDDEN);
+    if (g_advPanel)
+        lv_obj_remove_flag(g_advPanel, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void meshbot_adv_open_cb(lv_event_t *e)
+{
+    if (!g_meshbotPanel) {
+        lv_obj_t *content = nullptr;
+        g_meshbotPanel = make_panel("RiV-meshBot", meshbot_adv_back_cb, &content);
+
+        make_section_header(content, "SETTINGS");
+
+        bool bg = emoji_meshbot_bg_enabled();
+        char bgBuf[48];
+        snprintf(bgBuf, sizeof(bgBuf), "DM Background Logo: %s", bg ? "Enabled" : "Disabled");
+        g_meshbotBgBtn = make_nav(content, bgBuf, meshbot_bg_toggle_cb);
+
+        bool cmd = emoji_meshbot_cmd_enabled();
+        char cmdBuf[48];
+        snprintf(cmdBuf, sizeof(cmdBuf), "Command Links: %s", cmd ? "Enabled" : "Disabled");
+        g_meshbotCmdBtn = make_nav(content, cmdBuf, meshbot_cmd_toggle_cb);
+
+        make_section_header(content, "BOT STATUS");
+
+        lv_obj_t *card = lv_obj_create(content);
+        lv_obj_remove_style_all(card);
+        lv_obj_set_width(card, LV_PCT(95));
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(card, lv_color_hex(g_themeItemBg), 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_color(card, lv_color_hex(g_themeBorder), 0);
+        lv_obj_set_style_border_width(card, 1, 0);
+        lv_obj_set_style_radius(card, 8, 0);
+        lv_obj_set_style_pad_all(card, 10, 0);
+        lv_obj_set_style_pad_row(card, 6, 0);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+        g_meshbotStatusLbl = lv_label_create(card);
+        lv_obj_set_width(g_meshbotStatusLbl, LV_PCT(100));
+        lv_obj_set_style_text_font(g_meshbotStatusLbl, &ui_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(g_meshbotStatusLbl, lv_color_hex(g_themeItemText), 0);
+
+        g_meshbotChatBtn = make_nav(content, "Open RiV-meshBot Chat", meshbot_open_chat_cb);
+    }
+
+    uint32_t botNum = 0;
+    if (emoji_find_node_by_name) {
+        botNum = emoji_find_node_by_name("B-48", "RiV-meshBot");
+    }
+
+    if (g_meshbotStatusLbl) {
+        if (botNum) {
+            char sbuf[128];
+            snprintf(sbuf, sizeof(sbuf),
+                     "Short: B-48  |  Long: RiV-meshBot\nNode ID: !%08x\nStatus: Discovered on mesh",
+                     (unsigned)botNum);
+            lv_label_set_text(g_meshbotStatusLbl, sbuf);
+            if (g_meshbotChatBtn) {
+                lv_obj_remove_flag(g_meshbotChatBtn, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_user_data(g_meshbotChatBtn, (void *)(uintptr_t)botNum);
+            }
+        } else {
+            lv_label_set_text(g_meshbotStatusLbl,
+                              "Short: B-48  |  Long: RiV-meshBot\nStatus: Waiting for bot broadcast\n(Chat unlocks once bot is heard)");
+            if (g_meshbotChatBtn) {
+                lv_obj_add_flag(g_meshbotChatBtn, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    }
+
+    if (g_advPanel)
+        lv_obj_add_flag(g_advPanel, LV_OBJ_FLAG_HIDDEN);
+    if (g_meshbotPanel) {
+        lv_obj_remove_flag(g_meshbotPanel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(g_meshbotPanel);
+    }
+}
+
 static void build_adv_panel(void)
 
 {
@@ -7207,6 +7341,8 @@ static void build_adv_panel(void)
     logger_text();
 
     make_nav(content, "Canned Messages", canned_adv_open_cb);
+
+    make_nav(content, "RiV-meshBot Integration", meshbot_adv_open_cb);
 
     if (g_loraCfg) {
 

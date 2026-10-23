@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <strings.h>
+#include "MuiPrefs.h"
 
 #include "meshbot_logo.inc"
 
@@ -17,6 +18,44 @@ static lv_image_dsc_t g_dsc;
 
 extern "C" int emoji_panel_kind(lv_obj_t *panel);
 extern "C" void emoji_aux_restyle(lv_obj_t *label, bool quote, bool bot);
+
+extern "C" bool emoji_meshbot_bg_enabled(void)
+{
+    Preferences p;
+    if (!p.begin("adv_settings", true))
+        return true;
+    bool enabled = p.getBool("meshbot_bg", true);
+    p.end();
+    return enabled;
+}
+
+extern "C" void emoji_meshbot_bg_set_enabled(bool enabled)
+{
+    Preferences p;
+    if (!p.begin("adv_settings", false))
+        return;
+    p.putBool("meshbot_bg", enabled);
+    p.end();
+}
+
+extern "C" bool emoji_meshbot_cmd_enabled(void)
+{
+    Preferences p;
+    if (!p.begin("adv_settings", true))
+        return true;
+    bool enabled = p.getBool("meshbot_cmd", true);
+    p.end();
+    return enabled;
+}
+
+extern "C" void emoji_meshbot_cmd_set_enabled(bool enabled)
+{
+    Preferences p;
+    if (!p.begin("adv_settings", false))
+        return;
+    p.putBool("meshbot_cmd", enabled);
+    p.end();
+}
 
 extern "C" bool emoji_bot_container(lv_obj_t *container)
 {
@@ -102,6 +141,13 @@ extern "C" void emoji_chat_style(lv_obj_t *container, const char *shortName, con
 {
     bool isBot = container && shortName && longName && strcasecmp(shortName, BOT_SHORT) == 0 && strcasecmp(longName, BOT_LONG) == 0;
     if (!isBot) {
+        g_bot = nullptr;
+        if (g_bg)
+            lv_obj_add_flag(g_bg, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    g_bot = container;
+    if (!emoji_meshbot_bg_enabled()) {
         if (g_bg)
             lv_obj_add_flag(g_bg, LV_OBJ_FLAG_HIDDEN);
         return;
@@ -109,7 +155,6 @@ extern "C" void emoji_chat_style(lv_obj_t *container, const char *shortName, con
     make_bg(container);
     if (!g_bg)
         return;
-    g_bot = container;
     restyle_existing(container);
     lv_obj_move_to_index(g_bg, 0);
     lv_obj_remove_flag(g_bg, LV_OBJ_FLAG_HIDDEN);
@@ -118,6 +163,6 @@ extern "C" void emoji_chat_style(lv_obj_t *container, const char *shortName, con
 // called for each new bubble, styles it when it belongs to the bot chat
 extern "C" void emoji_bubble_style(lv_obj_t *label, lv_obj_t *container, bool sent)
 {
-    if (g_bot && container == g_bot)
+    if (g_bot && container == g_bot && emoji_meshbot_bg_enabled())
         style_bubble(label, sent);
 }
