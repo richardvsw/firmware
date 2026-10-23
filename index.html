@@ -749,7 +749,15 @@
           <button class="tab-btn" onclick="switchTab('README.md')">README.md</button>
         </div>
 
-        <pre><code id="codePreview">// Generating...</code></pre>
+        <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 0.8rem; color: var(--text-muted);">
+            ✏️ <strong>Live Code Editor</strong> (Directly edit below or tweak controls on the left)
+          </span>
+          <button class="btn btn-secondary" onclick="resetCurrentTabCode()" style="padding: 4px 10px; font-size: 0.75rem;">
+            ↺ Reset from Form
+          </button>
+        </div>
+        <textarea id="codeEditor" spellcheck="false" oninput="onEditorInput()" style="width: 100%; height: 480px; background: var(--code-bg); border: 1px solid var(--card-border); border-radius: 8px; color: #d1d8e0; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace; font-size: 0.84rem; padding: 14px; line-height: 1.5; resize: vertical; outline: none; white-space: pre; tab-size: 2; box-sizing: border-box;"></textarea>
 
         <div class="action-bar">
           <button class="btn btn-primary" onclick="downloadVariantZip()">
@@ -1346,15 +1354,39 @@ Generated via **Meshtastic RiV Web Configurator**.
 `;
 }
 
+const userEditedCode = {
+  'variant.h': null,
+  'platformio_env.ini': null,
+  'README.md': null
+};
+
+function onEditorInput() {
+  const editor = document.getElementById('codeEditor');
+  if (editor) {
+    userEditedCode[currentTab] = editor.value;
+  }
+}
+
+function resetCurrentTabCode() {
+  userEditedCode[currentTab] = null;
+  updateAll();
+}
+
+function getActiveCode(tab) {
+  if (userEditedCode[tab] !== null) {
+    return userEditedCode[tab];
+  }
+  if (tab === 'variant.h') return generateVariantH();
+  if (tab === 'platformio_env.ini') return generatePlatformIoEnv();
+  if (tab === 'README.md') return generateReadme();
+  return '';
+}
+
 function updateAll() {
   checkConflicts();
-  const codeBox = document.getElementById('codePreview');
-  if (currentTab === 'variant.h') {
-    codeBox.textContent = generateVariantH();
-  } else if (currentTab === 'platformio_env.ini') {
-    codeBox.textContent = generatePlatformIoEnv();
-  } else if (currentTab === 'README.md') {
-    codeBox.textContent = generateReadme();
+  const editor = document.getElementById('codeEditor');
+  if (editor) {
+    editor.value = getActiveCode(currentTab);
   }
 }
 
@@ -1364,11 +1396,15 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(b => {
     b.classList.toggle('active', b.textContent === tab);
   });
-  updateAll();
+  const editor = document.getElementById('codeEditor');
+  if (editor) {
+    editor.value = getActiveCode(tab);
+  }
 }
 
 function copyActiveCode() {
-  const text = document.getElementById('codePreview').textContent;
+  const editor = document.getElementById('codeEditor');
+  const text = editor ? editor.value : '';
   navigator.clipboard.writeText(text).then(() => {
     alert("Copied " + currentTab + " to clipboard!");
   });
@@ -1386,9 +1422,9 @@ function downloadVariantZip() {
   const zip = new JSZip();
   const folder = zip.folder(envName);
 
-  folder.file("variant.h", generateVariantH());
-  folder.file("platformio_env.ini", generatePlatformIoEnv());
-  folder.file("README.md", generateReadme());
+  folder.file("variant.h", getActiveCode("variant.h"));
+  folder.file("platformio_env.ini", getActiveCode("platformio_env.ini"));
+  folder.file("README.md", getActiveCode("README.md"));
 
   zip.generateAsync({ type: "blob" }).then(function(content) {
     const link = document.createElement('a');
@@ -1424,8 +1460,8 @@ function triggerIssueCompile() {
   const bKey = document.getElementById('boardSelect').value;
   const p = BOARD_PRESETS[bKey] || BOARD_PRESETS.diy_esp32s3_generic;
 
-  const headerB64 = btoa(unescape(encodeURIComponent(generateVariantH())));
-  const envB64 = btoa(unescape(encodeURIComponent(generatePlatformIoEnv())));
+  const headerB64 = btoa(unescape(encodeURIComponent(getActiveCode("variant.h"))));
+  const envB64 = btoa(unescape(encodeURIComponent(getActiveCode("platformio_env.ini"))));
 
   const payload = {
     variant_name: varName,
@@ -1461,8 +1497,8 @@ async function triggerWorkflowDispatch() {
   const bKey = document.getElementById('boardSelect').value;
   const p = BOARD_PRESETS[bKey] || BOARD_PRESETS.diy_esp32s3_generic;
 
-  const headerB64 = btoa(unescape(encodeURIComponent(generateVariantH())));
-  const envB64 = btoa(unescape(encodeURIComponent(generatePlatformIoEnv())));
+  const headerB64 = btoa(unescape(encodeURIComponent(getActiveCode("variant.h"))));
+  const envB64 = btoa(unescape(encodeURIComponent(getActiveCode("platformio_env.ini"))));
 
   try {
     const res = await fetch('https://api.github.com/repos/richardvsw/firmware/actions/workflows/compile-on-the-go.yml/dispatches', {
