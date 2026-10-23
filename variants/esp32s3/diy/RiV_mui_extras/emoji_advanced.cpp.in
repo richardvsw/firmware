@@ -140,6 +140,10 @@ extern "C" bool emoji_hops_enabled(void);
 
 extern "C" bool emoji_hops_toggle(void);
 
+extern "C" int emoji_mqtt_proxy_mode(void);
+
+extern "C" int emoji_mqtt_proxy_mode_cycle(void);
+
 extern "C" void add_style_settings_button_style(lv_obj_t *obj);
 
 extern "C" void add_style_settings_panel_style(lv_obj_t *obj);
@@ -6516,6 +6520,25 @@ static void names_cb(lv_event_t *e)
 
 
 
+
+static lv_obj_t *g_proxyLabel = nullptr;
+
+static void proxy_text(void)
+{
+    if (!g_proxyLabel) return;
+    int m = emoji_mqtt_proxy_mode();
+    const char *txt = "MQTT Proxy: Auto (Safe on WiFi)";
+    if (m == 1) txt = "MQTT Proxy: Force ON (Override)";
+    else if (m == 2) txt = "MQTT Proxy: Force OFF (Disabled)";
+    lv_label_set_text(lv_obj_get_child(g_proxyLabel, 0), txt);
+}
+
+static void proxy_cb(lv_event_t *e)
+{
+    emoji_mqtt_proxy_mode_cycle();
+    proxy_text();
+}
+
 static lv_obj_t *g_hopsLabel = nullptr;
 
 static void hops_text(void)
@@ -7020,6 +7043,12 @@ static void build_adv_panel(void)
     g_hopsLabel = hopsBtn;
 
     hops_text();
+
+    lv_obj_t *proxyBtn = make_nav(content, "", proxy_cb);
+
+    g_proxyLabel = proxyBtn;
+
+    proxy_text();
 
     make_nav(content, "MQTT", mqtt_open_cb);
 

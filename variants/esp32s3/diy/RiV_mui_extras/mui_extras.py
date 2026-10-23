@@ -1380,3 +1380,27 @@ if os.path.isdir(UI) and os.path.isdir(LV):
             print("   -", m)
     else:
         print("MUI-EXTRAS: all patch anchors found")
+
+    # MQTT proxy safeguard & force override
+    mqtt_src = env.subst("$PROJECT_DIR/src/mqtt/MQTT.cpp")
+    if os.path.exists(mqtt_src):
+        decl = ('extern "C" bool emoji_effective_mqtt_proxy(bool, bool) __attribute__((weak));\n'
+                '#define EFFECTIVE_MQTT_PROXY (emoji_effective_mqtt_proxy ? '
+                'emoji_effective_mqtt_proxy(moduleConfig.mqtt.proxy_to_client_enabled, isConnectedToNetwork()) : '
+                'moduleConfig.mqtt.proxy_to_client_enabled)\n')
+        edit(mqtt_src, '#include "MQTT.h"\n', decl, "after")
+        edit(mqtt_src, "moduleConfig.mqtt.proxy_to_client_enabled || isConnectedToNetwork()",
+             "EFFECTIVE_MQTT_PROXY || isConnectedToNetwork()", "replace")
+        edit(mqtt_src, "if (!moduleConfig.mqtt.proxy_to_client_enabled)",
+             "if (!EFFECTIVE_MQTT_PROXY)", "replace")
+        edit(mqtt_src, "if (moduleConfig.mqtt.proxy_to_client_enabled) {",
+             "if (EFFECTIVE_MQTT_PROXY) {", "replace")
+        edit(mqtt_src, "if (moduleConfig.mqtt.proxy_to_client_enabled || this->isConnectedDirectly())",
+             "if (EFFECTIVE_MQTT_PROXY || this->isConnectedDirectly())", "replace")
+
+    phone_src = env.subst("$PROJECT_DIR/src/mesh/PhoneAPI.cpp")
+    if os.path.exists(phone_src):
+        pdecl = 'extern "C" bool emoji_effective_mqtt_proxy(bool, bool) __attribute__((weak));\n'
+        edit(phone_src, '#include "PhoneAPI.h"\n', pdecl, "after")
+        edit(phone_src, "if (mqtt && moduleConfig.mqtt.proxy_to_client_enabled && moduleConfig.mqtt.enabled &&",
+             "bool pActive = emoji_effective_mqtt_proxy ? emoji_effective_mqtt_proxy(moduleConfig.mqtt.proxy_to_client_enabled, WiFi.isConnected()) : moduleConfig.mqtt.proxy_to_client_enabled;\n            if (mqtt && pActive && moduleConfig.mqtt.enabled &&", "replace")

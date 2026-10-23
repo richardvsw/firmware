@@ -1030,6 +1030,17 @@
 
           <div class="gh-toggle-item">
             <div>
+              <div style="font-weight: 600; font-size: 13px;">MQTT Client Proxy Safeguard</div>
+              <div style="font-size: 12px; color: var(--color-fg-muted);">Auto-disables proxy-to-client when connected to Wi-Fi to eliminate duplicate packets and broker loopbacks. Includes manual override in Advanced Settings.</div>
+            </div>
+            <label class="gh-switch">
+              <input type="checkbox" id="feat_mqtt_safeguard" checked onchange="updateAll()">
+              <span class="gh-slider"></span>
+            </label>
+          </div>
+
+          <div class="gh-toggle-item">
+            <div>
               <div style="font-weight: 600; font-size: 13px;">Advanced UI & Ringtone Composer</div>
               <div style="font-size: 12px; color: var(--color-fg-muted);">Quiet hours, welcome melody, live RTTTL composer.</div>
             </div>
