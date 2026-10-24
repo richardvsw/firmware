@@ -1,7 +1,11 @@
 // Colour emoji through an LVGL image font: 33 emoji built in, more from /emoji_color.bin on the SD card.
 // Twemoji graphics (c) Twitter, Inc. and other contributors, licensed CC-BY 4.0, shrunk to 18x18 RGB565A8.
 #include "lvgl.h"
+#if defined(ARCH_ESP32) || defined(ARDUINO_ARCH_ESP32) || defined(ESP32)
 #include <esp_heap_caps.h>
+#else
+#define heap_caps_malloc(sz, caps) malloc(sz)
+#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

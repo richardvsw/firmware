@@ -3,7 +3,7 @@ extern "C" bool emoji_reply_active(void);
 // bell), a copy/cut/paste bar for the message box, formatted bubbles drawn with spans, red alert bubbles, and the keyboard colours that
 // follow the selected theme.
 #include "lvgl.h"
-#include <Preferences.h>
+#include "MuiPrefs.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

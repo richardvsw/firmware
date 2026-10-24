@@ -3,8 +3,12 @@
 // shows the dimmed screensaver again.
 #include "lvgl.h"
 #include <Arduino.h>
-#include <Preferences.h>
+#include "MuiPrefs.h"
+#if defined(ARCH_ESP32) || defined(ARDUINO_ARCH_ESP32) || defined(ESP32)
 #include <esp_heap_caps.h>
+#else
+#define heap_caps_malloc(sz, caps) malloc(sz)
+#endif
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>

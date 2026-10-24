@@ -61,6 +61,38 @@ public:
         return String(val.c_str());
     }
 
+    size_t getBytesLength(const char *key) {
+        std::string val = getVal(key);
+        return val.size() / 2;
+    }
+
+    size_t getBytes(const char *key, void *buf, size_t maxLen) {
+        std::string val = getVal(key);
+        if (val.empty() || !buf) return 0;
+        size_t n = 0;
+        uint8_t *p = (uint8_t *)buf;
+        for (size_t i = 0; i + 1 < val.size() && n < maxLen; i += 2) {
+            char hex[3] = { val[i], val[i+1], 0 };
+            p[n++] = (uint8_t)strtoul(hex, nullptr, 16);
+        }
+        return n;
+    }
+
+    size_t putBytes(const char *key, const void *buf, size_t len) {
+        if (!opened || readOnly || !key || !buf) return 0;
+        std::string hex;
+        hex.reserve(len * 2);
+        const uint8_t *p = (const uint8_t *)buf;
+        char byteHex[3];
+        for (size_t i = 0; i < len; i++) {
+            snprintf(byteHex, sizeof(byteHex), "%02X", p[i]);
+            hex.append(byteHex);
+        }
+        store[ns][key] = hex;
+        dirty = true;
+        return len;
+    }
+
 private:
     std::string ns;
     bool opened;

@@ -1954,6 +1954,36 @@ static void ch_default_psk_cb(lv_event_t *e)
 
 }
 
+static void ch_meshnode_preset_cb(lv_event_t *e)
+
+{
+
+    if (g_chNameTa)
+
+        lv_textarea_set_text(g_chNameTa, "MeshNode_ID");
+
+    if (g_chPskTa)
+
+        lv_textarea_set_text(g_chPskTa, "qBMnY3nRy/B94OmCRWOxUzDR9J1HHfv5UsEH1cfwj9M=");
+
+    if (g_chRoleDd) {
+
+        int idx = (int)lv_dropdown_get_selected(g_chDd);
+
+        if (idx > 0)
+
+            lv_dropdown_set_selected(g_chRoleDd, 1);
+
+    }
+
+    if (g_chStatus)
+
+        lv_label_set_text(g_chStatus, "Loaded MeshNode_ID channel preset");
+
+    update_precise_switch_state();
+
+}
+
 
 
 static void ch_load_idx(int idx)
@@ -2247,6 +2277,8 @@ static void build_ch_panel(void)
     make_action_button(content, "Generate Random Key (AES-256)", ch_gen_psk_cb);
 
     make_action_button(content, "Reset to Default Public (AQ==)", ch_default_psk_cb);
+
+    make_action_button(content, "Load MeshNode_ID Preset", ch_meshnode_preset_cb);
 
     g_chRoleDd = make_dropdown(content, "Channel role", "Primary\nSecondary\nDisabled");
 
@@ -4728,17 +4760,25 @@ static void nt_save_cb(lv_event_t *e)
 
     g_sendExt();
 
-    if (mode == 2 && g_sendRing && lv_textarea_get_text(g_ntRingTa)[0]) {
+    if (g_ntRingTa && lv_textarea_get_text(g_ntRingTa)[0]) {
 
-        g_sendRing(lv_textarea_get_text(g_ntRingTa));
+        const char *rt = lv_textarea_get_text(g_ntRingTa);
 
         Preferences rp;
 
         rp.begin("chatui", false);
 
-        rp.putString("ring", lv_textarea_get_text(g_ntRingTa));
+        rp.putString("ring", rt);
+
+        if (g_ntRingDd)
+
+            rp.putInt("ringidx", (int)lv_dropdown_get_selected(g_ntRingDd));
 
         rp.end();
+
+        if (g_sendRing)
+
+            g_sendRing(rt);
 
     }
 
@@ -6266,19 +6306,7 @@ static void nt_open_cb(lv_event_t *e)
 
         }
 
-        {
 
-            Preferences rp;
-
-            rp.begin("chatui", true);
-
-            String saved = rp.getString("ring", RING_TUNE[0]);
-
-            rp.end();
-
-            lv_textarea_set_text(g_ntRingTa, saved.c_str());
-
-        }
 
         {
 
@@ -6369,6 +6397,46 @@ static void nt_open_cb(lv_event_t *e)
     set_switch(g_ntMsg, c->alert_message || c->alert_message_buzzer);
 
     set_switch(g_ntBell, c->alert_bell || c->alert_bell_buzzer);
+
+    {
+
+        Preferences rp;
+
+        rp.begin("chatui", true);
+
+        String saved = rp.getString("ring", RING_TUNE[0]);
+
+        int savedIdx = rp.getInt("ringidx", -1);
+
+        rp.end();
+
+        if (savedIdx < 0 || savedIdx >= 17) {
+
+            savedIdx = 16;
+
+            for (int i = 0; i < 16; i++) {
+
+                if (saved == RING_TUNE[i]) {
+
+                    savedIdx = i;
+
+                    break;
+
+                }
+
+            }
+
+        }
+
+        if (g_ntRingTa)
+
+            lv_textarea_set_text(g_ntRingTa, saved.c_str());
+
+        if (g_ntRingDd)
+
+            lv_dropdown_set_selected(g_ntRingDd, (uint32_t)savedIdx);
+
+    }
 
     lv_label_set_text(g_ntStatus, "");
 

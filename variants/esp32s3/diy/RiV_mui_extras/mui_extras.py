@@ -259,7 +259,7 @@ def patch_keyboard_emoji(compose):
 def patch_mui_node_and_channel(tft, UI):
     tft_h = os.path.join(UI, "include", "graphics", "view", "TFT", "TFTView_320x240.h")
     edit(tft_h, "    static void ui_event_NodeButton(lv_event_t *e);\n",
-         "public:\n    static void emoji_traceroute(uint32_t to, uint8_t ch);\n    static void emoji_open_node_chat_impl(uint32_t nodeNum);\n    static uint32_t emoji_find_node_by_name_impl(const char *shortName, const char *longName);\nprotected:\n    static void ui_event_search_ta(lv_event_t *e);\n    static void ui_event_search_kb(lv_event_t *e);\n", "after")
+         "public:\n    static void emoji_traceroute(uint32_t to, uint8_t ch);\n    static void emoji_open_node_chat_impl(uint32_t nodeNum);\n    static uint32_t emoji_find_node_by_name_impl(const char *shortName, const char *longName);\n    static void show_failed_message_popup(lv_obj_t *panel);\n    static void failed_popup_retry_cb(lv_event_t *e);\n    static void failed_popup_delete_cb(lv_event_t *e);\n    static void failed_popup_cancel_cb(lv_event_t *e);\n    static void modal_backdrop_cb(lv_event_t *e);\n    static void fail_badge_click_cb(lv_event_t *e);\n    static void attach_failed_message_badge(lv_obj_t *panel, lv_obj_t *textLabel);\n    static void remove_failed_message_badge(lv_obj_t *panel);\nprotected:\n    static void ui_event_search_ta(lv_event_t *e);\n    static void ui_event_search_kb(lv_event_t *e);\n", "after")
 
     decl_block = (
         'extern "C" __attribute__((weak)) void get_node_details_string(uint32_t nodeNum, char *idStr, size_t idLen,\n'
@@ -869,6 +869,261 @@ extern "C" uint32_t emoji_find_node_by_name(const char *shortName, const char *l
     # Top bar Wi-Fi icon status update
     edit(tft, "void TFTView_320x240::updateConnectionStatus(const meshtastic_DeviceConnectionStatus &status)\n{\n    db.connectionStatus = status;\n",
          "void TFTView_320x240::updateConnectionStatus(const meshtastic_DeviceConnectionStatus &status)\n{\n    db.connectionStatus = status;\n    emoji_top_wifi_update(status.has_wifi && status.wifi.has_status && status.wifi.status.is_connected, objects.battery_panel);\n", "replace")
+
+    # Chat message delivery status UX (Green = Acked, Yellow = Delivered to mesh, Red = Failed + [!] retry/delete modal)
+    helpers = """// Delivery status frame colors:
+// - Green: Delivered / Confirmed ACK (or group broadcast sent)
+// - Yellow: Delivered to mesh (relayed / awaiting recipient ACK in direct message)
+// - Red: Failed (NAK, max retransmits, timeout) with clickable [!] retry/delete badge
+static const lv_color_t colorDeliveryGreen = LV_COLOR_HEX(0x22c55e);  // 0x22C55E
+static const lv_color_t colorDeliveryYellow = LV_COLOR_HEX(0xeab308); // 0xEAB308
+static const lv_color_t colorDeliveryRed = LV_COLOR_HEX(0xef4444);    // 0xEF4444
+
+void TFTView_320x240::remove_failed_message_badge(lv_obj_t *panel)
+{
+    if (!panel || !panel->spec_attr) return;
+    for (uint32_t c = 1; c < panel->spec_attr->child_cnt; c++) {
+        lv_obj_t *child = panel->spec_attr->children[c];
+        if (child && (uintptr_t)child->user_data == 0xDEADBEEF) {
+            lv_obj_del(child);
+            break;
+        }
+    }
+}
+
+void TFTView_320x240::failed_popup_cancel_cb(lv_event_t *e)
+{
+    lv_obj_t *modal = (lv_obj_t *)lv_event_get_user_data(e);
+    if (modal) lv_obj_del(modal);
+}
+
+void TFTView_320x240::failed_popup_delete_cb(lv_event_t *e)
+{
+    lv_obj_t *modal = (lv_obj_t *)lv_event_get_user_data(e);
+    if (modal) {
+        lv_obj_t *panel = (lv_obj_t *)modal->user_data;
+        if (panel) lv_obj_del(panel);
+        lv_obj_del(modal);
+    }
+}
+
+void TFTView_320x240::failed_popup_retry_cb(lv_event_t *e)
+{
+    lv_obj_t *modal = (lv_obj_t *)lv_event_get_user_data(e);
+    if (!modal) return;
+    lv_obj_t *panel = (lv_obj_t *)modal->user_data;
+    if (!panel) {
+        lv_obj_del(modal);
+        return;
+    }
+
+    lv_obj_t *container = lv_obj_get_parent(panel);
+    lv_obj_t *textLabel = (panel->spec_attr && panel->spec_attr->child_cnt > 0) ? panel->spec_attr->children[0] : nullptr;
+    const char *full = textLabel ? lv_label_get_text(textLabel) : "";
+    const char *body = strchr(full, '\\n');
+    body = body ? (body + 1) : full;
+    char retryBuf[256];
+    snprintf(retryBuf, sizeof(retryBuf), "%s", body);
+
+    lv_obj_del(panel);
+    lv_obj_del(modal);
+
+    if (THIS && container && retryBuf[0]) {
+        lv_obj_t *prevActive = THIS->activeMsgContainer;
+        THIS->activeMsgContainer = container;
+        THIS->handleAddMessage(retryBuf);
+        THIS->activeMsgContainer = prevActive;
+    }
+}
+
+void TFTView_320x240::modal_backdrop_cb(lv_event_t *e)
+{
+    lv_obj_t *target = (lv_obj_t *)lv_event_get_target(e);
+    lv_obj_t *modal = (lv_obj_t *)lv_event_get_user_data(e);
+    if (target == modal) {
+        lv_obj_del(modal);
+    }
+}
+
+void TFTView_320x240::show_failed_message_popup(lv_obj_t *panel)
+{
+    lv_obj_t *top = lv_layer_top();
+    lv_obj_t *modal = lv_obj_create(top);
+    lv_obj_remove_style_all(modal);
+    lv_obj_set_size(modal, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(modal, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(modal, LV_OPA_60, 0);
+    lv_obj_clear_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(modal, LV_OBJ_FLAG_CLICKABLE);
+    modal->user_data = panel;
+    lv_obj_add_event_cb(modal, modal_backdrop_cb, LV_EVENT_CLICKED, modal);
+
+    lv_obj_t *card = lv_obj_create(modal);
+    lv_obj_set_width(card, 210);
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_center(card);
+    lv_obj_set_style_radius(card, 8, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x1E293B), 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(0x475569), 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_pad_all(card, 12, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(card, 8, 0);
+
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, "Message Failed");
+    lv_obj_set_style_text_color(title, colorDeliveryRed, 0);
+    lv_obj_set_style_text_font(title, &ui_font_montserrat_14, 0);
+
+    // Retry Button
+    lv_obj_t *btnRetry = lv_btn_create(card);
+    lv_obj_set_size(btnRetry, 180, 32);
+    lv_obj_set_style_radius(btnRetry, 6, 0);
+    lv_obj_set_style_bg_color(btnRetry, lv_color_hex(0x16A34A), 0);
+    lv_obj_t *lblRetry = lv_label_create(btnRetry);
+    lv_label_set_text(lblRetry, "Retry");
+    lv_obj_center(lblRetry);
+    lv_obj_add_event_cb(btnRetry, failed_popup_retry_cb, LV_EVENT_CLICKED, modal);
+
+    // Delete Button
+    lv_obj_t *btnDel = lv_btn_create(card);
+    lv_obj_set_size(btnDel, 180, 32);
+    lv_obj_set_style_radius(btnDel, 6, 0);
+    lv_obj_set_style_bg_color(btnDel, lv_color_hex(0xDC2626), 0);
+    lv_obj_t *lblDel = lv_label_create(btnDel);
+    lv_label_set_text(lblDel, "Delete");
+    lv_obj_center(lblDel);
+    lv_obj_add_event_cb(btnDel, failed_popup_delete_cb, LV_EVENT_CLICKED, modal);
+
+    // Cancel Button
+    lv_obj_t *btnCancel = lv_btn_create(card);
+    lv_obj_set_size(btnCancel, 180, 28);
+    lv_obj_set_style_radius(btnCancel, 6, 0);
+    lv_obj_set_style_bg_color(btnCancel, lv_color_hex(0x4B5563), 0);
+    lv_obj_t *lblCancel = lv_label_create(btnCancel);
+    lv_label_set_text(lblCancel, "Cancel");
+    lv_obj_center(lblCancel);
+    lv_obj_add_event_cb(btnCancel, failed_popup_cancel_cb, LV_EVENT_CLICKED, modal);
+}
+
+void TFTView_320x240::fail_badge_click_cb(lv_event_t *e)
+{
+    lv_obj_t *panel = (lv_obj_t *)lv_event_get_user_data(e);
+    if (panel) show_failed_message_popup(panel);
+}
+
+void TFTView_320x240::attach_failed_message_badge(lv_obj_t *panel, lv_obj_t *textLabel)
+{
+    if (!panel || !textLabel) return;
+    if (panel->spec_attr) {
+        for (uint32_t c = 1; c < panel->spec_attr->child_cnt; c++) {
+            lv_obj_t *child = panel->spec_attr->children[c];
+            if (child && (uintptr_t)child->user_data == 0xDEADBEEF) {
+                return;
+            }
+        }
+    }
+
+    lv_obj_t *badge = lv_btn_create(panel);
+    badge->user_data = (void *)(uintptr_t)0xDEADBEEF;
+    lv_obj_remove_style_all(badge);
+    lv_obj_set_size(badge, 22, 22);
+    lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(badge, colorDeliveryRed, 0);
+    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+    lv_obj_update_layout(textLabel);
+    lv_obj_align_to(badge, textLabel, LV_ALIGN_OUT_LEFT_MID, -6, 0);
+
+    lv_obj_t *bLbl = lv_label_create(badge);
+    lv_label_set_text(bLbl, "!");
+    lv_obj_set_style_text_color(bLbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(bLbl, &ui_font_montserrat_14, 0);
+    lv_obj_center(bLbl);
+
+    lv_obj_add_event_cb(badge, fail_badge_click_cb, LV_EVENT_CLICKED, panel);
+}
+
+"""
+    edit(tft, "/**\n * display message that has just been written and sent out\n */\nvoid TFTView_320x240::addMessage(", helpers + "/**\n * display message that has just been written and sent out\n */\nvoid TFTView_320x240::addMessage(", "replace")
+
+    old_add_switch = """    switch (status) {
+    case LogMessage::eHeard:
+        lv_obj_set_style_border_color(textLabel, colorYellow,
+                                      ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));
+        break;
+    case LogMessage::eAcked:
+        lv_obj_set_style_border_color(textLabel, colorBlueGreen,
+                                      ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));
+        break;
+    case LogMessage::eFailed:
+        lv_obj_set_style_border_color(textLabel, colorRed,
+                                      ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));
+        break;
+    default:
+        break;
+    }"""
+
+    new_add_switch = """    switch (status) {
+    case LogMessage::eHeard:
+        lv_obj_set_style_border_color(textLabel, colorDeliveryYellow,
+                                      ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));
+        lv_obj_set_style_border_width(textLabel, 2,
+                                      ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));
+        break;
+    case LogMessage::eAcked:
+        lv_obj_set_style_border_color(textLabel, colorDeliveryGreen,
+                                      ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));
+        lv_obj_set_style_border_width(textLabel, 2,
+                                      ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));
+        break;
+    case LogMessage::eFailed:
+        lv_obj_set_style_border_color(textLabel, colorDeliveryRed,
+                                      ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));
+        lv_obj_set_style_border_width(textLabel, 2,
+                                      ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));
+        attach_failed_message_badge(hiddenPanel, textLabel);
+        break;
+    default:
+        break;
+    }"""
+    edit(tft, old_add_switch, new_add_switch, "replace")
+
+    edit(tft, '        ILOG_DEBUG("onTextMessageCallback: timeout!");\n    }',
+         '        ILOG_DEBUG("onTextMessageCallback: timeout!");\n        handleTextMessageResponse((unsigned long)req.cookie, req.id, false, true);\n    }', "replace")
+
+    old_handle_loop = """        uint32_t requestId = (unsigned long)panel->user_data;
+        if (requestId == id) {
+            // now give the textlabel border another color
+            lv_obj_t *textLabel = panel->spec_attr->children[0];
+            lv_obj_set_style_border_color(textLabel,
+                                          err   ? colorRed
+                                          : ack ? colorBlueGreen
+                                                : colorYellow,
+                                          ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));
+
+            // store message
+            break;
+        }"""
+
+    new_handle_loop = """        uint32_t requestId = (unsigned long)panel->user_data;
+        if (requestId == id) {
+            lv_obj_t *textLabel = panel->spec_attr->children[0];
+            lv_color_t bCol = err ? colorDeliveryRed : (ack ? colorDeliveryGreen : colorDeliveryYellow);
+            lv_obj_set_style_border_color(textLabel, bCol,
+                                          ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));
+            lv_obj_set_style_border_width(textLabel, 2,
+                                          ((lv_style_selector_t)LV_PART_MAIN | (lv_style_selector_t)LV_STATE_DEFAULT));
+
+            if (err) {
+                attach_failed_message_badge(panel, textLabel);
+            } else {
+                remove_failed_message_badge(panel);
+            }
+            break;
+        }"""
+    edit(tft, old_handle_loop, new_handle_loop, "replace")
+
 
 def main():
     dst = os.path.join(UI, "source", "graphics", "common")
@@ -1614,10 +1869,51 @@ if os.path.isdir(UI) and os.path.isdir(LV):
              "if (EFFECTIVE_MQTT_PROXY) {", "replace")
         edit(mqtt_src, "if (moduleConfig.mqtt.proxy_to_client_enabled || this->isConnectedDirectly())",
              "if (EFFECTIVE_MQTT_PROXY || this->isConnectedDirectly())", "replace")
+        edit(mqtt_src, "        if (mqttQueue.enqueue(entry, 0) == false) {\n            LOG_CRIT(\"Can't add msg to mqttQueue\");\n            abort();\n        }",
+             "        if (mqttQueue.enqueue(entry, 0) == false) {\n            LOG_WARN(\"Can't add msg to mqttQueue, packet dropped\");\n            delete entry;\n        }", "replace")
+        edit(mqtt_src, "bool MQTT::publish(const char *topic, const char *payload, bool retained)\n{\n    if (moduleConfig.mqtt.proxy_to_client_enabled) {",
+             "bool MQTT::publish(const char *topic, const char *payload, bool retained)\n{\n    if (EFFECTIVE_MQTT_PROXY) {", "replace")
+        edit(mqtt_src, "bool MQTT::publish(const char *topic, const uint8_t *payload, size_t length, bool retained)\n{\n    if (moduleConfig.mqtt.proxy_to_client_enabled) {",
+             "bool MQTT::publish(const char *topic, const uint8_t *payload, size_t length, bool retained)\n{\n    if (EFFECTIVE_MQTT_PROXY) {", "replace")
+        edit(mqtt_src, "void MQTT::reconnect()\n{\n    isConnected = false;\n    if (wantsLink()) {\n        if (moduleConfig.mqtt.proxy_to_client_enabled) {",
+             "void MQTT::reconnect()\n{\n    isConnected = false;\n    if (wantsLink()) {\n        if (EFFECTIVE_MQTT_PROXY) {", "replace")
+        edit(mqtt_src, "int32_t MQTT::runOnce()\n{\n    perhapsReportToMap();\n\n    // If connected poll rapidly, otherwise only occasionally check for a wifi connection change and ability to contact server\n    if (moduleConfig.mqtt.proxy_to_client_enabled) {",
+             "int32_t MQTT::runOnce()\n{\n    perhapsReportToMap();\n\n    // If connected poll rapidly, otherwise only occasionally check for a wifi connection change and ability to contact server\n    if (EFFECTIVE_MQTT_PROXY) {", "replace")
+        edit(mqtt_src, "void MQTT::publishQueuedMessages()\n{\n    if (mqttQueue.isEmpty())\n        return;\n\n    if (!moduleConfig.mqtt.proxy_to_client_enabled && !isConnected)",
+             "void MQTT::publishQueuedMessages()\n{\n    if (mqttQueue.isEmpty())\n        return;\n\n    if (!EFFECTIVE_MQTT_PROXY && !isConnected)", "replace")
+        edit(mqtt_src, "    if (!moduleConfig.mqtt.map_reporting_enabled || !moduleConfig.mqtt.map_report_settings.should_report_location ||\n        !(moduleConfig.mqtt.proxy_to_client_enabled || isConnectedDirectly()))",
+             "    if (!moduleConfig.mqtt.map_reporting_enabled || !moduleConfig.mqtt.map_report_settings.should_report_location ||\n        !(EFFECTIVE_MQTT_PROXY || isConnectedDirectly()))", "replace")
+
+    # ExternalNotificationModule ringtone fix
+    ext_src = env.subst("$PROJECT_DIR/src/modules/ExternalNotificationModule.cpp")
+    if os.path.exists(ext_src):
+        edit(ext_src, "this->handleSetRingtone(request->set_canned_message_module_messages);",
+             "this->handleSetRingtone(request->set_ringtone_message);", "replace")
 
     phone_src = env.subst("$PROJECT_DIR/src/mesh/PhoneAPI.cpp")
     if os.path.exists(phone_src):
-        pdecl = 'extern "C" bool emoji_effective_mqtt_proxy(bool, bool) __attribute__((weak));\n'
+        pdecl = 'extern "C" bool emoji_effective_mqtt_proxy(bool, bool) __attribute__((weak));\n#if HAS_WIFI\n#include <WiFi.h>\n#endif\n'
         edit(phone_src, '#include "PhoneAPI.h"\n', pdecl, "after")
+        safe_chk = ("#if HAS_WIFI\n"
+                    "            bool netConnected = (WiFi.getMode() != WIFI_OFF && WiFi.isConnected());\n"
+                    "#else\n"
+                    "            bool netConnected = false;\n"
+                    "#endif\n"
+                    "            if (mqtt && (emoji_effective_mqtt_proxy ? emoji_effective_mqtt_proxy(moduleConfig.mqtt.proxy_to_client_enabled, netConnected) : moduleConfig.mqtt.proxy_to_client_enabled) && moduleConfig.mqtt.enabled &&")
         edit(phone_src, "if (mqtt && moduleConfig.mqtt.proxy_to_client_enabled && moduleConfig.mqtt.enabled &&",
-             "if (mqtt && (emoji_effective_mqtt_proxy ? emoji_effective_mqtt_proxy(moduleConfig.mqtt.proxy_to_client_enabled, WiFi.isConnected()) : moduleConfig.mqtt.proxy_to_client_enabled) && moduleConfig.mqtt.enabled &&", "replace")
+             safe_chk, "replace")
+        phone_old = ("        case meshtastic_ToRadio_mqttClientProxyMessage_tag:\n"
+                     "            LOG_TRACE(\"Got MqttClientProxy message\");")
+        phone_new = ("        case meshtastic_ToRadio_mqttClientProxyMessage_tag: {\n"
+                     "            LOG_TRACE(\"Got MqttClientProxy message\");")
+        edit(phone_src, phone_old, phone_new, "replace")
+        phone_end_old = ("                LOG_WARN(\"MqttClientProxy received but proxy disabled, no up/downlink channels, or map reporting off\");\n"
+                         "            }\n"
+                         "            break;\n"
+                         "#endif")
+        phone_end_new = ("                LOG_WARN(\"MqttClientProxy received but proxy disabled, no up/downlink channels, or map reporting off\");\n"
+                         "            }\n"
+                         "            break;\n"
+                         "        }\n"
+                         "#endif")
+        edit(phone_src, phone_end_old, phone_end_new, "replace")
