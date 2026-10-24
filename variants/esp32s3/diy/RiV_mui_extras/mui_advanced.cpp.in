@@ -4523,6 +4523,16 @@ static int g_extPin = 48;
 #define RING_COUNT ((int)(sizeof(RING_TUNE) / sizeof(RING_TUNE[0])))
 
 static char g_welTune[232];
+static char g_msgTune[232] = "";
+
+static void init_msg_tune(void)
+{
+    Preferences rp;
+    rp.begin("chatui", true);
+    String saved = rp.getString("ring", RING_TUNE[0]);
+    rp.end();
+    snprintf(g_msgTune, sizeof(g_msgTune), "%s", saved.c_str());
+}
 
 #if defined(ARCH_ESP32) || defined(ARDUINO_ARCH_ESP32) || defined(ESP32)
 
@@ -4561,6 +4571,8 @@ static void welcome_task()
 static void welcome_start(void)
 
 {
+
+    init_msg_tune();
 
     Preferences wp;
 
@@ -4758,11 +4770,11 @@ static void nt_save_cb(lv_event_t *e)
 
     }
 
-    g_sendExt();
-
     if (g_ntRingTa && lv_textarea_get_text(g_ntRingTa)[0]) {
 
         const char *rt = lv_textarea_get_text(g_ntRingTa);
+
+        snprintf(g_msgTune, sizeof(g_msgTune), "%s", rt);
 
         Preferences rp;
 
@@ -4781,6 +4793,8 @@ static void nt_save_cb(lv_event_t *e)
             g_sendRing(rt);
 
     }
+
+    g_sendExt();
 
     lv_label_set_text(g_ntStatus, "Saved, the node restarts to apply it");
 
@@ -6410,21 +6424,27 @@ static void nt_open_cb(lv_event_t *e)
 
         rp.end();
 
-        if (savedIdx < 0 || savedIdx >= 17) {
+        int matchedIdx = -1;
 
-            savedIdx = 16;
+        for (int i = 0; i < 16; i++) {
 
-            for (int i = 0; i < 16; i++) {
+            if (saved == RING_TUNE[i]) {
 
-                if (saved == RING_TUNE[i]) {
+                matchedIdx = i;
 
-                    savedIdx = i;
-
-                    break;
-
-                }
+                break;
 
             }
+
+        }
+
+        if (matchedIdx >= 0) {
+
+            savedIdx = matchedIdx;
+
+        } else if (savedIdx < 0 || savedIdx >= 17) {
+
+            savedIdx = 16;
 
         }
 
@@ -6457,6 +6477,8 @@ extern "C" void emoji_settings_host2(void *(*ext)(void), void (*sendExt)(void), 
     g_extCfg = ext;
 
     g_sendExt = sendExt;
+
+    init_msg_tune();
 
     {
 
@@ -7594,10 +7616,13 @@ extern "C" void emoji_message_alert(void)
     static volatile bool s_alertBusy = false;
     if (s_alertBusy) return;
     s_alertBusy = true;
+    if (!g_msgTune[0]) {
+        init_msg_tune();
+    }
 #if defined(ARCH_ESP32) || defined(ARDUINO_ARCH_ESP32) || defined(ESP32)
     static auto alert_fn = [](void *arg) {
         pinMode(g_extPin, OUTPUT);
-        rtttl_play(g_welTune[0] ? g_welTune : "msg:d=16,o=6,b=180:c,e,g,c7", g_extPin);
+        rtttl_play(g_msgTune[0] ? g_msgTune : RING_TUNE[0], g_extPin);
         digitalWrite(g_extPin, LOW);
         s_alertBusy = false;
         vTaskDelete(NULL);
@@ -7609,7 +7634,7 @@ extern "C" void emoji_message_alert(void)
 #else
     std::thread([]() {
         pinMode(g_extPin, OUTPUT);
-        rtttl_play(g_welTune[0] ? g_welTune : "msg:d=16,o=6,b=180:c,e,g,c7", g_extPin);
+        rtttl_play(g_msgTune[0] ? g_msgTune : RING_TUNE[0], g_extPin);
         digitalWrite(g_extPin, LOW);
         s_alertBusy = false;
     }).detach();
