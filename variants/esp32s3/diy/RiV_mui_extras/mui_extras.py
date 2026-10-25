@@ -258,8 +258,34 @@ def patch_keyboard_emoji(compose):
 
 def patch_mui_node_and_channel(tft, UI):
     tft_h = os.path.join(UI, "include", "graphics", "view", "TFT", "TFTView_320x240.h")
+    if os.path.exists(tft_h):
+        s_h, crlf_h = read(tft_h)
+        idx_start = s_h.find('    static void ui_event_NodeButton(lv_event_t *e);\n')
+        idx_end = s_h.find('    static void ui_event_ChannelButton(lv_event_t *e);')
+        if idx_start != -1 and idx_end != -1 and idx_start < idx_end:
+            anchor_len = len('    static void ui_event_NodeButton(lv_event_t *e);\n')
+            if idx_start + anchor_len < idx_end:
+                s_h = s_h[:idx_start + anchor_len] + s_h[idx_end:]
+                write(tft_h, s_h, crlf_h)
+
     edit(tft_h, "    static void ui_event_NodeButton(lv_event_t *e);\n",
          "public:\n    static void emoji_traceroute(uint32_t to, uint8_t ch);\n    static void emoji_open_node_chat_impl(uint32_t nodeNum);\n    static uint32_t emoji_find_node_by_name_impl(const char *shortName, const char *longName);\n    static void show_failed_message_popup(lv_obj_t *panel);\n    static void failed_popup_retry_cb(lv_event_t *e);\n    static void failed_popup_delete_cb(lv_event_t *e);\n    static void failed_popup_cancel_cb(lv_event_t *e);\n    static void modal_backdrop_cb(lv_event_t *e);\n    static void fail_badge_click_cb(lv_event_t *e);\n    static void attach_failed_message_badge(lv_obj_t *panel, lv_obj_t *textLabel);\n    static void remove_failed_message_badge(lv_obj_t *panel);\nprotected:\n    static void ui_event_search_ta(lv_event_t *e);\n    static void ui_event_search_kb(lv_event_t *e);\n", "after")
+
+    if os.path.exists(tft):
+        s_tft, crlf_tft = read(tft)
+        idx_start = s_tft.find('extern "C" __attribute__((weak)) void get_node_details_string')
+        idx_end = s_tft.find('void TFTView_320x240::ui_set_active(lv_obj_t *b, lv_obj_t *p, lv_obj_t *tp)\n{')
+        if idx_start != -1 and idx_end != -1 and idx_start < idx_end:
+            s_tft = s_tft[:idx_start] + s_tft[idx_end:]
+            write(tft, s_tft, crlf_tft)
+
+        idx_hf_start = s_tft.find('lv_obj_set_size(objects.blank_screen, h, v);\n')
+        idx_hf_end = s_tft.find('    // resize buttons on larger display (assuming 480x480)')
+        if idx_hf_start != -1 and idx_hf_end != -1 and idx_hf_start < idx_hf_end:
+            anchor_len = len('lv_obj_set_size(objects.blank_screen, h, v);\n')
+            if idx_hf_start + anchor_len < idx_hf_end:
+                s_tft = s_tft[:idx_hf_start + anchor_len] + s_tft[idx_hf_end:]
+                write(tft, s_tft, crlf_tft)
 
     decl_block = (
         'extern "C" __attribute__((weak)) void get_node_details_string(uint32_t nodeNum, char *idStr, size_t idLen,\n'
@@ -1045,6 +1071,14 @@ void TFTView_320x240::attach_failed_message_badge(lv_obj_t *panel, lv_obj_t *tex
 }
 
 """
+    if os.path.exists(tft):
+        s_tft, crlf_tft = read(tft)
+        idx_h_start = s_tft.find('// Delivery status frame colors:')
+        idx_h_end = s_tft.find('/**\n * display message that has just been written and sent out\n */\nvoid TFTView_320x240::addMessage(')
+        if idx_h_start != -1 and idx_h_end != -1 and idx_h_start < idx_h_end:
+            s_tft = s_tft[:idx_h_start] + s_tft[idx_h_end:]
+            write(tft, s_tft, crlf_tft)
+
     edit(tft, "/**\n * display message that has just been written and sent out\n */\nvoid TFTView_320x240::addMessage(", helpers + "/**\n * display message that has just been written and sent out\n */\nvoid TFTView_320x240::addMessage(", "replace")
 
     old_add_switch = """    switch (status) {
