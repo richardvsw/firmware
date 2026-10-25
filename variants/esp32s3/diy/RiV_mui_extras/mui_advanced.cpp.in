@@ -438,7 +438,11 @@ static void hl_init(void)
 
     lv_style_init(&g_hl);
 
+    #if defined(RIV_FOCUS_FRAME) || defined(INPUTDRIVER_ENCODER_TYPE) || defined(INPUTDRIVER_ENCODER_UP) || defined(INPUTDRIVER_ENCODER_BTN)
     lv_style_set_outline_width(&g_hl, 3);
+#else
+    lv_style_set_outline_width(&g_hl, 0); // touch only builds: no yellow focus frame
+#endif
 
     lv_style_set_outline_color(&g_hl, lv_color_hex(0xFFD54A));
 

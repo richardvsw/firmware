@@ -1926,9 +1926,9 @@ if os.path.isdir(UI) and os.path.isdir(LV):
 
     phone_src = env.subst("$PROJECT_DIR/src/mesh/PhoneAPI.cpp")
     if os.path.exists(phone_src):
-        pdecl = 'extern "C" bool emoji_effective_mqtt_proxy(bool, bool) __attribute__((weak));\n#if HAS_WIFI\n#include <WiFi.h>\n#endif\n'
+        pdecl = 'extern "C" bool emoji_effective_mqtt_proxy(bool, bool) __attribute__((weak));\n#if HAS_WIFI && !defined(ARCH_PORTDUINO)\n#include <WiFi.h>\n#endif\n'
         edit(phone_src, '#include "PhoneAPI.h"\n', pdecl, "after")
-        safe_chk = ("#if HAS_WIFI\n"
+        safe_chk = ("#if HAS_WIFI && !defined(ARCH_PORTDUINO)\n"
                     "            bool netConnected = (WiFi.getMode() != WIFI_OFF && WiFi.isConnected());\n"
                     "#else\n"
                     "            bool netConnected = false;\n"
