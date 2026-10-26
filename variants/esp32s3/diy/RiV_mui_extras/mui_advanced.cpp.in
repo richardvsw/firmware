@@ -460,7 +460,11 @@ static bool focusable(lv_obj_t *o)
 
     return lv_obj_check_type(o, &lv_button_class) || lv_obj_check_type(o, &lv_switch_class) || lv_obj_check_type(o, &lv_textarea_class) ||
 
-           lv_obj_check_type(o, &lv_dropdown_class);
+           lv_obj_check_type(o, &lv_dropdown_class) ||
+
+           lv_obj_check_type(o, &lv_slider_class) ||
+
+           (lv_obj_check_type(o, &lv_label_class) && lv_obj_has_flag(o, LV_OBJ_FLAG_CLICKABLE)); // popup choices are clickable labels
 
 }
 
@@ -688,6 +692,77 @@ static void close_panel(lv_obj_t *p)
 
 
 
+// ---- screens and popups built in other files join the same joystick navigation ----
+extern "C" void emoji_joy_screen_open(lv_obj_t *root)
+{
+    lv_group_t *g = lv_group_get_default();
+    if (!g || !root || !lv_obj_is_valid(root))
+        return;
+    hl_init();
+    if (g_panelDepth == 0)
+        group_isolate(g);
+    else
+        panel_group_remove(g_panelStack[g_panelDepth - 1]);
+    panel_group_add(root, g);
+    if (g_panelDepth < 8)
+        g_panelStack[g_panelDepth++] = root;
+    panel_focus_first(root);
+}
+
+extern "C" void emoji_joy_screen_closed(lv_obj_t *root)
+{
+    lv_group_t *g = lv_group_get_default();
+    if (!g || !root)
+        return;
+    int at = -1;
+    for (int i = 0; i < g_panelDepth; i++)
+        if (g_panelStack[i] == root)
+            at = i;
+    if (at < 0)
+        return;
+    bool top = at == g_panelDepth - 1;
+    for (int i = at; i < g_panelDepth - 1; i++)
+        g_panelStack[i] = g_panelStack[i + 1];
+    g_panelDepth--;
+    if (!top)
+        return;
+    if (lv_obj_is_valid(root))
+        panel_group_remove(root);
+    if (g_panelDepth > 0) {
+        panel_group_add(g_panelStack[g_panelDepth - 1], g);
+        panel_focus_first(g_panelStack[g_panelDepth - 1]);
+    } else {
+        group_restore(g);
+    }
+}
+
+// controls that were built after the screen opened (a list that was rebuilt) get into the group too
+extern "C" void emoji_joy_refresh(lv_obj_t *container)
+{
+    lv_group_t *g = lv_group_get_default();
+    if (!g || g_panelDepth == 0 || !container || !lv_obj_is_valid(container))
+        return;
+    lv_obj_t *top = g_panelStack[g_panelDepth - 1];
+    bool inside = false;
+    for (lv_obj_t *p = container; p; p = lv_obj_get_parent(p))
+        if (p == top)
+            inside = true;
+    if (!inside)
+        return;
+    panel_group_add(container, g);
+    bool held = false;
+    for (lv_obj_t *p = lv_group_get_focused(g); p; p = lv_obj_get_parent(p))
+        if (p == top)
+            held = true;
+    if (!held) {
+        lv_obj_t *n = first_focusable(container);
+        if (!n)
+            n = first_focusable(top);
+        if (n)
+            lv_group_focus_obj(n);
+    }
+}
+
 // returns the lv_button; child 0 is the lv_label (use lv_obj_get_child(btn,0) to set text)
 
 static lv_obj_t *make_label_button(lv_obj_t *parent, const char *text, uint32_t bg, lv_event_cb_t cb)
@@ -831,6 +906,8 @@ static lv_obj_t *make_panel(const char *title, lv_event_cb_t backCb, lv_obj_t **
     lv_obj_set_scroll_dir(content, LV_DIR_VER);
 
     lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_clear_flag(content, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_add_event_cb(content, [](lv_event_t *ev) { lv_obj_invalidate((lv_obj_t *)lv_event_get_target(ev)); }, LV_EVENT_SCROLL, nullptr);
 
     *contentOut = content;
 
@@ -1639,29 +1716,16 @@ static lv_obj_t *make_nav(lv_obj_t *content, const char *text, lv_event_cb_t cb)
 
 
 static lv_obj_t *make_section_header(lv_obj_t *content, const char *title)
-
 {
-
-    lv_obj_t *sep = lv_obj_create(content);
-
-    lv_obj_remove_style_all(sep);
-
-    lv_obj_set_size(sep, LV_PCT(95), 26);
-
-    lv_obj_set_style_align(sep, LV_ALIGN_TOP_MID, 0);
-
-    lv_obj_set_style_pad_top(sep, 8, 0);
-
-    lv_obj_t *lbl = lv_label_create(sep);
-
+    // one self-sized label: the old 26 px container was shorter than its label, which stuck out and ghosted while scrolling
+    lv_obj_t *lbl = lv_label_create(content);
     lv_label_set_text(lbl, title);
-
+    lv_obj_set_width(lbl, LV_PCT(95));
     lv_obj_set_style_text_color(lbl, lv_color_hex(g_themeAccent), 0);
-
-    lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 2, 0);
-
-    return sep;
-
+    lv_obj_set_style_pad_top(lbl, 10, 0);
+    lv_obj_set_style_pad_bottom(lbl, 3, 0);
+    lv_obj_set_style_pad_left(lbl, 2, 0);
+    return lbl;
 }
 
 
@@ -2485,99 +2549,139 @@ static void radio_open_cb(lv_event_t *e) {
 // LoRa
 
 static lv_obj_t *g_loraPanel = nullptr, *g_loraStatus, *g_swTx, *g_swIgnoreMqtt = nullptr, *g_swOkToMqtt = nullptr, *g_ddHop, *g_ddPower;
+static lv_obj_t *g_ddRegion = nullptr, *g_swPreset = nullptr, *g_ddPreset = nullptr, *g_ddBw = nullptr, *g_ddSf = nullptr, *g_ddCr = nullptr;
+static lv_obj_t *g_swDuty = nullptr, *g_swBoost = nullptr, *g_taSlot = nullptr, *g_taFreq = nullptr;
 
-static void lora_back_cb(lv_event_t *e)
+// same order as the protobuf enums, so the dropdown index is the enum value
+static const char *LORA_REGIONS = "Unset\nUS\nEU 433\nEU 868\nCN\nJP\nANZ\nKR\nTW\nRU\nIN\nNZ 865\nTH\nLoRa 2.4 GHz\nUA 433\nUA 868\nMY 433\nMY 919\n"
+                                  "SG 923\nPH 433\nPH 868\nPH 915\nANZ 433\nKZ 433\nKZ 863\nNP 865\nBR 902\nITU1 2m\nITU2 2m\nEU 866\nEU 874\nEU 917\n"
+                                  "EU N 868\nITU3 2m\nITU1 70cm\nITU2 70cm\nITU3 70cm\nITU2 125cm";
+static const char *LORA_PRESETS = "Long Fast\nLong Slow\nVery Long Slow\nMedium Slow\nMedium Fast\nShort Slow\nShort Fast\nLong Moderate\n"
+                                  "Short Turbo\nLong Turbo\nLite Fast\nLite Slow\nNarrow Fast\nNarrow Slow\nTiny Fast\nTiny Slow";
+static const uint16_t LORA_BW[] = {31, 62, 125, 250, 500};
 
+static void lora_hide_pair(lv_obj_t *dd, bool hide)
 {
-
-    close_panel(g_loraPanel);
-
+    // make_dropdown puts its caption label right before the dropdown
+    lv_obj_t *cap = lv_obj_get_child(lv_obj_get_parent(dd), (int32_t)lv_obj_get_index(dd) - 1);
+    if (hide) {
+        lv_obj_add_flag(dd, LV_OBJ_FLAG_HIDDEN);
+        if (cap) lv_obj_add_flag(cap, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(dd, LV_OBJ_FLAG_HIDDEN);
+        if (cap) lv_obj_clear_flag(cap, LV_OBJ_FLAG_HIDDEN);
+    }
 }
-
-static void lora_save_cb(lv_event_t *e)
-
+static void lora_apply_mode(void)
 {
-
+    bool preset = lv_obj_has_state(g_swPreset, LV_STATE_CHECKED);
+    lora_hide_pair(g_ddPreset, !preset);
+    lora_hide_pair(g_ddBw, preset);
+    lora_hide_pair(g_ddSf, preset);
+}
+static void lora_mode_cb(lv_event_t *e)
+{
+    lora_apply_mode();
+}
+static void lora_back_cb(lv_event_t *e)
+{
+    close_panel(g_loraPanel);
+}
+static void lora_save_cb(lv_event_t *e)
+{
     meshtastic_Config_LoRaConfig *c = (meshtastic_Config_LoRaConfig *)g_loraCfg();
-
     c->tx_enabled = lv_obj_has_state(g_swTx, LV_STATE_CHECKED);
-
     if (g_swIgnoreMqtt)
-
         c->ignore_mqtt = lv_obj_has_state(g_swIgnoreMqtt, LV_STATE_CHECKED);
-
     if (g_swOkToMqtt)
-
         c->config_ok_to_mqtt = lv_obj_has_state(g_swOkToMqtt, LV_STATE_CHECKED);
-
     c->hop_limit = lv_dropdown_get_selected(g_ddHop) + 1;
-
     c->tx_power = lv_dropdown_get_selected(g_ddPower);
 
-    g_sendLora();
-
-    lv_label_set_text(g_loraStatus, "Saved, the node applies it after a restart");
-
-}
-
-static void lora_open_cb(lv_event_t *e)
-
-{
-
-    if (!g_loraPanel) {
-
-        lv_obj_t *content;
-
-        g_loraPanel = make_panel("LoRa Config", lora_back_cb, &content);
-
-        make_section_header(content, "MQTT & ROUTING");
-
-        g_swIgnoreMqtt = make_switch_row(content, "Ignore MQTT");
-
-        g_swOkToMqtt = make_switch_row(content, "Ok to MQTT");
-
-        g_swTx = make_switch_row(content, "Transmit Enabled");
-
-        make_section_header(content, "RADIO PARAMETERS");
-
-        g_ddHop = make_dropdown(content, "Hop limit", "1\n2\n3\n4\n5\n6\n7");
-
-        g_ddPower = make_dropdown(content, "TX power in dBm, 0 is the region maximum",
-
-                                  "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30");
-
-        g_loraStatus = make_status(content);
-
-        make_save_cancel(content, lora_save_cb, lora_back_cb);
-
+    uint32_t region = lv_dropdown_get_selected(g_ddRegion);
+    bool preset = lv_obj_has_state(g_swPreset, LV_STATE_CHECKED);
+    bool radioChange = region != (uint32_t)c->region || preset != c->use_preset;
+    c->region = (meshtastic_Config_LoRaConfig_RegionCode)region;
+    c->use_preset = preset;
+    uint32_t cr = lv_dropdown_get_selected(g_ddCr); // 0 = preset default, else 4/5..4/8
+    if (preset) {
+        uint32_t mp = lv_dropdown_get_selected(g_ddPreset);
+        radioChange = radioChange || mp != (uint32_t)c->modem_preset;
+        c->modem_preset = (meshtastic_Config_LoRaConfig_ModemPreset)mp;
+        c->coding_rate = cr ? (uint8_t)(cr + 4) : 0;
+    } else {
+        uint32_t bi = lv_dropdown_get_selected(g_ddBw);
+        c->bandwidth = LORA_BW[bi < 5 ? bi : 3];
+        c->spread_factor = lv_dropdown_get_selected(g_ddSf) + 7;
+        c->coding_rate = cr ? (uint8_t)(cr + 4) : 5; // a manual setup needs an explicit rate
     }
-
-    meshtastic_Config_LoRaConfig *c = (meshtastic_Config_LoRaConfig *)g_loraCfg();
-
-    set_switch(g_swTx, c->tx_enabled);
-
-    if (g_swIgnoreMqtt)
-
-        set_switch(g_swIgnoreMqtt, c->ignore_mqtt);
-
-    if (g_swOkToMqtt)
-
-        set_switch(g_swOkToMqtt, c->config_ok_to_mqtt);
-
-    lv_dropdown_set_selected(g_ddHop, (c->hop_limit >= 1 && c->hop_limit <= 7) ? c->hop_limit - 1 : 2);
-
-    lv_dropdown_set_selected(g_ddPower, c->tx_power <= 30 ? c->tx_power : 0);
-
-    lv_label_set_text(g_loraStatus, "");
-
-    open_panel(g_loraPanel);
-
+    c->override_duty_cycle = lv_obj_has_state(g_swDuty, LV_STATE_CHECKED);
+    c->sx126x_rx_boosted_gain = lv_obj_has_state(g_swBoost, LV_STATE_CHECKED);
+    c->channel_num = (uint16_t)atoi(lv_textarea_get_text(g_taSlot));
+    c->override_frequency = (float)atof(lv_textarea_get_text(g_taFreq));
+    g_sendLora();
+    lv_label_set_text(g_loraStatus, radioChange ? "Saved. Region or preset changed, the node reboots to apply it"
+                                                : "Saved, the node applies it after a restart");
 }
-
-
-
+static void lora_open_cb(lv_event_t *e)
+{
+    if (!g_loraPanel) {
+        lv_obj_t *content;
+        g_loraPanel = make_panel("LoRa Config", lora_back_cb, &content);
+        make_section_header(content, "OPTIONS");
+        g_ddRegion = make_dropdown(content, "Region", LORA_REGIONS);
+        g_swPreset = make_switch_row(content, "Use preset");
+        lv_obj_add_event_cb(g_swPreset, lora_mode_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+        g_ddPreset = make_dropdown(content, "Preset", LORA_PRESETS);
+        g_ddBw = make_dropdown(content, "Bandwidth in kHz", "31\n62\n125\n250\n500");
+        g_ddSf = make_dropdown(content, "Spread factor", "7\n8\n9\n10\n11\n12");
+        g_ddCr = make_dropdown(content, "Coding rate override", "Preset default\n4/5\n4/6\n4/7\n4/8");
+        make_section_header(content, "MQTT & ROUTING");
+        g_swIgnoreMqtt = make_switch_row(content, "Ignore MQTT");
+        g_swOkToMqtt = make_switch_row(content, "Ok to MQTT");
+        make_section_header(content, "ADVANCED");
+        g_swTx = make_switch_row(content, "Transmit Enabled");
+        g_swDuty = make_switch_row(content, "Override duty cycle");
+        g_ddHop = make_dropdown(content, "Hop limit", "1\n2\n3\n4\n5\n6\n7");
+        g_taSlot = make_field(content, "Frequency slot (0 = automatic)", 5, false);
+        lv_textarea_set_accepted_chars(g_taSlot, "0123456789");
+        g_swBoost = make_switch_row(content, "RX boosted gain (SX126x)");
+        g_taFreq = make_field(content, "Frequency override in MHz (0 = automatic)", 9, false);
+        lv_textarea_set_accepted_chars(g_taFreq, "0123456789.");
+        g_ddPower = make_dropdown(content, "TX power in dBm, 0 is the region maximum",
+                                  "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30");
+        g_loraStatus = make_status(content);
+        make_save_cancel(content, lora_save_cb, lora_back_cb);
+    }
+    meshtastic_Config_LoRaConfig *c = (meshtastic_Config_LoRaConfig *)g_loraCfg();
+    set_switch(g_swTx, c->tx_enabled);
+    if (g_swIgnoreMqtt)
+        set_switch(g_swIgnoreMqtt, c->ignore_mqtt);
+    if (g_swOkToMqtt)
+        set_switch(g_swOkToMqtt, c->config_ok_to_mqtt);
+    lv_dropdown_set_selected(g_ddHop, (c->hop_limit >= 1 && c->hop_limit <= 7) ? c->hop_limit - 1 : 2);
+    lv_dropdown_set_selected(g_ddPower, c->tx_power >= 0 && c->tx_power <= 30 ? c->tx_power : 0);
+    lv_dropdown_set_selected(g_ddRegion, (uint32_t)c->region <= (uint32_t)_meshtastic_Config_LoRaConfig_RegionCode_MAX ? (uint32_t)c->region : 0);
+    set_switch(g_swPreset, c->use_preset);
+    lv_dropdown_set_selected(g_ddPreset, (uint32_t)c->modem_preset <= 15 ? (uint32_t)c->modem_preset : 0);
+    uint32_t bi = 3;
+    for (uint32_t i = 0; i < 5; i++)
+        if (LORA_BW[i] == c->bandwidth) bi = i;
+    lv_dropdown_set_selected(g_ddBw, bi);
+    lv_dropdown_set_selected(g_ddSf, (c->spread_factor >= 7 && c->spread_factor <= 12) ? c->spread_factor - 7 : 4);
+    lv_dropdown_set_selected(g_ddCr, (c->coding_rate >= 5 && c->coding_rate <= 8) ? c->coding_rate - 4 : 0);
+    set_switch(g_swDuty, c->override_duty_cycle);
+    set_switch(g_swBoost, c->sx126x_rx_boosted_gain);
+    char b[24];
+    snprintf(b, sizeof(b), "%u", (unsigned)c->channel_num);
+    lv_textarea_set_text(g_taSlot, b);
+    snprintf(b, sizeof(b), "%.3f", (double)c->override_frequency);
+    lv_textarea_set_text(g_taFreq, b);
+    lora_apply_mode();
+    lv_label_set_text(g_loraStatus, "");
+    open_panel(g_loraPanel);
+}
 // position
-
 static const uint32_t POS_SECS[] = {0, 900, 1800, 3600, 7200, 21600, 43200, 86400};
 
 static lv_obj_t *g_posPanel = nullptr, *g_posStatus, *g_ddGps, *g_ddInt;
@@ -4314,34 +4418,73 @@ static const char *const RING_TUNE[16] = {
 
 
 
-static void tone_pin(int pin, float freq, uint32_t ms)
-
+// buzzer volume 10..100 %: a passive buzzer has no gain, so the level is the duty of the tone (100 % = the full 50 % square wave)
+static uint8_t g_buzVol = 100;
+static bool g_buzVolLoaded = false;
+static lv_obj_t *g_ntVol = nullptr, *g_ntVolLbl = nullptr;
+extern "C" uint8_t emoji_buzzer_volume(void)
 {
+    if (!g_buzVolLoaded) {
+        g_buzVolLoaded = true;
+        Preferences p;
+        if (p.begin("chatui", true)) {
+            int v = p.getInt("bzvol", 100);
+            p.end();
+            if (v >= 10 && v <= 100) g_buzVol = (uint8_t)v;
+        }
+    }
+    return g_buzVol;
+}
+// Duty of the tone for the volume. The buzzer is resonant (about 6.4 kHz): it is driven by the harmonics of the square wave near
+// that frequency, and those do not get weaker when the duty only shrinks from 50 % to 10 %. A pulse of fixed WIDTH does: the
+// resonant part follows sin(pi * f_res * width), so the width is chosen from the volume and the duty follows from the note.
+extern "C" float emoji_buzzer_duty(float freq)
+{
+    uint8_t v = emoji_buzzer_volume();
+    if (v >= 100)
+        return 0.5f;
+    float w = asinf((float)v / 100.0f) / (3.14159265f * 6400.0f);
+    float d = w * freq;
+    return d > 0.5f ? 0.5f : d;
+}
+static void nt_vol_cb(lv_event_t *e)
+{
+    g_buzVol = (uint8_t)lv_slider_get_value(g_ntVol);
+    g_buzVolLoaded = true;
+    char b[8];
+    snprintf(b, sizeof(b), "%d%%", (int)g_buzVol);
+    lv_label_set_text(g_ntVolLbl, b);
+}
 
+static void tone_pin(int pin, float freq, uint32_t ms)
+{
     if (freq < 50.0f) {
-
         delay(ms);
-
         return;
-
     }
-
-    uint32_t halfUs = (uint32_t)(500000.0f / freq);
-
-    uint32_t cycles = (uint32_t)((float)ms * 1000.0f / (2.0f * (float)halfUs));
-
-    for (uint32_t i = 0; i < cycles; i++) {
-
-        digitalWrite(pin, HIGH);
-
-        delayMicroseconds(halfUs);
-
-        digitalWrite(pin, LOW);
-
-        delayMicroseconds(halfUs);
-
+    // The pitch must not depend on how long digitalWrite takes: the edges follow a time line that advances by exactly one period.
+    // The high time is the half period scaled by the buzzer volume, so a lower volume keeps the pitch and only narrows the pulse.
+    const float period = 1000000.0f / freq;
+    const float highUs = period * emoji_buzzer_duty(freq);
+    const uint32_t total = ms * 1000UL;
+    const uint32_t t0 = micros();
+    float riseAt = 0.0f, fallAt = highUs;
+    bool level = false;
+    for (;;) {
+        uint32_t el = micros() - t0;
+        if (el >= total)
+            break;
+        if (!level && (float)el >= riseAt) {
+            digitalWrite(pin, HIGH);
+            level = true;
+            riseAt += period;
+        } else if (level && (float)el >= fallAt) {
+            digitalWrite(pin, LOW);
+            level = false;
+            fallAt += period;
+        }
     }
-
+    digitalWrite(pin, LOW);
 }
 
 
@@ -4402,7 +4545,7 @@ static void rtttl_play(const char *s, int pin)
 
     uint32_t whole = 240000 / (uint32_t)b;
 
-    for (int count = 0; *p && count < 60; count++) {
+    for (int count = 0; *p && count < 120; count++) {
 
         int dur = 0;
 
@@ -4635,6 +4778,13 @@ static void nt_ring_cb(lv_event_t *e)
 static void nt_save_cb(lv_event_t *e)
 
 {
+    {
+        Preferences vp;
+        if (vp.begin("chatui", false)) {
+            vp.putInt("bzvol", (int)emoji_buzzer_volume());
+            vp.end();
+        }
+    }
 
     if (g_ntPinTa) {
 
@@ -6323,6 +6473,24 @@ static void nt_open_cb(lv_event_t *e)
             cp_btn(rr, "Composer", 0x2F7D4F, cp_open_cb, 0);
 
         }
+        {
+            lv_obj_t *cap = lv_label_create(content);
+            lv_label_set_text(cap, "Buzzer volume");
+            lv_obj_set_style_text_color(cap, lv_color_hex(g_themeAccent), 0);
+            lv_obj_set_style_pad_left(cap, 4, 0);
+            lv_obj_set_style_pad_top(cap, 4, 0);
+            g_ntVol = lv_slider_create(content);
+            lv_obj_set_size(g_ntVol, LV_PCT(88), 14);
+            lv_obj_set_style_pad_all(g_ntVol, 0, 0);
+            lv_slider_set_range(g_ntVol, 10, 100);
+            lv_slider_set_value(g_ntVol, emoji_buzzer_volume(), LV_ANIM_OFF);
+            lv_obj_add_event_cb(g_ntVol, nt_vol_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+            g_ntVolLbl = lv_label_create(content);
+            char vb[8];
+            snprintf(vb, sizeof(vb), "%d%%", (int)emoji_buzzer_volume());
+            lv_label_set_text(g_ntVolLbl, vb);
+            lv_obj_set_style_text_color(g_ntVolLbl, lv_color_hex(g_themeItemText), 0);
+        }
 
 
 
@@ -7240,6 +7408,19 @@ extern "C" void emoji_wifi_vault_add(const char *ssid, const char *psk)
                 return;
             }
         }
+        if (cnt >= 12) {
+            // full: drop the oldest entry so the newest network is always kept
+            for (int i = 1; i < 12; i++) {
+                char ks[16], kp[16], kd[16], kq[16];
+                snprintf(ks, sizeof(ks), "s%d", i);
+                snprintf(kp, sizeof(kp), "p%d", i);
+                snprintf(kd, sizeof(kd), "s%d", i - 1);
+                snprintf(kq, sizeof(kq), "p%d", i - 1);
+                p.putString(kd, p.getString(ks, ""));
+                p.putString(kq, p.getString(kp, ""));
+            }
+            cnt = 11;
+        }
         if (cnt < 12) {
             char k[16]; snprintf(k, sizeof(k), "s%d", cnt);
             p.putString(k, ssid);
@@ -7251,14 +7432,218 @@ extern "C" void emoji_wifi_vault_add(const char *ssid, const char *psk)
     }
 }
 
+// ---- saved Wi-Fi networks: up to 12 SSID/password pairs kept in NVS "wifi_vault" (passwords are never shown) ----
+static lv_obj_t *g_wvPanel = nullptr, *g_wvList = nullptr, *g_wvSsid = nullptr, *g_wvPsk = nullptr, *g_wvMsg = nullptr;
+static int g_wvArm = -1;
+static void wv_refresh();
+static void wv_back_cb(lv_event_t *e)
+{
+    close_panel(g_wvPanel);
+}
+static void wv_remove(int idx)
+{
+    Preferences p;
+    if (!p.begin("wifi_vault", false))
+        return;
+    int cnt = p.getInt("cnt", 0);
+    if (cnt > 12)
+        cnt = 12;
+    String ss[12], pp[12];
+    for (int i = 0; i < cnt; i++) {
+        char k[16];
+        snprintf(k, sizeof(k), "s%d", i);
+        ss[i] = p.getString(k, "");
+        snprintf(k, sizeof(k), "p%d", i);
+        pp[i] = p.getString(k, "");
+    }
+    for (int i = idx; i < cnt - 1; i++) {
+        ss[i] = ss[i + 1];
+        pp[i] = pp[i + 1];
+    }
+    if (cnt > 0)
+        cnt--;
+    for (int i = 0; i < 12; i++) {
+        char k[16];
+        snprintf(k, sizeof(k), "s%d", i);
+        if (i < cnt)
+            p.putString(k, ss[i]);
+        else
+            p.remove(k);
+        snprintf(k, sizeof(k), "p%d", i);
+        if (i < cnt)
+            p.putString(k, pp[i]);
+        else
+            p.remove(k);
+    }
+    p.putInt("cnt", cnt);
+    p.end();
+}
+static void wv_row_cb(lv_event_t *e)
+{
+    int idx = (int)(uintptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_current_target(e));
+    if (g_wvArm != idx) {
+        g_wvArm = idx; // first tap arms the row, the second one removes it
+        wv_refresh();
+        if (g_wvMsg)
+            lv_label_set_text(g_wvMsg, "Tap the red row again to remove it.");
+        return;
+    }
+    g_wvArm = -1;
+    wv_remove(idx);
+    wv_refresh();
+    if (g_wvMsg)
+        lv_label_set_text(g_wvMsg, "Removed.");
+}
+static void wv_add_cb(lv_event_t *e)
+{
+    const char *ssid = g_wvSsid ? lv_textarea_get_text(g_wvSsid) : "";
+    const char *psk = g_wvPsk ? lv_textarea_get_text(g_wvPsk) : "";
+    if (!ssid || !ssid[0]) {
+        if (g_wvMsg)
+            lv_label_set_text(g_wvMsg, "Enter the network name first.");
+        return;
+    }
+    int before = 0;
+    bool existed = false;
+    {
+        Preferences p;
+        if (p.begin("wifi_vault", true)) {
+            before = p.getInt("cnt", 0);
+            for (int i = 0; i < before && i < 12; i++) {
+                char k[16];
+                snprintf(k, sizeof(k), "s%d", i);
+                if (p.getString(k, "") == String(ssid))
+                    existed = true;
+            }
+            p.end();
+        }
+    }
+    emoji_wifi_vault_add(ssid, psk);
+    int after = 0;
+    {
+        Preferences p;
+        if (p.begin("wifi_vault", true)) {
+            after = p.getInt("cnt", 0);
+            p.end();
+        }
+    }
+    bool replacedOldest = before >= 12 && !existed;
+    (void)after;
+    lv_textarea_set_text(g_wvSsid, "");
+    lv_textarea_set_text(g_wvPsk, "");
+    g_wvArm = -1;
+    wv_refresh();
+    if (g_wvMsg)
+        lv_label_set_text(g_wvMsg, replacedOldest ? "Saved. The vault holds 12, so the oldest network was replaced." : (existed ? "Updated." : "Saved."));
+}
+static void wv_refresh()
+{
+    if (!g_wvList)
+        return;
+    lv_obj_clean(g_wvList);
+    int cnt = 0;
+    String names[12];
+    Preferences p;
+    if (p.begin("wifi_vault", true)) {
+        cnt = p.getInt("cnt", 0);
+        if (cnt > 12)
+            cnt = 12;
+        for (int i = 0; i < cnt; i++) {
+            char k[16];
+            snprintf(k, sizeof(k), "s%d", i);
+            names[i] = p.getString(k, "");
+        }
+        p.end();
+    }
+    if (cnt == 0) {
+        lv_obj_t *l = lv_label_create(g_wvList);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(l, LV_PCT(95));
+        lv_obj_set_style_pad_left(l, 4, 0);
+        lv_obj_set_style_text_color(l, lv_color_hex(0x9FD3FF), 0);
+        lv_label_set_text(l, "No saved networks yet. They are added when you connect to a network, or add one below.");
+        return;
+    }
+    for (int i = 0; i < cnt; i++) {
+        char text[64];
+        snprintf(text, sizeof(text), "%s", names[i].c_str());
+        lv_obj_t *b = make_nav(g_wvList, text, wv_row_cb);
+        lv_obj_set_user_data(b, (void *)(uintptr_t)i);
+        if (g_wvArm == i)
+            lv_obj_set_style_bg_color(b, lv_color_hex(0x8B2E33), 0);
+    }
+    emoji_joy_refresh(g_wvList);
+}
 static void wifi_vault_open_cb(lv_event_t *e)
 {
-    // Saved Wi-Fi vault dialog
+    if (!g_wvPanel) {
+        lv_obj_t *content = nullptr;
+        g_wvPanel = make_panel("Saved Wi-Fi Networks", wv_back_cb, &content);
+        make_section_header(content, "SAVED NETWORKS");
+        g_wvList = lv_obj_create(content);
+        lv_obj_remove_style_all(g_wvList);
+        lv_obj_set_width(g_wvList, LV_PCT(100));
+        lv_obj_set_height(g_wvList, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(g_wvList, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(g_wvList, 4, 0);
+        make_section_header(content, "ADD OR UPDATE");
+        g_wvSsid = make_field(content, "Network name", 32, false);
+        g_wvPsk = make_field(content, "Password", 63, true);
+        make_nav(content, "Add / update", wv_add_cb);
+        g_wvMsg = make_status(content);
+    }
+    g_wvArm = -1;
+    if (g_wvMsg)
+        lv_label_set_text(g_wvMsg, "");
+    wv_refresh();
+    open_panel(g_wvPanel);
 }
 
+// ---- canned messages editor: ten short texts, kept by emoji_compose.cpp.in and offered in the compose bar ----
+extern "C" void emoji_canned_load(void) __attribute__((weak));
+extern "C" void emoji_canned_save(const char messages[10][32]) __attribute__((weak));
+extern "C" const char *emoji_canned_get(int idx) __attribute__((weak));
+static lv_obj_t *g_cnPanel = nullptr, *g_cnMsg = nullptr;
+static lv_obj_t *g_cnTa[10];
+static void cn_back_cb(lv_event_t *e)
+{
+    close_panel(g_cnPanel);
+}
+static void cn_save_cb(lv_event_t *e)
+{
+    char m[10][32];
+    memset(m, 0, sizeof(m));
+    for (int i = 0; i < 10; i++) {
+        const char *t = g_cnTa[i] ? lv_textarea_get_text(g_cnTa[i]) : "";
+        strncpy(m[i], t ? t : "", sizeof(m[i]) - 1);
+    }
+    if (emoji_canned_save)
+        emoji_canned_save(m);
+    if (g_cnMsg)
+        lv_label_set_text(g_cnMsg, "Saved. Tap the message button in the chat to use them.");
+}
 static void canned_adv_open_cb(lv_event_t *e)
 {
-    // Canned messages editor dialog
+    if (!g_cnPanel) {
+        lv_obj_t *content = nullptr;
+        g_cnPanel = make_panel("Canned messages", cn_back_cb, &content);
+        for (int i = 0; i < 10; i++) {
+            char lab[24];
+            snprintf(lab, sizeof(lab), "Message %d", i + 1);
+            g_cnTa[i] = make_field(content, lab, 31, false);
+        }
+        g_cnMsg = make_status(content);
+        make_save_cancel(content, cn_save_cb, cn_back_cb);
+    }
+    if (emoji_canned_load)
+        emoji_canned_load();
+    for (int i = 0; i < 10; i++) {
+        const char *t = emoji_canned_get ? emoji_canned_get(i) : "";
+        lv_textarea_set_text(g_cnTa[i], t ? t : "");
+    }
+    if (g_cnMsg)
+        lv_label_set_text(g_cnMsg, emoji_canned_get ? "" : "Canned storage is missing in this build.");
+    open_panel(g_cnPanel);
 }
 
 static lv_obj_t *g_meshbotPanel = nullptr;
@@ -7271,8 +7656,14 @@ extern "C" bool emoji_meshbot_bg_enabled(void);
 extern "C" void emoji_meshbot_bg_set_enabled(bool);
 extern "C" bool emoji_meshbot_cmd_enabled(void);
 extern "C" void emoji_meshbot_cmd_set_enabled(bool);
-extern "C" uint32_t emoji_find_node_by_name(const char *shortName, const char *longName) __attribute__((weak));
-extern "C" void emoji_open_node_chat(uint32_t nodeNum) __attribute__((weak));
+// the node list belongs to the TFTView class: it registers these two lookups (see mui_extras.py), without them the bot is never found
+static uint32_t (*emoji_find_node_by_name)(const char *shortName, const char *longName) = nullptr;
+static void (*emoji_open_node_chat)(uint32_t nodeNum) = nullptr;
+extern "C" void emoji_meshbot_host(uint32_t (*find)(const char *, const char *), void (*open)(uint32_t))
+{
+    emoji_find_node_by_name = find;
+    emoji_open_node_chat = open;
+}
 
 static void meshbot_bg_toggle_cb(lv_event_t *e)
 {
@@ -7300,7 +7691,7 @@ static void meshbot_cmd_toggle_cb(lv_event_t *e)
 
 static void meshbot_open_chat_cb(lv_event_t *e)
 {
-    uint32_t nodeNum = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+    uint32_t nodeNum = (uint32_t)(uintptr_t)lv_obj_get_user_data((lv_obj_t *)lv_event_get_current_target(e));
     if (nodeNum && emoji_open_node_chat) {
         if (g_meshbotPanel)
             lv_obj_add_flag(g_meshbotPanel, LV_OBJ_FLAG_HIDDEN);

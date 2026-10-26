@@ -30,6 +30,32 @@ ROW3 = ["\U0001F525", "\u2B50", "\u2705", "\u274C", "\u26A0", "\u2753", "\U0001F
 
 MISSES = []
 
+MENTION_LAMBDA = """    emoji_mention_host([](const char *q, void (*cb)(const char *, const char *, uint32_t)) {
+        size_t ql = q ? strlen(q) : 0;
+        for (auto &kv : THIS->nodes) {
+            if (kv.first == THIS->ownNode)
+                continue;
+            const char *s = (const char *)&(kv.second->LV_OBJ_IDX(node_lbs_idx)->user_data);
+            const char *l = lv_label_get_text(kv.second->LV_OBJ_IDX(node_lbl_idx));
+            if (ql == 0 || strncasecmp(s, q, ql) == 0 || (l && strncasecmp(l, q, ql) == 0))
+                cb(l, s, kv.first);
+        }
+    });
+"""
+
+MESHBOT_LAMBDA = """    emoji_meshbot_host(
+        [](const char *sn, const char *ln) -> uint32_t {
+            for (auto &kv : THIS->nodes) {
+                const char *s = (const char *)&(kv.second->LV_OBJ_IDX(node_lbs_idx)->user_data);
+                const char *l = lv_label_get_text(kv.second->LV_OBJ_IDX(node_lbl_idx));
+                if (sn && sn[0] && strncasecmp(s, sn, 4) == 0 && (!ln || !ln[0] || (l && strcasecmp(l, ln) == 0)))
+                    return kv.first;
+            }
+            return 0;
+        },
+        [](uint32_t num) { THIS->showMessages(num); });
+"""
+
 NODES_LAMBDA = """    emoji_nodes_host([](uint32_t days, bool doRemove, uint32_t *st) -> uint32_t {
         time_t now = THIS->actTime;
         if (now < 1700000000)
@@ -885,8 +911,16 @@ extern "C" uint32_t emoji_find_node_by_name(const char *shortName, const char *l
     edit(tft, "void TFTView_320x240::addNode(uint32_t nodeNum, uint8_t ch, const char *userShort, const char *userLong, uint32_t lastHeard,\n                              eRole role, bool hasKey, bool unmessagable)\n{\n",
          "void TFTView_320x240::addNode(uint32_t nodeNum, uint8_t ch, const char *userShort, const char *userLong, uint32_t lastHeard,\n                              eRole role, bool hasKey, bool unmessagable)\n{\n    emoji_tools_record_node(nodeNum, userShort, userLong, lastHeard);\n", "replace")
 
-    # Auto-capture Wi-Fi into encrypted vault on save
-    edit(tft, "strcpy(THIS->db.config.network.wifi_psk, psk);\n", "strcpy(THIS->db.config.network.wifi_psk, psk);\n            emoji_wifi_vault_add(ssid, psk);\n")
+    # Auto-capture Wi-Fi into the vault on every save, also when the entered credentials equal the ones already in use
+    # (an earlier version of this patch put the call inside the "credentials changed" branch and duplicated the strcpy line)
+    _t, _crlf = read(tft)
+    _stale = ("strcpy(THIS->db.config.network.wifi_psk, psk);\n"
+              "strcpy(THIS->db.config.network.wifi_psk, psk);\n            emoji_wifi_vault_add(ssid, psk);\n")
+    if _stale in _t:
+        write(tft, _t.replace(_stale, "strcpy(THIS->db.config.network.wifi_psk, psk);\n", 1), _crlf)
+        print("Cleaned stale Wi-Fi vault patch in", tft)
+    edit(tft, '            lv_snprintf(buf, sizeof(buf), _("WiFi: %s"), ssid[0] ? ssid : _("<not set>"));\n',
+         "            emoji_wifi_vault_add(ssid, psk);\n", "before")
 
         # Log message to SD card if enabled
     edit(tft, "void TFTView_320x240::newMessage(uint32_t from, uint32_t to, uint8_t ch, const char *msg, uint32_t &msgTime, bool restore)\n{\n",
@@ -1081,6 +1115,10 @@ void TFTView_320x240::attach_failed_message_badge(lv_obj_t *panel, lv_obj_t *tex
 
     edit(tft, "/**\n * display message that has just been written and sent out\n */\nvoid TFTView_320x240::addMessage(", helpers + "/**\n * display message that has just been written and sent out\n */\nvoid TFTView_320x240::addMessage(", "replace")
 
+    # a delivery answer with request id 0 matched the newest received bubble (its panel has no request id) and framed it red
+    edit(tft, "        if (requestId == id) {\n            lv_obj_t *textLabel = panel->spec_attr->children[0];",
+         "        if (id != 0 && requestId == id) {\n            lv_obj_t *textLabel = panel->spec_attr->children[0];", "replace")
+
     old_add_switch = """    switch (status) {
     case LogMessage::eHeard:
         lv_obj_set_style_border_color(textLabel, colorYellow,
@@ -1273,10 +1311,34 @@ def main():
         copy("emoji_names.inc", dst)
     if "chat" in feat:
         copy("emoji_bubbles.cpp.in", dst)
+        # pinned chats (max 5), unread and total counts on the chat buttons
+        copy("emoji_chatlist.cpp.in", dst)
+        # the bot chat is recognised when its first message is built, not only while it is open
+        tft_decl += 'extern "C" void emoji_chat_hint(lv_obj_t *, const char *, const char *);\n'
+        edit(tft, "    newMessage(from, container, ch, buf);\n",
+             "    if (to != UINT32_MAX) {\n        auto itn = nodes.find(from);\n        if (itn != nodes.end())\n            emoji_chat_hint(container, lv_label_get_text(itn->second->LV_OBJ_IDX(node_lbs_idx)), lv_label_get_text(itn->second->LV_OBJ_IDX(node_lbl_idx)));\n    }\n", "before")
+        # @mention suggestions: the lookup was declared but never given the node list
+        tft_decl += 'extern "C" void emoji_mention_host(void (*)(const char *, void (*)(const char *, const char *, uint32_t)));\n'
+        edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n", MENTION_LAMBDA, "before")
+        tft_decl += ('extern "C" void emoji_chat_decorate(lv_obj_t *, lv_obj_t *, uint32_t);\n'
+                     'extern "C" void emoji_chat_count(uint32_t, bool, lv_obj_t *);\n'
+                     'extern "C" void emoji_chat_seen(uint32_t, lv_obj_t *);\n')
+        edit(tft, "    lv_obj_add_event_cb(chatDelBtn, ui_event_ChatDelButton, LV_EVENT_CLICKED, (void *)index);\n",
+             "    emoji_chat_decorate(chatBtn, chatDelBtn, index);\n")
+        edit(tft, "    newMessage(from, container, ch, buf);\n",
+             "    {\n        uint32_t ci = (to == UINT32_MAX || from == 0) ? ch : from;\n        auto itc = chats.find(ci);\n        emoji_chat_count(ci, !restore && (container != activeMsgContainer || activePanel != objects.messages_panel), itc != chats.end() ? itc->second : nullptr);\n    }\n")
+        edit(tft, "void TFTView_320x240::showMessages(uint8_t ch)\n{\n",
+             "    { auto itc = chats.find(ch); emoji_chat_seen(ch, itc != chats.end() ? itc->second : nullptr); }\n")
+        edit(tft, "void TFTView_320x240::showMessages(uint32_t nodeNum)\n{\n",
+             "    { auto itc = chats.find(nodeNum); emoji_chat_seen(nodeNum, itc != chats.end() ? itc->second : nullptr); }\n")
         if "meshbot" in feat:
             # B-48 / RiV-meshBot chat: white background with the bot logo and solid bubbles
             copy("meshbot_bg.cpp.in", dst)
             copy("meshbot_logo.inc", dst)
+            stale = os.path.join(dst, "emoji_bot_stub.cpp")
+            if os.path.exists(stale):
+                try: os.remove(stale)
+                except: pass
             tft_decl += ('extern "C" void emoji_wifi_vault_add(const char *, const char *);\n'
 'extern "C" void emoji_mention_host(void (*)(const char *, void (*)(const char *, const char *, uint32_t)));\n'
                          'extern "C" void emoji_chat_style(lv_obj_t *, const char *, const char *);\n'
@@ -1289,6 +1351,10 @@ def main():
             edit(tft, group, "    emoji_chat_style(nullptr, nullptr, nullptr);\n")
         else:
             copy("bot_stub.cpp.in", dst, "emoji_bot_stub.cpp")
+            stale = os.path.join(dst, "meshbot_bg.cpp")
+            if os.path.exists(stale):
+                try: os.remove(stale)
+                except: pass
         old_adv = os.path.join(dst, "emoji_advanced.cpp")
         if os.path.exists(old_adv):
             try: os.remove(old_adv)
@@ -1525,6 +1591,9 @@ def main():
         edit(vc, '                const meshtastic_NodeInfo &node = from.node_info;\n',
              '                emoji_node_flags(node.num, node.is_favorite, node.is_ignored);\n', "after")
         edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n", NODES_LAMBDA, "before")
+        if "meshbot" in feat:
+            tft_decl += 'extern "C" void emoji_meshbot_host(uint32_t (*)(const char *, const char *), void (*)(uint32_t));\n'
+            edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n", MESHBOT_LAMBDA, "before")
         edit(vc, '            // if "to" is our node then this is a reply to a requestPosition request\n',
              "            if (p.from == myNodeNum)\n"
              "                emoji_gps_record(&position);\n", "before")
@@ -1918,11 +1987,30 @@ if os.path.isdir(UI) and os.path.isdir(LV):
         edit(mqtt_src, "    if (!moduleConfig.mqtt.map_reporting_enabled || !moduleConfig.mqtt.map_report_settings.should_report_location ||\n        !(moduleConfig.mqtt.proxy_to_client_enabled || isConnectedDirectly()))",
              "    if (!moduleConfig.mqtt.map_reporting_enabled || !moduleConfig.mqtt.map_report_settings.should_report_location ||\n        !(EFFECTIVE_MQTT_PROXY || isConnectedDirectly()))", "replace")
 
+    # the phone-API file manifest walks the whole data folder; with the full offline tile pack in /maps that took about
+    # 10 s per config request, longer than the screen waits, so the UI never finished starting. Tiles are not manifest files.
+    fs_src = env.subst("$PROJECT_DIR/src/FSCommon.cpp")
+    if os.path.exists(fs_src):
+        edit(fs_src, "            if (levels && hasSubDirPath) {\n                collectFiles(pathBuffer, levels - 1, maxCount, filenames, wasLimited);\n",
+             "            if (levels && hasSubDirPath && strcmp(pathBuffer, \"maps\") != 0 && strcmp(pathBuffer, \"/maps\") != 0) {\n                collectFiles(pathBuffer, levels - 1, maxCount, filenames, wasLimited);\n", "replace")
+
     # ExternalNotificationModule ringtone fix
     ext_src = env.subst("$PROJECT_DIR/src/modules/ExternalNotificationModule.cpp")
     if os.path.exists(ext_src):
         edit(ext_src, "this->handleSetRingtone(request->set_canned_message_module_messages);",
              "this->handleSetRingtone(request->set_ringtone_message);", "replace")
+        # fast tunes (b=565, d=32 is ~13 ms per note) were stretched by the 10 ms task poll and 25 ms thread: poll at 1-2 ms
+        edit(ext_src, "            vTaskDelay(pdMS_TO_TICKS(10));\n        } else {", "            vTaskDelay(pdMS_TO_TICKS(1));\n        } else {", "replace")
+        edit(ext_src, "#define EXT_NOTIFICATION_FAST_THREAD_MS 25", "#define EXT_NOTIFICATION_FAST_THREAD_MS 2", "replace")
+
+    # buzzer volume for the RTTTL library that plays message alerts: shorten the duty of the LEDC tone
+    rtttl_lib = LIB + "/NonBlockingRTTTL/src/NonBlockingRtttl.cpp"
+    if os.path.exists(rtttl_lib):
+        edit(rtttl_lib, '#include "NonBlockingRtttl.h"\n', 'extern "C" uint8_t emoji_buzzer_volume(void) __attribute__((weak));\nextern "C" float emoji_buzzer_duty(float) __attribute__((weak));\n')
+        orig_tone = "    void tone(uint8_t pin, unsigned int frq, unsigned long duration) {\n      ledcWriteTone(pin, frq);\n    }"
+        old_tone = "    void tone(uint8_t pin, unsigned int frq, unsigned long duration) {\n      ledcWriteTone(pin, frq);\n      if (emoji_buzzer_volume && emoji_buzzer_volume() < 100)\n        ledcWrite(pin, (uint32_t)(((1u << LEDC_RESOLUTION) - 1) * emoji_buzzer_volume() / 200));\n    }"
+        edit(rtttl_lib, [orig_tone, old_tone],
+             "    void tone(uint8_t pin, unsigned int frq, unsigned long duration) {\n      ledcWriteTone(pin, frq);\n      if (emoji_buzzer_duty && emoji_buzzer_volume && emoji_buzzer_volume() < 100)\n        ledcWrite(pin, (uint32_t)(((1u << LEDC_RESOLUTION) - 1) * emoji_buzzer_duty((float)frq)));\n    }", "replace")
 
     phone_src = env.subst("$PROJECT_DIR/src/mesh/PhoneAPI.cpp")
     if os.path.exists(phone_src):

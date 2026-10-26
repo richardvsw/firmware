@@ -11,6 +11,12 @@ volatile EncoderInputDriver::EncoderActionType EncoderInputDriver::action = TB_A
 static lv_obj_t *joyLastNav = NULL;
 static lv_obj_t *joyLastContent = NULL;
 static bool joyChatScrolling = false;
+static void joyChatEnd(void);
+// outlines the message nearest to the middle of the chat list; open = show its menu (emoji_bubbles.cpp.in)
+extern "C" __attribute__((weak)) bool emoji_joy_chat_pick(lv_obj_t *chat, bool open);
+
+// the OK button that opened a menu must not also press inside it
+static bool joySwallowOk = false;
 
 // WIDGETS, SET BY TFTView_320x240.cpp
 lv_obj_t *joyHomeButton = NULL;
@@ -25,6 +31,13 @@ lv_obj_t *joyArrowLeftButton = NULL;
 lv_obj_t *joyArrowRightButton = NULL;
 lv_obj_t *joyZoomInButton = NULL;
 lv_obj_t *joyZoomOutButton = NULL;
+
+static void joyChatEnd(void)
+{
+    if (joyChatScrolling && emoji_joy_chat_pick)
+        emoji_joy_chat_pick(NULL, false);
+    joyChatScrolling = false;
+}
 
 // DIRECTIONS, OPPOSITE = DIR ^ 1
 enum { JOY_LEFT = 0, JOY_RIGHT = 1, JOY_UP = 2, JOY_DOWN = 3 };
@@ -139,12 +152,12 @@ static lv_obj_t *joyFindChat(void)
 static bool joyChatNavigate(lv_obj_t *f, bool up, bool down)
 {
     if (f != joyKeyboardButton || !joyMessagesPanel || !lv_obj_is_visible(joyMessagesPanel)) {
-        joyChatScrolling = false;
+        joyChatEnd();
         return false;
     }
     lv_obj_t *chat = joyFindChat();
     if (!chat) {
-        joyChatScrolling = false;
+        joyChatEnd();
         return false;
     }
     const int32_t step = 48;
@@ -158,13 +171,17 @@ static bool joyChatNavigate(lv_obj_t *f, bool up, bool down)
     if (up) {
         if (top > 0)
             lv_obj_scroll_by(chat, 0, top < step ? top : step, LV_ANIM_OFF);
+        if (emoji_joy_chat_pick)
+            emoji_joy_chat_pick(chat, false);
         return true;
     }
     if (down) {
         if (bottom > 0)
             lv_obj_scroll_by(chat, 0, -(bottom < step ? bottom : step), LV_ANIM_OFF);
         if (lv_obj_get_scroll_bottom(chat) <= 0)
-            joyChatScrolling = false;
+            joyChatEnd();
+        else if (emoji_joy_chat_pick)
+            emoji_joy_chat_pick(chat, false);
         return true;
     }
     return false;
@@ -262,7 +279,7 @@ static void joyNavigate(lv_indev_data_t *data, bool up, bool down, bool left, bo
 
     // KEYBOARD: REAL DIRECTION KEYS
     if (lv_obj_has_class(f, &lv_keyboard_class)) {
-        joyChatScrolling = false;
+        joyChatEnd();
         data->key = up ? LV_KEY_UP : down ? LV_KEY_DOWN : left ? LV_KEY_LEFT : LV_KEY_RIGHT;
         data->state = LV_INDEV_STATE_PRESSED;
         return;
@@ -285,7 +302,7 @@ static void joyNavigate(lv_indev_data_t *data, bool up, bool down, bool left, bo
     if ((up || down) && joyChatNavigate(f, up, down))
         return;
     if (left || right)
-        joyChatScrolling = false;
+        joyChatEnd();
 
     int dir = left ? JOY_LEFT : right ? JOY_RIGHT : up ? JOY_UP : JOY_DOWN;
     int back = joyBackDir();
@@ -444,6 +461,12 @@ void EncoderInputDriver::encoder_read(lv_indev_t *indev, lv_indev_data_t *data)
             lv_obj_t   *_bf = _bg ? lv_group_get_focused(_bg) : NULL;
             bool kbdFocused = _bf && lv_obj_has_class(_bf, &lv_keyboard_class);
             bool btnNow = !digitalRead(INPUTDRIVER_ENCODER_BTN);
+            if (joySwallowOk) {
+                if (btnNow)
+                    btnNow = false;
+                else
+                    joySwallowOk = false;
+            }
             if (kbdFocused) {
                 // keyboard: long-press (>500 ms) → B/I toggle; short press → ENTER
                 if (btnNow) {
@@ -471,8 +494,21 @@ void EncoderInputDriver::encoder_read(lv_indev_t *indev, lv_indev_data_t *data)
         // the button is an exception for LONG_PRESSED monitoring
         if (action != TB_ACTION_NONE && (action == TB_ACTION_PRESSED || millis() > lastPressed + 250)) {
             emoji_joy_count++;
+            if (action == TB_ACTION_PRESSED && joyChatScrolling && emoji_joy_chat_pick) {
+                // OK while reading the messages: the menu of the outlined message
+                lv_obj_t *chat = joyFindChat();
+                bool done = chat && emoji_joy_chat_pick(chat, true);
+                joyChatEnd();
+                if (done) {
+                    joySwallowOk = true;
+                    lastPressed = millis();
+                    prevkey = 0;
+                    action = TB_ACTION_NONE;
+                    return;
+                }
+            }
             if (action == TB_ACTION_PRESSED) {
-                joyChatScrolling = false;
+                joyChatEnd();
                 data->key = LV_KEY_ENTER;
                 data->state = LV_INDEV_STATE_PRESSED;
             } else {

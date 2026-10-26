@@ -1,5 +1,9 @@
 #include "lvgl.h"
 
+extern "C" void emoji_chat_hint(lv_obj_t *, const char *, const char *)
+{
+}
+
 extern "C" bool emoji_bot_container(lv_obj_t *container)
 {
     return false;

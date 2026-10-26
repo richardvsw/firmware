@@ -1,0 +1,300 @@
+// Chat list extras: pinned chats (max 5, movable) and the unread count on every chat button.
+// Hooks are called from TFTView_320x240::addChat, newMessage and showMessages, see mui_extras.py.
+
+#include "lvgl.h"
+#include <Arduino.h>
+#include <Preferences.h>
+#include <string.h>
+#include <vector>
+
+extern "C" {
+extern const lv_font_t ui_font_montserrat_12;
+}
+
+namespace
+{
+constexpr int MAX_PINS = 5;
+
+struct Entry {
+    uint32_t idx = 0; // channel number or node number, as used by TFTView::chats
+    lv_obj_t *btn = nullptr;
+    lv_obj_t *cnt = nullptr, *unLbl = nullptr, *totLbl = nullptr, *dot = nullptr;
+    lv_obj_t *pinBtn = nullptr, *pinLbl = nullptr, *upBtn = nullptr, *dnBtn = nullptr;
+    uint32_t total = 0, unread = 0;
+};
+
+std::vector<Entry *> g_entries;
+uint32_t g_pins[MAX_PINS];
+int g_nPins = -1; // -1 = not loaded yet
+
+void pins_load()
+{
+    if (g_nPins >= 0) return;
+    g_nPins = 0;
+    Preferences p;
+    if (p.begin("chatpins", true)) {
+        int n = p.getInt("n", 0);
+        for (int i = 0; i < n && i < MAX_PINS; i++) {
+            char k[8];
+            snprintf(k, sizeof(k), "p%d", i);
+            g_pins[g_nPins++] = p.getUInt(k, 0);
+        }
+        p.end();
+    }
+}
+
+void pins_save()
+{
+    Preferences p;
+    if (p.begin("chatpins", false)) {
+        p.putInt("n", g_nPins);
+        for (int i = 0; i < g_nPins; i++) {
+            char k[8];
+            snprintf(k, sizeof(k), "p%d", i);
+            p.putUInt(k, g_pins[i]);
+        }
+        p.end();
+    }
+}
+
+int pin_pos(uint32_t idx)
+{
+    pins_load();
+    for (int i = 0; i < g_nPins; i++)
+        if (g_pins[i] == idx) return i;
+    return -1;
+}
+
+Entry *find(uint32_t idx)
+{
+    for (auto e : g_entries)
+        if (e->idx == idx) return e;
+    return nullptr;
+}
+
+// pinned chats go to the front of the list in pin order, the rest keeps its order
+void reorder()
+{
+    pins_load();
+    for (int i = g_nPins - 1; i >= 0; i--) {
+        Entry *e = find(g_pins[i]);
+        if (e && e->btn) lv_obj_move_to_index(e->btn, 0);
+    }
+}
+
+void refresh_counts(Entry *e)
+{
+    char b[16];
+    if (e->unread) {
+        snprintf(b, sizeof(b), "%u", (unsigned)(e->unread > 99 ? 99 : e->unread));
+        lv_label_set_text(e->unLbl, b);
+        lv_obj_clear_flag(e->unLbl, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(e->unLbl, LV_OBJ_FLAG_HIDDEN);
+    }
+    // only the unread count is shown: a total next to it was ambiguous
+}
+
+void refresh_pin_state(Entry *e)
+{
+    bool pinned = pin_pos(e->idx) >= 0;
+    if (pinned) lv_obj_clear_flag(e->dot, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(e->dot, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(e->pinLbl, pinned ? "UNPIN" : "PIN");
+}
+
+void actions_show(Entry *e, bool show)
+{
+    bool pinned = pin_pos(e->idx) >= 0;
+    if (show) {
+        lv_obj_clear_flag(e->pinBtn, LV_OBJ_FLAG_HIDDEN);
+        if (pinned) {
+            lv_obj_clear_flag(e->upBtn, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(e->dnBtn, LV_OBJ_FLAG_HIDDEN);
+        }
+        lv_obj_add_flag(e->cnt, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(e->pinBtn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(e->upBtn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(e->dnBtn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(e->cnt, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+Entry *entry_of(lv_event_t *e)
+{
+    return (Entry *)lv_event_get_user_data(e);
+}
+
+void pin_cb(lv_event_t *ev)
+{
+    Entry *e = entry_of(ev);
+    int pos = pin_pos(e->idx);
+    if (pos >= 0) {
+        for (int i = pos; i < g_nPins - 1; i++) g_pins[i] = g_pins[i + 1];
+        g_nPins--;
+    } else if (g_nPins >= MAX_PINS) {
+        lv_label_set_text(e->pinLbl, "MAX 5");
+        return;
+    } else {
+        g_pins[g_nPins++] = e->idx;
+    }
+    pins_save();
+    refresh_pin_state(e);
+    reorder();
+    actions_show(e, false);
+    if (e->btn && lv_obj_get_group(e->btn)) lv_group_focus_obj(e->btn); // the pressed button is hidden now
+}
+
+void move_cb(lv_event_t *ev, int d)
+{
+    Entry *e = entry_of(ev);
+    int pos = pin_pos(e->idx), to = pos + d;
+    if (pos < 0 || to < 0 || to >= g_nPins) return;
+    uint32_t t = g_pins[pos];
+    g_pins[pos] = g_pins[to];
+    g_pins[to] = t;
+    pins_save();
+    reorder();
+}
+void up_cb(lv_event_t *ev) { move_cb(ev, -1); }
+void dn_cb(lv_event_t *ev) { move_cb(ev, 1); }
+
+// joystick: the cursor moves from the chat to its PIN / up / down buttons, they stay while it is on any of them
+void recheck_cb(void *arg)
+{
+    Entry *e = find((uint32_t)(uintptr_t)arg);
+    if (!e) return;
+    lv_group_t *g = lv_obj_get_group(e->btn);
+    lv_obj_t *f = g ? lv_group_get_focused(g) : nullptr;
+    if (f && (f == e->btn || f == e->pinBtn || f == e->upBtn || f == e->dnBtn)) return;
+    actions_show(e, false);
+}
+
+void recheck_later(Entry *e)
+{
+    lv_async_call(recheck_cb, (void *)(uintptr_t)e->idx);
+}
+
+void actions_defocus_cb(lv_event_t *ev)
+{
+    recheck_later(entry_of(ev));
+}
+
+// runs after the stock handler, which has already shown or hidden DEL
+void chat_btn_cb(lv_event_t *ev)
+{
+    Entry *e = entry_of(ev);
+    lv_event_code_t c = lv_event_get_code(ev);
+    if (c == LV_EVENT_LONG_PRESSED) actions_show(e, true);
+    else if (c == LV_EVENT_DEFOCUSED || c == LV_EVENT_LEAVE) recheck_later(e);
+}
+
+void delete_cb(lv_event_t *ev)
+{
+    Entry *e = entry_of(ev);
+    for (size_t i = 0; i < g_entries.size(); i++) {
+        if (g_entries[i] == e) {
+            g_entries.erase(g_entries.begin() + i);
+            break;
+        }
+    }
+    delete e;
+}
+
+lv_obj_t *small_btn(lv_obj_t *parent, const char *text, int w, int xoff, uint32_t col, lv_event_cb_t cb, Entry *e, lv_obj_t **lblOut)
+{
+    lv_obj_t *b = lv_btn_create(parent);
+    lv_obj_set_size(b, w, 23);
+    lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(b, LV_ALIGN_RIGHT_MID, xoff, -1);
+    lv_obj_set_style_bg_color(b, lv_color_hex(col), 0);
+    lv_obj_set_style_pad_all(b, 0, 0);
+    lv_obj_add_flag(b, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_font(l, &ui_font_montserrat_12, 0);
+    lv_obj_center(l);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, e);
+    lv_obj_add_event_cb(b, actions_defocus_cb, LV_EVENT_DEFOCUSED, e);
+    if (lblOut) *lblOut = l;
+    return b;
+}
+
+lv_obj_t *count_pill(lv_obj_t *parent, uint32_t bg, uint32_t fg)
+{
+    lv_obj_t *l = lv_label_create(parent);
+    lv_obj_set_style_text_font(l, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(l, lv_color_hex(fg), 0);
+    lv_obj_set_style_bg_color(l, lv_color_hex(bg), 0);
+    lv_obj_set_style_bg_opa(l, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(l, 9, 0);
+    lv_obj_set_style_pad_hor(l, 6, 0);
+    lv_obj_set_style_pad_ver(l, 1, 0);
+    lv_obj_add_flag(l, LV_OBJ_FLAG_HIDDEN);
+    return l;
+}
+} // namespace
+
+// called at the end of addChat: adds count pills, the pin marker and the pin/up/down buttons to the chat button
+extern "C" void emoji_chat_decorate(lv_obj_t *chatBtn, lv_obj_t *delBtn, uint32_t index)
+{
+    if (!chatBtn || find(index)) return;
+    Entry *e = new Entry();
+    e->idx = index;
+    e->btn = chatBtn;
+
+    e->cnt = lv_obj_create(chatBtn);
+    lv_obj_remove_style_all(e->cnt);
+    lv_obj_set_size(e->cnt, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_align(e->cnt, LV_ALIGN_RIGHT_MID, -6, 0);
+    lv_obj_set_flex_flow(e->cnt, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(e->cnt, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(e->cnt, 4, 0);
+    lv_obj_clear_flag(e->cnt, LV_OBJ_FLAG_CLICKABLE);
+    e->unLbl = count_pill(e->cnt, 0x4dd68c, 0x04210f);
+
+    e->dot = lv_obj_create(chatBtn);
+    lv_obj_remove_style_all(e->dot);
+    lv_obj_set_size(e->dot, 8, 8);
+    lv_obj_align(e->dot, LV_ALIGN_TOP_LEFT, 1, 1);
+    lv_obj_set_style_radius(e->dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(e->dot, lv_color_hex(0xffd54a), 0);
+    lv_obj_set_style_bg_opa(e->dot, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(e->dot, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(e->dot, LV_OBJ_FLAG_HIDDEN);
+
+    // right to left: DEL (stock, 40 wide), down, up, pin
+    e->dnBtn = small_btn(chatBtn, "Dn", 28, -47, 0x3a4a4f, dn_cb, e, nullptr);
+    e->upBtn = small_btn(chatBtn, "Up", 28, -78, 0x3a4a4f, up_cb, e, nullptr);
+    e->pinBtn = small_btn(chatBtn, "PIN", 44, -109, 0x8a6d12, pin_cb, e, &e->pinLbl);
+
+    g_entries.push_back(e);
+    refresh_pin_state(e);
+    refresh_counts(e);
+    lv_obj_add_event_cb(chatBtn, chat_btn_cb, LV_EVENT_ALL, e);
+    lv_obj_add_event_cb(chatBtn, delete_cb, LV_EVENT_DELETE, e);
+    (void)delBtn;
+    reorder();
+}
+
+// called for every message of a chat: restored ones only count in total, new ones unseen add to unread as well
+extern "C" void emoji_chat_count(uint32_t index, bool unread, lv_obj_t *chatBtn)
+{
+    Entry *e = find(index);
+    if (!e) return;
+    e->total++;
+    if (unread) e->unread++;
+    refresh_counts(e);
+    (void)chatBtn;
+}
+
+// the chat was opened: its unread count goes back to zero
+extern "C" void emoji_chat_seen(uint32_t index, lv_obj_t *chatBtn)
+{
+    Entry *e = find(index);
+    if (!e || !e->unread) return;
+    e->unread = 0;
+    refresh_counts(e);
+    (void)chatBtn;
+}

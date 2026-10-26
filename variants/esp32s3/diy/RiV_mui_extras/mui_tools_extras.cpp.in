@@ -7,6 +7,10 @@
 #include <string>
 #include <math.h>
 #include "MuiPrefs.h"
+#include "graphics/map/MapTileSettings.h"
+#if !defined(ARCH_PORTDUINO)
+#include <Wire.h>
+#endif
 
 #ifdef HAS_SDCARD
 #include <SdFat.h>
@@ -24,10 +28,36 @@ extern const lv_font_t mui_font_bold_14;
 void add_style_settings_button_style(lv_obj_t *);
 void add_style_top_panel_style(lv_obj_t *);
 void emoji_trigger_traceroute(uint32_t toNode, uint8_t ch);
+void emoji_joy_screen_open(lv_obj_t *root) __attribute__((weak));
+void emoji_joy_screen_closed(lv_obj_t *root) __attribute__((weak));
+void emoji_joy_refresh(lv_obj_t *container) __attribute__((weak));
 bool emoji_sd_ready(void) __attribute__((weak));
 }
 
 typedef void (*KbFn)(lv_obj_t *);
+
+#if defined(ARCH_PORTDUINO)
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+// the daemon's working directory is whatever started it (on the R1 that is the web server's cgi folder), so anchor notes in its data folder
+static const char *nf_rel(const char *p)
+{
+    static char buf[160];
+    static const char *base = nullptr;
+    if (!base) {
+        base = getenv("MUI_NOTES_BASE");
+        if (!base || !base[0])
+            base = access("/usr/data/.portduino", F_OK) == 0 ? "/usr/data/.portduino" : ".";
+    }
+    snprintf(buf, sizeof(buf), "%s%s%s", base, (p && p[0] == '/') ? "" : "/", p ? p : "");
+    return buf;
+}
+static bool nf_exists(const char *p)
+{
+    return access(nf_rel(p), F_OK) == 0;
+}
+#endif
 
 static lv_obj_t *g_screen = nullptr;
 static lv_obj_t *g_kb = nullptr;
@@ -102,9 +132,23 @@ static float g_avgRssi = -105.0f;
 static float g_avgSnr = 0.0f;
 static int g_sigSamples = 0;
 
+static float g_gpsHeading = 0.0f;
+static uint32_t g_gpsHeadingAt = 0;
+
 extern "C" void emoji_tools_record_pos(uint32_t nodeNum, int32_t lat, int32_t lon, int32_t alt, bool isOwn)
 {
     if (isOwn) {
+        if ((g_myLat != 0 || g_myLon != 0) && (lat != g_myLat || lon != g_myLon)) {
+            // course over ground from the last two fixes, ignored while the fix only jitters (under 4 m)
+            float c = cosf((float)lat * 1e-7f * 0.0174533f);
+            float dx = 111320.0f * c * 1e-7f * (float)(lon - g_myLon);
+            float dy = 110570.0f * 1e-7f * (float)(lat - g_myLat);
+            if (dx * dx + dy * dy >= 16.0f) {
+                float h = atan2f(dx, dy) * 57.29578f;
+                g_gpsHeading = h < 0.0f ? h + 360.0f : h;
+                g_gpsHeadingAt = millis() ? millis() : 1;
+            }
+        }
         g_myLat = lat;
         g_myLon = lon;
         g_myAlt = alt;
@@ -204,8 +248,9 @@ extern "C" void emoji_tools_record_packet(bool isTx, bool isBad)
 static void calc_dist_bearing(int32_t lat1, int32_t lon1, int32_t lat2, int32_t lon2,
                              float &distKm, float &bearingDeg, const char *&cardinal)
 {
-    float dx = 71.5f * 1e-7f * (float)(lon2 - lon1);
-    float dy = 111.3f * 1e-7f * (float)(lat2 - lat1);
+    float midLat = 0.5f * ((float)lat1 + (float)lat2) * 1e-7f * 0.0174533f;
+    float dx = 111.32f * cosf(midLat) * 1e-7f * (float)(lon2 - lon1);
+    float dy = 110.57f * 1e-7f * (float)(lat2 - lat1);
     distKm = sqrtf(dx * dx + dy * dy);
     float rad = atan2f(dx, dy);
     bearingDeg = rad * 57.29578f;
@@ -379,6 +424,14 @@ static lv_obj_t *create_subscreen(const char *title, lv_obj_t **outBody)
     lv_obj_set_scroll_dir(body, LV_DIR_VER);
 
     if (outBody) *outBody = body;
+
+    // joystick: the controls of the finished screen take over the input group, and give it back when the screen is gone
+    lv_obj_add_event_cb(root, [](lv_event_t *ev) {
+        if (emoji_joy_screen_closed) emoji_joy_screen_closed((lv_obj_t *)lv_event_get_target(ev));
+    }, LV_EVENT_DELETE, nullptr);
+    lv_async_call([](void *r) {
+        if (emoji_joy_screen_open && lv_obj_is_valid((lv_obj_t *)r)) emoji_joy_screen_open((lv_obj_t *)r);
+    }, root);
     return root;
 }
 
@@ -391,27 +444,472 @@ static int g_guideWpIdx = -1;
 
 static void refresh_waypoints_list();
 
-static void on_guide_screen_timer(lv_timer_t *t)
-{
-    lv_obj_t *lblDist = (lv_obj_t *)lv_timer_get_user_data(t);
-    if (!lblDist || !lv_obj_is_valid(lblDist) || g_guideWpIdx < 0 || g_guideWpIdx >= g_numWaypoints) return;
+// -------------------------------------------------------------
+// Guide screen: Text | Compass | Map tabs
+// -------------------------------------------------------------
 
-    Waypoint &wp = g_waypoints[g_guideWpIdx];
-    if (g_myLat == 0 && g_myLon == 0) {
-        lv_label_set_text(lblDist, "Waiting GPS fix...");
+// ---- heading: a magnetometer when the board has one, otherwise the GPS course ----
+enum { MAG_UNKNOWN = -1, MAG_NONE = 0, MAG_QMC5883L = 1, MAG_HMC5883L = 2 };
+static int g_magType = MAG_UNKNOWN;
+static float g_magMin[2] = {32767.0f, 32767.0f}, g_magMax[2] = {-32767.0f, -32767.0f};
+
+#if !defined(ARCH_PORTDUINO)
+static bool mag_read_regs(uint8_t addr, uint8_t reg, uint8_t *buf, uint8_t n)
+{
+    Wire.beginTransmission(addr);
+    Wire.write(reg);
+    if (Wire.endTransmission(false) != 0) return false;
+    if (Wire.requestFrom((int)addr, (int)n) != n) return false;
+    for (uint8_t i = 0; i < n; i++) buf[i] = Wire.read();
+    return true;
+}
+static void mag_write_reg(uint8_t addr, uint8_t reg, uint8_t v)
+{
+    Wire.beginTransmission(addr);
+    Wire.write(reg);
+    Wire.write(v);
+    Wire.endTransmission();
+}
+#endif
+
+static void mag_probe()
+{
+    if (g_magType != MAG_UNKNOWN) return;
+    g_magType = MAG_NONE;
+#if !defined(ARCH_PORTDUINO)
+    uint8_t id[3] = {0, 0, 0};
+    if (mag_read_regs(0x0D, 0x0D, id, 1) && id[0] == 0xFF) { // QMC5883L chip id
+        mag_write_reg(0x0D, 0x0B, 0x01);
+        mag_write_reg(0x0D, 0x09, 0x1D); // continuous, 200 Hz, 8 G, 512 oversampling
+        g_magType = MAG_QMC5883L;
+    } else if (mag_read_regs(0x1E, 0x0A, id, 3) && id[0] == 'H' && id[1] == '4' && id[2] == '3') { // HMC5883L id
+        mag_write_reg(0x1E, 0x00, 0x70);
+        mag_write_reg(0x1E, 0x02, 0x00); // continuous
+        g_magType = MAG_HMC5883L;
+    }
+#endif
+}
+
+static const char *mag_name()
+{
+    return g_magType == MAG_QMC5883L ? "QMC5883L (0x0D)" : g_magType == MAG_HMC5883L ? "HMC5883L (0x1E)" : "none";
+}
+
+// flat heading 0..360 from the magnetometer, hard-iron offsets learned while the device is turned around
+static bool mag_heading(float &deg)
+{
+#if !defined(ARCH_PORTDUINO)
+    uint8_t b[6];
+    float x, y;
+    if (g_magType == MAG_QMC5883L) {
+        if (!mag_read_regs(0x0D, 0x00, b, 6)) return false;
+        x = (float)(int16_t)(b[0] | (b[1] << 8));
+        y = (float)(int16_t)(b[2] | (b[3] << 8));
+    } else if (g_magType == MAG_HMC5883L) {
+        if (!mag_read_regs(0x1E, 0x03, b, 6)) return false;
+        x = (float)(int16_t)((b[0] << 8) | b[1]);
+        y = (float)(int16_t)((b[4] << 8) | b[5]);
+    } else {
+        return false;
+    }
+    float v[2] = {x, y};
+    for (int i = 0; i < 2; i++) {
+        if (v[i] < g_magMin[i]) g_magMin[i] = v[i];
+        if (v[i] > g_magMax[i]) g_magMax[i] = v[i];
+    }
+    float cx = 0.5f * (g_magMax[0] + g_magMin[0]), cy = 0.5f * (g_magMax[1] + g_magMin[1]);
+    float h = atan2f(y - cy, x - cx) * 57.29578f;
+    deg = h < 0.0f ? h + 360.0f : h;
+    return true;
+#else
+    (void)deg;
+    return false;
+#endif
+}
+
+// demo compass: on the portduino build a flag file (or MUI_SIM_COMPASS) turns on a simulated sensor that sweeps a full turn every 30 s
+static bool sim_compass_on()
+{
+#if defined(ARCH_PORTDUINO)
+    static int st = -1;
+    static uint32_t chk = 0;
+    uint32_t n = millis();
+    if (st < 0 || n - chk > 5000) {
+        chk = n;
+        st = (access("/usr/data/.portduino/sim_compass", F_OK) == 0 || getenv("MUI_SIM_COMPASS")) ? 1 : 0;
+    }
+    return st == 1;
+#else
+    return false;
+#endif
+}
+
+// source: 2 = magnetometer, 1 = GPS course, 0 = unknown
+static int current_heading(float &deg)
+{
+    uint32_t now = millis();
+    if (sim_compass_on()) {
+        deg = fmodf((float)now * 0.012f, 360.0f);
+        return 2;
+    }
+    bool gpsFresh = g_gpsHeadingAt && (now - g_gpsHeadingAt) < 6000;
+    bool magOk = g_magType > MAG_NONE && mag_heading(deg);
+    if (gpsFresh && (!magOk || (now - g_gpsHeadingAt) < 3000)) {
+        deg = g_gpsHeading; // walking: the GPS course beats a magnetometer near metal and the body
+        return 1;
+    }
+    if (magOk) return 2;
+    if (g_gpsHeadingAt && (now - g_gpsHeadingAt) < 30000) {
+        deg = g_gpsHeading;
+        return 1;
+    }
+    return 0;
+}
+
+// ---- tiles: the stock map layout <prefix>/<style>/<zoom>/<x>/<y>.png ----
+#if LV_USE_FS_ARDUINO_SD
+#define GM_LETTER LV_FS_ARDUINO_SD_LETTER
+#elif defined(ARCH_PORTDUINO)
+#define GM_PORTDUINO 1
+#include "graphics/map/SDCardService.h"
+#endif
+
+#if defined(GM_LETTER) || defined(GM_PORTDUINO)
+static char g_gmPrefix[48] = "";
+static char g_gmStyle[24] = "";
+static bool g_gmFound = false;
+
+#ifdef GM_PORTDUINO
+// portduino has no file driver for tiles: the stock map decodes the PNG itself, so reuse its service and free the image with the tile
+static SDCardService *g_gmSvc = nullptr;
+static void gm_free_cb(lv_event_t *e)
+{
+    lv_obj_t *im = (lv_obj_t *)lv_event_get_target(e);
+    const void *src = lv_image_get_src(im);
+    if (src && lv_image_src_get_type(src) == LV_IMAGE_SRC_VARIABLE) {
+        lv_img_dsc_t *d = (lv_img_dsc_t *)src;
+        if (d->data && d->data_size > 0) lv_free((void *)d->data);
+        lv_free(d);
+    }
+}
+static lv_obj_t *gm_try(lv_obj_t *parent, const char *prefix, const char *style, int z, int x, int y)
+{
+    if (!g_gmSvc) g_gmSvc = new SDCardService();
+    char name[128];
+    snprintf(name, sizeof(name), "%s/%s%d/%d/%d.png", prefix, style, z, x, y);
+    lv_obj_t *im = lv_image_create(parent);
+    if (!g_gmSvc->load(name, im)) {
+        lv_obj_delete(im);
+        return nullptr;
+    }
+    lv_obj_add_event_cb(im, gm_free_cb, LV_EVENT_DELETE, nullptr);
+    return im;
+}
+#else
+static lv_obj_t *gm_try(lv_obj_t *parent, const char *prefix, const char *style, int z, int x, int y)
+{
+    char path[128];
+    snprintf(path, sizeof(path), "%c:%s/%s%d/%d/%d.png", GM_LETTER, prefix, style, z, x, y);
+    lv_fs_file_t f;
+    if (lv_fs_open(&f, path, LV_FS_MODE_RD) != LV_FS_RES_OK) return nullptr;
+    lv_fs_close(&f);
+    lv_obj_t *im = lv_image_create(parent);
+    lv_image_set_src(im, path);
+    return im;
+}
+#endif
+
+// one tile image, or nullptr when the card has none; the first hit fixes the prefix and style for the rest
+static lv_obj_t *gm_tile(lv_obj_t *parent, int z, int x, int y)
+{
+    if (g_gmFound) return gm_try(parent, g_gmPrefix, g_gmStyle, z, x, y);
+    const char *prefixes[] = {MapTileSettings::getPrefix(), "/maps", "/sdcard/maps"};
+    const char *styles[] = {MapTileSettings::getTileDir(), "0/", "osm/", ""};
+    for (auto pf : prefixes) {
+        for (auto st : styles) {
+            if (lv_obj_t *im = gm_try(parent, pf, st, z, x, y)) {
+                snprintf(g_gmPrefix, sizeof(g_gmPrefix), "%s", pf);
+                snprintf(g_gmStyle, sizeof(g_gmStyle), "%s", st);
+                g_gmFound = true;
+                return im;
+            }
+        }
+    }
+    return nullptr;
+}
+#endif
+
+static void tile_of(double lat, double lon, int z, double &tx, double &ty)
+{
+    double n = (double)(1 << z), lr = lat * 0.017453292519943295;
+    tx = (lon + 180.0) / 360.0 * n;
+    ty = (1.0 - log(tan(lr) + 1.0 / cos(lr)) / 3.141592653589793) / 2.0 * n;
+}
+
+struct GuideUi {
+    lv_obj_t *dist = nullptr;
+    lv_obj_t *coord = nullptr, *alt = nullptr, *pText = nullptr;
+    lv_obj_t *pComp = nullptr, *dial = nullptr, *card[4] = {nullptr, nullptr, nullptr, nullptr}, *arrow = nullptr, *arrowLine = nullptr,
+             *sensorLbl = nullptr, *headLbl = nullptr;
+    lv_obj_t *pMap = nullptr, *mapBox = nullptr, *mapInfo = nullptr, *mapTiles = nullptr, *mapMarks = nullptr, *trailLine = nullptr,
+             *toLine = nullptr;
+    lv_obj_t *tabBtn[3] = {nullptr, nullptr, nullptr};
+    lv_point_precise_t arrowPts[5];
+    lv_point_precise_t arrowAxis[2];
+    lv_point_precise_t trailPts[16];
+    lv_point_precise_t toPts[2];
+    int zoomManual = 0; // 0 = fit both points
+    int tileZ = -1, tileX0 = 0, tileY0 = 0;
+    int tab = 0;
+};
+static int g_guideTab = 0; // the tab that was open last
+static GuideUi *g_gu = nullptr;
+
+static void guide_show_tab(GuideUi *u, int t)
+{
+    u->tab = t;
+    g_guideTab = t;
+    lv_obj_t *panels[3] = {u->pText, u->pComp, u->pMap};
+    for (int i = 0; i < 3; i++) {
+        if (panels[i]) {
+            if (i == t) lv_obj_clear_flag(panels[i], LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_add_flag(panels[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        lv_obj_set_style_bg_color(u->tabBtn[i], lv_color_hex(i == t ? g_tBtnBg : g_tItemBg), 0);
+    }
+}
+
+static void on_guide_tab(lv_event_t *e)
+{
+    int t = (int)(intptr_t)lv_event_get_user_data(e);
+    if (g_gu) guide_show_tab(g_gu, t);
+}
+
+static void on_guide_zoom(lv_event_t *e)
+{
+    int d = (int)(intptr_t)lv_event_get_user_data(e);
+    if (!g_gu) return;
+    int z = g_gu->zoomManual ? g_gu->zoomManual : g_gu->tileZ;
+    if (z < 3) z = 13;
+    z += d;
+    if (z < 3) z = 3;
+    if (z > 13) z = 13; // the offline pack stops at zoom 13
+    g_gu->zoomManual = z;
+}
+
+static void guide_refresh_compass(GuideUi *u, const Waypoint &wp, bool haveFix, float bearingDeg)
+{
+    float head = 0.0f;
+    int src = current_heading(head);
+    char buf[96];
+    const char *msg;
+    uint32_t col;
+    if (sim_compass_on()) {
+        snprintf(buf, sizeof(buf), "SIMULATED compass (demo mode), not a real sensor reading.");
+        col = 0xb28dff;
+    } else if (g_magType > MAG_NONE) {
+        snprintf(buf, sizeof(buf), "Compass sensor: %s%s", mag_name(), src == 1 ? ". Using the GPS course while walking." : ". Heading is live.");
+        col = 0x4dd68c;
+    } else if (src == 1) {
+        snprintf(buf, sizeof(buf), "No compass sensor found. Heading comes from the GPS track, keep walking.");
+        col = 0xffd54a;
+    } else {
+        snprintf(buf, sizeof(buf), "No compass sensor and no GPS movement yet. The arrow needs a heading.");
+        col = 0xe5484d;
+    }
+    msg = buf;
+    lv_label_set_text(u->sensorLbl, msg);
+    lv_obj_set_style_text_color(u->sensorLbl, lv_color_hex(col), 0);
+
+    const int R = 66, cx = 75, cy = 75;
+    // north, east, south, west labels turn against the heading
+    for (int i = 0; i < 4; i++) {
+        float a = ((float)i * 90.0f - (src ? head : 0.0f)) * 0.0174533f;
+        lv_obj_set_pos(u->card[i], cx + (int)((R - 9) * sinf(a)) - 5, cy - (int)((R - 9) * cosf(a)) - 8);
+    }
+    if (!haveFix || src == 0) {
+        lv_label_set_text(u->headLbl, !haveFix ? "no fix" : "walk to get a heading");
+        lv_obj_add_flag(u->arrow, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(u->arrowLine, LV_OBJ_FLAG_HIDDEN);
         return;
     }
+    char hb[40];
+    snprintf(hb, sizeof(hb), "heading %03d° %s", (int)head, src == 2 ? (sim_compass_on() ? "(simulated)" : "(sensor)") : "(GPS)");
+    lv_label_set_text(u->headLbl, hb);
+    float rel = (bearingDeg - head) * 0.0174533f;
+    auto pt = [&](float r, float ang, lv_point_precise_t &o) {
+        o.x = (lv_value_precise_t)(cx + r * sinf(rel + ang));
+        o.y = (lv_value_precise_t)(cy - r * cosf(rel + ang));
+    };
+    pt(48, 0, u->arrowPts[0]);
+    pt(20, 2.55f, u->arrowPts[1]);
+    pt(8, 3.14159f, u->arrowPts[2]);
+    pt(20, -2.55f, u->arrowPts[3]);
+    u->arrowPts[4] = u->arrowPts[0];
+    lv_line_set_points(u->arrow, u->arrowPts, 5);
+    u->arrowAxis[0].x = cx;
+    u->arrowAxis[0].y = cy;
+    u->arrowAxis[1] = u->arrowPts[0];
+    lv_line_set_points(u->arrowLine, u->arrowAxis, 2);
+    lv_obj_clear_flag(u->arrow, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(u->arrowLine, LV_OBJ_FLAG_HIDDEN);
+}
 
+static lv_obj_t *guide_dot(lv_obj_t *parent, int x, int y, int r, uint32_t col)
+{
+    lv_obj_t *d = lv_obj_create(parent);
+    lv_obj_remove_style_all(d);
+    lv_obj_set_size(d, r * 2, r * 2);
+    lv_obj_set_pos(d, x - r, y - r);
+    lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(d, lv_color_hex(col), 0);
+    lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(d, 1, 0);
+    lv_obj_set_style_border_color(d, lv_color_hex(0x000000), 0);
+    lv_obj_clear_flag(d, LV_OBJ_FLAG_CLICKABLE);
+    return d;
+}
+
+static void guide_refresh_map(GuideUi *u, const Waypoint &wp, bool haveFix)
+{
+#if defined(GM_LETTER) || defined(GM_PORTDUINO)
+    lv_obj_update_layout(u->mapBox);
+    int W = lv_obj_get_width(u->mapBox), H = lv_obj_get_height(u->mapBox);
+    if (W < 40 || H < 40) return;
+    double tLat = wp.lat * 1e-7, tLon = wp.lon * 1e-7, mLat = g_myLat * 1e-7, mLon = g_myLon * 1e-7;
+    double cLat = haveFix ? (tLat + mLat) * 0.5 : tLat, cLon = haveFix ? (tLon + mLon) * 0.5 : tLon;
+
+    int z = 13;
+    if (u->zoomManual) {
+        z = u->zoomManual;
+    } else if (haveFix) {
+        for (z = 15; z > 3; z--) { // the highest zoom that keeps both points in view
+            double ax, ay, bx, by;
+            tile_of(tLat, tLon, z, ax, ay);
+            tile_of(mLat, mLon, z, bx, by);
+            if (fabs(ax - bx) * 256.0 < W * 0.8 && fabs(ay - by) * 256.0 < H * 0.8) break;
+        }
+        if (z > 13) z = 13; // the offline pack stops at 13
+    }
+    bool zoomChanged = (u->tileZ != z);
+    u->tileZ = z;
+
+    double cx, cy;
+    tile_of(cLat, cLon, z, cx, cy);
+    int x0 = (int)floor(cx - W / 2.0 / 256.0), x1 = (int)floor(cx + W / 2.0 / 256.0);
+    int y0 = (int)floor(cy - H / 2.0 / 256.0), y1 = (int)floor(cy + H / 2.0 / 256.0);
+    if (zoomChanged || u->tileX0 != x0 || u->tileY0 != y0 || !lv_obj_get_child_count(u->mapTiles)) {
+        lv_obj_clean(u->mapTiles);
+        int found = 0, total = 0;
+        for (int ty = y0; ty <= y1; ty++) {
+            for (int tx = x0; tx <= x1; tx++) {
+                total++;
+                lv_obj_t *im = gm_tile(u->mapTiles, z, tx, ty);
+                if (!im) continue;
+                found++;
+                lv_obj_set_user_data(im, (void *)(((uintptr_t)(tx - x0) << 8) | (uintptr_t)(ty - y0)));
+            }
+        }
+        u->tileX0 = x0;
+        u->tileY0 = y0;
+        char info[80];
+        if (!found) snprintf(info, sizeof(info), "No map tiles found (looked in %s)", MapTileSettings::getPrefix());
+        else snprintf(info, sizeof(info), "zoom %d, %d of %d tiles on the card", z, found, total);
+        lv_label_set_text(u->mapInfo, info);
+    }
+    uint32_t n = lv_obj_get_child_count(u->mapTiles);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *im = lv_obj_get_child(u->mapTiles, i);
+        uintptr_t k = (uintptr_t)lv_obj_get_user_data(im);
+        int tx = x0 + (int)((k >> 8) & 0xff), ty = y0 + (int)(k & 0xff);
+        lv_obj_set_pos(im, (int)((tx - cx) * 256.0 + W / 2.0), (int)((ty - cy) * 256.0 + H / 2.0));
+    }
+
+    // trail, waypoints and you
+    lv_obj_clean(u->mapMarks);
+    auto px = [&](double lat, double lon, int &ox, int &oy) {
+        double ax, ay;
+        tile_of(lat, lon, z, ax, ay);
+        ox = (int)((ax - cx) * 256.0 + W / 2.0);
+        oy = (int)((ay - cy) * 256.0 + H / 2.0);
+    };
+    int np = g_numWaypoints < 16 ? g_numWaypoints : 16;
+    for (int i = 0; i < np; i++) {
+        int ox, oy;
+        px(g_waypoints[i].lat * 1e-7, g_waypoints[i].lon * 1e-7, ox, oy);
+        u->trailPts[i].x = ox;
+        u->trailPts[i].y = oy;
+    }
+    u->trailLine = lv_line_create(u->mapMarks);
+    lv_line_set_points(u->trailLine, u->trailPts, np);
+    lv_obj_set_style_line_color(u->trailLine, lv_color_hex(0xffd54a), 0);
+    lv_obj_set_style_line_width(u->trailLine, 2, 0);
+    lv_obj_set_style_line_dash_width(u->trailLine, 6, 0);
+    lv_obj_set_style_line_dash_gap(u->trailLine, 4, 0);
+    int tx, ty, mx, my;
+    px(tLat, tLon, tx, ty);
+    if (haveFix) {
+        px(mLat, mLon, mx, my);
+        u->toPts[0].x = mx;
+        u->toPts[0].y = my;
+        u->toPts[1].x = tx;
+        u->toPts[1].y = ty;
+        u->toLine = lv_line_create(u->mapMarks);
+        lv_line_set_points(u->toLine, u->toPts, 2);
+        lv_obj_set_style_line_color(u->toLine, lv_color_hex(0x4dd68c), 0);
+        lv_obj_set_style_line_width(u->toLine, 3, 0);
+    }
+    for (int i = 0; i < np; i++) {
+        if (i == g_guideWpIdx) continue;
+        guide_dot(u->mapMarks, (int)u->trailPts[i].x, (int)u->trailPts[i].y, 4, 0x7fe3d2);
+    }
+    guide_dot(u->mapMarks, tx, ty, 7, 0xffd54a);
+    if (haveFix) guide_dot(u->mapMarks, mx, my, 6, 0x4dd68c);
+#else
+    lv_label_set_text(u->mapInfo, "This build has no map tile support.");
+    (void)wp;
+    (void)haveFix;
+#endif
+}
+
+static void on_guide_screen_timer(lv_timer_t *t)
+{
+    GuideUi *u = (GuideUi *)lv_timer_get_user_data(t);
+    if (!u || !u->dist || !lv_obj_is_valid(u->dist) || g_guideWpIdx < 0 || g_guideWpIdx >= g_numWaypoints) return;
+
+    Waypoint &wp = g_waypoints[g_guideWpIdx];
+    bool haveFix = !(g_myLat == 0 && g_myLon == 0);
     float distKm = 0.0f, bearingDeg = 0.0f;
     const char *card = "N";
-    calc_dist_bearing(g_myLat, g_myLon, wp.lat, wp.lon, distKm, bearingDeg, card);
+    if (!haveFix) {
+        lv_label_set_text(u->dist, "Waiting GPS fix...");
+    } else {
+        calc_dist_bearing(g_myLat, g_myLon, wp.lat, wp.lon, distKm, bearingDeg, card);
+        char buf[64];
+        if (distKm < 1.0f)
+            snprintf(buf, sizeof(buf), "%dm  %s  (%03d°)", (int)(distKm * 1000.0f), card, (int)bearingDeg);
+        else
+            snprintf(buf, sizeof(buf), "%.2fkm  %s  (%03d°)", distKm, card, (int)bearingDeg);
+        lv_label_set_text(u->dist, buf);
+    }
+    char b[64];
+    int32_t dAlt = (g_myAlt && wp.alt) ? (wp.alt - g_myAlt) : 0;
+    snprintf(b, sizeof(b), "Elev delta: %+dm (Target: %dm)", (int)dAlt, (int)wp.alt);
+    lv_label_set_text(u->alt, b);
 
-    char buf[64];
-    if (distKm < 1.0f)
-        snprintf(buf, sizeof(buf), "%dm  %s  (%03d°)", (int)(distKm * 1000.0f), card, (int)bearingDeg);
-    else
-        snprintf(buf, sizeof(buf), "%.2fkm  %s  (%03d°)", distKm, card, (int)bearingDeg);
-    lv_label_set_text(lblDist, buf);
+    if (u->tab == 1) guide_refresh_compass(u, wp, haveFix, bearingDeg);
+    if (u->tab == 2) guide_refresh_map(u, wp, haveFix);
+}
+
+static lv_obj_t *guide_panel(lv_obj_t *parent)
+{
+    lv_obj_t *p = lv_obj_create(parent);
+    lv_obj_remove_style_all(p);
+    lv_obj_set_size(p, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(p, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(p, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(p, 6, 0);
+    return p;
 }
 
 static void on_open_guidance(lv_event_t *e)
@@ -419,6 +917,7 @@ static void on_open_guidance(lv_event_t *e)
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     if (idx < 0 || idx >= g_numWaypoints) return;
     g_guideWpIdx = idx;
+    mag_probe();
 
     Waypoint &wp = g_waypoints[idx];
     char title[40];
@@ -428,54 +927,148 @@ static void on_open_guidance(lv_event_t *e)
     lv_obj_t *root = create_subscreen(title, &body);
     if (!root || !body) return;
 
-    // Card container
+    GuideUi *u = new GuideUi();
+    g_gu = u;
+    u->zoomManual = 0;
+
+    // name and distance stay on top of every tab
     lv_obj_t *card = lv_obj_create(body);
     lv_obj_remove_style_all(card);
     lv_obj_set_size(card, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(card, lv_color_hex(g_tItemBg), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, 8, 0);
-    lv_obj_set_style_pad_all(card, 12, 0);
+    lv_obj_set_style_pad_all(card, 8, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_style_pad_row(card, 4, 0);
 
-    // Target Name
     lv_obj_t *nameLbl = lv_label_create(card);
     lv_label_set_text(nameLbl, wp.name);
     lv_obj_set_style_text_font(nameLbl, &ui_font_montserrat_16, 0);
     lv_obj_set_style_text_color(nameLbl, lv_color_hex(g_tAccent), 0);
 
-    // Big Distance & Bearing Label
-    lv_obj_t *distLbl = lv_label_create(card);
-    lv_obj_set_style_text_font(distLbl, &ui_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(distLbl, lv_color_hex(0xffffff), 0);
-    lv_label_set_text(distLbl, "Calculating...");
+    u->dist = lv_label_create(card);
+    lv_obj_set_style_text_font(u->dist, &ui_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(u->dist, lv_color_hex(0xffffff), 0);
+    lv_label_set_text(u->dist, "Calculating...");
 
-    // Target Coordinates
-    lv_obj_t *coordLbl = lv_label_create(card);
+    // tab bar
+    lv_obj_t *bar = lv_obj_create(body);
+    lv_obj_remove_style_all(bar);
+    lv_obj_set_size(bar, lv_pct(100), 30);
+    lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(bar, 4, 0);
+    const char *names[3] = {"Text", "Compass", "Map"};
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *b = lv_button_create(bar);
+        lv_obj_set_size(b, lv_pct(32), 30);
+        lv_obj_set_style_radius(b, 6, 0);
+        lv_obj_set_style_shadow_width(b, 0, 0);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+        lv_obj_add_event_cb(b, on_guide_tab, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, names[i]);
+        lv_obj_set_style_text_font(l, &ui_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(l, lv_color_hex(0xffffff), 0);
+        lv_obj_center(l);
+        u->tabBtn[i] = b;
+    }
+
+    // text tab
+    u->pText = guide_panel(body);
+    u->coord = lv_label_create(u->pText);
     char cBuf[64];
     snprintf(cBuf, sizeof(cBuf), "Target: %.5f, %.5f", (double)wp.lat * 1e-7, (double)wp.lon * 1e-7);
-    lv_label_set_text(coordLbl, cBuf);
-    lv_obj_set_style_text_font(coordLbl, &ui_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(coordLbl, lv_color_hex(0x9ca3af), 0);
+    lv_label_set_text(u->coord, cBuf);
+    lv_obj_set_style_text_font(u->coord, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(u->coord, lv_color_hex(0x9ca3af), 0);
+    u->alt = lv_label_create(u->pText);
+    lv_obj_set_style_text_font(u->alt, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(u->alt, lv_color_hex(0x9ca3af), 0);
 
-    // Elevation Delta
-    lv_obj_t *altLbl = lv_label_create(card);
-    int32_t dAlt = (g_myAlt && wp.alt) ? (wp.alt - g_myAlt) : 0;
-    snprintf(cBuf, sizeof(cBuf), "Elev delta: %+dm (Target: %dm)", (int)dAlt, (int)wp.alt);
-    lv_label_set_text(altLbl, cBuf);
-    lv_obj_set_style_text_font(altLbl, &ui_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(altLbl, lv_color_hex(0x9ca3af), 0);
+    // compass tab
+    u->pComp = guide_panel(body);
+    u->dial = lv_obj_create(u->pComp);
+    lv_obj_remove_style_all(u->dial);
+    lv_obj_set_size(u->dial, 150, 150);
+    lv_obj_set_style_radius(u->dial, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(u->dial, lv_color_hex(0x0e1517), 0);
+    lv_obj_set_style_bg_opa(u->dial, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(u->dial, 2, 0);
+    lv_obj_set_style_border_color(u->dial, lv_color_hex(g_tBorder), 0);
+    lv_obj_clear_flag(u->dial, LV_OBJ_FLAG_SCROLLABLE);
+    const char *cards[4] = {"N", "E", "S", "W"};
+    for (int i = 0; i < 4; i++) {
+        u->card[i] = lv_label_create(u->dial);
+        lv_label_set_text(u->card[i], cards[i]);
+        lv_obj_set_style_text_font(u->card[i], &ui_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(u->card[i], lv_color_hex(i == 0 ? 0xe5484d : 0x9ca3af), 0);
+    }
+    u->arrow = lv_line_create(u->dial);
+    lv_obj_set_style_line_color(u->arrow, lv_color_hex(0x4dd68c), 0);
+    lv_obj_set_style_line_width(u->arrow, 4, 0);
+    lv_obj_set_style_line_rounded(u->arrow, true, 0);
+    u->arrowLine = lv_line_create(u->dial);
+    lv_obj_set_style_line_color(u->arrowLine, lv_color_hex(0x4dd68c), 0);
+    lv_obj_set_style_line_width(u->arrowLine, 4, 0);
+    u->headLbl = lv_label_create(u->pComp);
+    lv_obj_set_style_text_font(u->headLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(u->headLbl, lv_color_hex(0x9ca3af), 0);
+    lv_label_set_text(u->headLbl, "");
+    u->sensorLbl = lv_label_create(u->pComp);
+    lv_obj_set_width(u->sensorLbl, lv_pct(100));
+    lv_label_set_long_mode(u->sensorLbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(u->sensorLbl, &ui_font_montserrat_12, 0);
 
-    // Refresh immediately & start 1s live timer
-    lv_timer_t *tmr = lv_timer_create(on_guide_screen_timer, 1000, distLbl);
+    // map tab
+    u->pMap = guide_panel(body);
+    u->mapBox = lv_obj_create(u->pMap);
+    lv_obj_remove_style_all(u->mapBox);
+    lv_obj_set_size(u->mapBox, lv_pct(100), 230);
+    lv_obj_set_style_bg_color(u->mapBox, lv_color_hex(0x0e1517), 0);
+    lv_obj_set_style_bg_opa(u->mapBox, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(u->mapBox, 6, 0);
+    lv_obj_set_style_clip_corner(u->mapBox, true, 0);
+    lv_obj_clear_flag(u->mapBox, LV_OBJ_FLAG_SCROLLABLE);
+    u->mapTiles = lv_obj_create(u->mapBox);
+    lv_obj_remove_style_all(u->mapTiles);
+    lv_obj_set_size(u->mapTiles, lv_pct(100), lv_pct(100));
+    lv_obj_clear_flag(u->mapTiles, LV_OBJ_FLAG_CLICKABLE);
+    u->mapMarks = lv_obj_create(u->mapBox);
+    lv_obj_remove_style_all(u->mapMarks);
+    lv_obj_set_size(u->mapMarks, lv_pct(100), lv_pct(100));
+    lv_obj_clear_flag(u->mapMarks, LV_OBJ_FLAG_CLICKABLE);
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *zb = lv_button_create(u->mapBox);
+        lv_obj_set_size(zb, 30, 30);
+        lv_obj_align(zb, LV_ALIGN_TOP_RIGHT, -4, 4 + i * 34);
+        lv_obj_set_style_bg_opa(zb, LV_OPA_80, 0);
+        lv_obj_set_style_shadow_width(zb, 0, 0);
+        lv_obj_add_event_cb(zb, on_guide_zoom, LV_EVENT_CLICKED, (void *)(intptr_t)(i ? 1 : -1));
+        lv_obj_t *zlbl = lv_label_create(zb);
+        lv_label_set_text(zlbl, i ? "+" : "-");
+        lv_obj_center(zlbl);
+    }
+    u->mapInfo = lv_label_create(u->pMap);
+    lv_obj_set_style_text_font(u->mapInfo, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(u->mapInfo, lv_color_hex(0x9ca3af), 0);
+    lv_label_set_text(u->mapInfo, "");
+
+    guide_show_tab(u, g_guideTab >= 0 && g_guideTab < 3 ? g_guideTab : 0);
+
+    lv_timer_t *tmr = lv_timer_create(on_guide_screen_timer, 1000, u);
     on_guide_screen_timer(tmr);
 
-    // Clean up timer when screen is deleted
-    lv_obj_add_event_cb(root, [](lv_event_t *e) {
-        lv_timer_t *t = (lv_timer_t *)lv_event_get_user_data(e);
-        if (t) lv_timer_delete(t);
+    // tear down with the screen
+    lv_obj_add_event_cb(root, [](lv_event_t *ev) {
+        lv_timer_t *t = (lv_timer_t *)lv_event_get_user_data(ev);
+        if (t) {
+            GuideUi *gu = (GuideUi *)lv_timer_get_user_data(t);
+            lv_timer_delete(t);
+            if (gu == g_gu) g_gu = nullptr;
+            delete gu;
+        }
     }, LV_EVENT_DELETE, tmr);
 }
 
@@ -495,6 +1088,7 @@ static void refresh_waypoints_list()
 {
     if (!g_wpListContainer) return;
     lv_obj_clean(g_wpListContainer);
+    struct JoyRefresh { lv_obj_t *c; ~JoyRefresh() { if (emoji_joy_refresh) emoji_joy_refresh(c); } } joyRefresh{g_wpListContainer};
 
     if (g_numWaypoints == 0) {
         lv_obj_t *emptyLbl = lv_label_create(g_wpListContainer);
@@ -941,30 +1535,94 @@ static void open_rf_monitor_screen(lv_event_t *e)
 static lv_obj_t *g_notesList = nullptr;
 static char g_currentNotePath[64] = {0};
 static lv_obj_t *g_noteTa = nullptr;
+static lv_obj_t *g_noteName = nullptr;
+static lv_obj_t *g_noteFocus = nullptr;
 
 static void refresh_notes_list();
 
+static void on_note_field_event(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *act = lv_indev_active();
+    bool touched = act && lv_indev_get_type(act) == LV_INDEV_TYPE_POINTER;
+    if (code == LV_EVENT_CLICKED || (code == LV_EVENT_FOCUSED && touched)) {
+        lv_obj_t *ta = (lv_obj_t *)lv_event_get_target(e);
+        g_noteFocus = ta;
+        if (g_kb) {
+            lv_obj_clear_flag(g_kb, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(g_kb);
+        }
+        if (g_showKb) g_showKb(ta);
+    }
+}
+
+// keyboard icon: first press opens the keyboard, second press closes it
+static void on_note_kb_toggle(lv_event_t *e)
+{
+    if (!g_kb) return;
+    if (lv_obj_has_flag(g_kb, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_t *ta = g_noteFocus ? g_noteFocus : g_noteTa;
+        lv_obj_clear_flag(g_kb, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(g_kb);
+        if (g_showKb && ta) g_showKb(ta);
+    } else {
+        lv_obj_add_flag(g_kb, LV_OBJ_FLAG_HIDDEN);
+        lv_group_t *grp = lv_group_get_default();
+        if (grp) {
+            lv_group_set_editing(grp, false);
+            lv_obj_t *ta = g_noteFocus ? g_noteFocus : g_noteTa;
+            if (ta && lv_obj_is_valid(ta)) lv_group_focus_obj(ta);
+        }
+    }
+}
+
 static void on_save_note(lv_event_t *e)
 {
-    if (!g_noteTa || !g_currentNotePath[0]) return;
+    if (!g_noteTa || !g_noteName || !g_currentNotePath[0]) return;
     const char *txt = lv_textarea_get_text(g_noteTa);
+
+    char name[40];
+    snprintf(name, sizeof(name), "%s", lv_textarea_get_text(g_noteName));
+    for (char *c = name; *c; c++)
+        if (strchr("/\:*?\"<>|", *c)) *c = '_';
+    size_t n = strlen(name);
+    while (n && name[n - 1] == ' ') name[--n] = 0;
+    if (!name[0]) snprintf(name, sizeof(name), "note");
+    n = strlen(name);
+    if (n < 4 || strcasecmp(name + n - 4, ".txt") != 0) strncat(name, ".txt", sizeof(name) - strlen(name) - 1);
+    char newPath[64];
+    snprintf(newPath, sizeof(newPath), "/notes/%s", name);
+    bool renamed = strcmp(newPath, g_currentNotePath) != 0;
 
 #ifdef HAS_SDCARD
     if (emoji_sd_ready && emoji_sd_ready()) {
         ISpiLock::Guard bus;
         if (!SDFs.exists("/notes")) SDFs.mkdir("/notes");
-        FsFile f = SDFs.open(g_currentNotePath, O_WRONLY | O_CREAT | O_TRUNC);
+        FsFile f = SDFs.open(newPath, O_WRONLY | O_CREAT | O_TRUNC);
         if (f) {
             if (txt) f.write(txt);
             f.close();
+            if (renamed && SDFs.exists(g_currentNotePath)) SDFs.remove(g_currentNotePath);
         }
     }
 #endif
-    // Also save to NVS backup
-    Preferences p;
-    if (p.begin("fnotes", false)) {
-        p.putString("note", txt ? txt : "");
-        p.end();
+#if defined(ARCH_PORTDUINO)
+    mkdir(nf_rel("/notes"), 0755);
+    FILE *lf = fopen(nf_rel(newPath), "w");
+    if (lf) {
+        if (txt) fputs(txt, lf);
+        fclose(lf);
+        if (renamed && nf_exists(g_currentNotePath)) remove(nf_rel(g_currentNotePath));
+    }
+#endif
+    snprintf(g_currentNotePath, sizeof(g_currentNotePath), "%s", newPath);
+    lv_textarea_set_text(g_noteName, name);
+    if (strstr(newPath, "scratchpad")) {
+        Preferences p;
+        if (p.begin("fnotes", false)) {
+            p.putString("note", txt ? txt : "");
+            p.end();
+        }
     }
 
     lv_obj_t *saveBtn = (lv_obj_t *)lv_event_get_target(e);
@@ -972,6 +1630,38 @@ static void on_save_note(lv_event_t *e)
         lv_obj_t *lbl = lv_obj_get_child(saveBtn, 0);
         if (lbl) lv_label_set_text(lbl, "Saved!");
     }
+    if (g_notesList && lv_obj_is_valid(g_notesList)) refresh_notes_list();
+}
+
+static lv_obj_t *note_button(lv_obj_t *parent, const char *text, uint32_t color, int w, lv_event_cb_t cb)
+{
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_set_size(b, w, 30);
+    lv_obj_set_style_bg_color(b, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(b, 4, 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_color(l, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(l, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_align(l, LV_ALIGN_CENTER, 0);
+    return b;
+}
+
+static lv_obj_t *note_field(lv_obj_t *parent, int h, const char *placeholder, bool oneLine)
+{
+    lv_obj_t *ta = lv_textarea_create(parent);
+    lv_obj_set_size(ta, lv_pct(100), h);
+    lv_obj_set_style_bg_color(ta, lv_color_hex(g_tItemBg), 0);
+    lv_obj_set_style_text_color(ta, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(ta, &ui_font_montserrat_14, 0);
+    lv_obj_set_style_radius(ta, 6, 0);
+    lv_textarea_set_one_line(ta, oneLine);
+    lv_textarea_set_placeholder_text(ta, placeholder);
+    lv_obj_add_event_cb(ta, on_note_field_event, LV_EVENT_ALL, nullptr);
+    return ta;
 }
 
 static void open_note_editor(const char *path, const char *title)
@@ -982,57 +1672,47 @@ static void open_note_editor(const char *path, const char *title)
     lv_obj_t *root = create_subscreen(title, &body);
     if (!root || !body) return;
 
-    // Top action bar inside body: [ Save Note ]
-    lv_obj_t *saveBtn = lv_button_create(body);
-    lv_obj_set_size(saveBtn, lv_pct(100), 30);
-    lv_obj_set_style_bg_color(saveBtn, lv_color_hex(0x10b981), 0); // Emerald green
-    lv_obj_set_style_bg_opa(saveBtn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(saveBtn, 4, 0);
-    lv_obj_set_style_shadow_width(saveBtn, 0, 0);
-    lv_obj_add_event_cb(saveBtn, on_save_note, LV_EVENT_CLICKED, nullptr);
+    // [ Save Note ][ keyboard ]
+    lv_obj_t *bar = lv_obj_create(body);
+    lv_obj_remove_style_all(bar);
+    lv_obj_set_size(bar, lv_pct(100), 30);
+    lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(bar, 6, 0);
+    note_button(bar, "Save Note", 0x10b981, 150, on_save_note);
+    note_button(bar, "KB", g_tBtnBg, 44, on_note_kb_toggle);
 
-    lv_obj_t *sLbl = lv_label_create(saveBtn);
-    lv_label_set_text(sLbl, "Save Note");
-    lv_obj_set_style_text_color(sLbl, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_text_font(sLbl, &ui_font_montserrat_12, 0);
-    lv_obj_set_style_align(sLbl, LV_ALIGN_CENTER, 0);
-
-    // Text Area
-    g_noteTa = lv_textarea_create(body);
-    lv_obj_set_size(g_noteTa, lv_pct(100), 180);
-    lv_obj_set_style_bg_color(g_noteTa, lv_color_hex(g_tItemBg), 0);
-    lv_obj_set_style_text_color(g_noteTa, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_text_font(g_noteTa, &ui_font_montserrat_14, 0);
-    lv_obj_set_style_radius(g_noteTa, 6, 0);
-    lv_textarea_set_placeholder_text(g_noteTa, "Type field notes here...");
-
-    // Click handler to summon keyboard
-    lv_obj_add_event_cb(g_noteTa, [](lv_event_t *e) {
-        lv_event_code_t code = lv_event_get_code(e);
-        if (code == LV_EVENT_CLICKED || code == LV_EVENT_FOCUSED) {
-            if (g_kb) {
-                lv_obj_clear_flag(g_kb, LV_OBJ_FLAG_HIDDEN);
-                lv_obj_move_foreground(g_kb);
-            }
-            if (g_showKb) g_showKb(g_noteTa);
-        }
-    }, LV_EVENT_ALL, nullptr);
+    // File name (upper) and content (lower)
+    g_noteName = note_field(body, 34, "File name", true);
+    lv_textarea_set_max_length(g_noteName, 28);
+    const char *base = strrchr(path, '/');
+    lv_textarea_set_text(g_noteName, base ? base + 1 : path);
+    g_noteTa = note_field(body, 150, "Type field notes here...", false);
+    g_noteFocus = g_noteTa;
 
     // Load existing content
-    char content[512] = {0};
+    static char content[2048];
+    content[0] = 0;
 #ifdef HAS_SDCARD
     if (emoji_sd_ready && emoji_sd_ready()) {
         ISpiLock::Guard bus;
         if (SDFs.exists(path)) {
             FsFile f = SDFs.open(path, O_RDONLY);
             if (f) {
-                f.read(content, sizeof(content) - 1);
+                int n = f.read(content, sizeof(content) - 1);
+                content[n > 0 ? n : 0] = 0;
                 f.close();
             }
         }
     }
 #endif
-    if (content[0] == 0) {
+#if defined(ARCH_PORTDUINO)
+    if (FILE *lf = fopen(nf_rel(path), "r")) {
+        size_t n = fread(content, 1, sizeof(content) - 1, lf);
+        content[n] = 0;
+        fclose(lf);
+    }
+#endif
+    if (content[0] == 0 && strstr(path, "scratchpad")) {
         Preferences p;
         if (p.begin("fnotes", true)) {
             snprintf(content, sizeof(content), "%s", p.getString("note", "").c_str());
@@ -1052,13 +1732,33 @@ static void on_open_note_click(lv_event_t *e)
 
 static void on_new_note_click(lv_event_t *e)
 {
-    open_note_editor("/notes/scratchpad.txt", "Scratchpad");
+    char path[64] = "/notes/note_1.txt", title[32] = "note_1.txt";
+#ifdef HAS_SDCARD
+    if (emoji_sd_ready && emoji_sd_ready()) {
+        ISpiLock::Guard bus;
+        if (!SDFs.exists("/notes")) SDFs.mkdir("/notes");
+        for (int i = 1; i < 1000; i++) {
+            snprintf(title, sizeof(title), "note_%d.txt", i);
+            snprintf(path, sizeof(path), "/notes/%s", title);
+            if (!SDFs.exists(path)) break;
+        }
+    }
+#endif
+#if defined(ARCH_PORTDUINO)
+    for (int i = 1; i < 1000; i++) {
+        snprintf(title, sizeof(title), "note_%d.txt", i);
+        snprintf(path, sizeof(path), "/notes/%s", title);
+        if (!nf_exists(path)) break;
+    }
+#endif
+    open_note_editor(path, title);
 }
 
 static void refresh_notes_list()
 {
     if (!g_notesList) return;
     lv_obj_clean(g_notesList);
+    struct JoyRefresh { lv_obj_t *c; ~JoyRefresh() { if (emoji_joy_refresh) emoji_joy_refresh(c); } } joyRefresh{g_notesList};
 
     std::vector<std::string> files;
 #ifdef HAS_SDCARD
@@ -1083,6 +1783,14 @@ static void refresh_notes_list()
     }
 #endif
 
+#if defined(ARCH_PORTDUINO)
+    if (DIR *d = opendir(nf_rel("/notes"))) {
+        while (struct dirent *de = readdir(d)) {
+            if (strstr(de->d_name, ".txt")) files.push_back(de->d_name);
+        }
+        closedir(d);
+    }
+#endif
     if (files.empty()) {
         // Show default Scratchpad row
         files.push_back("scratchpad.txt");
@@ -1136,7 +1844,7 @@ static void open_field_notes_screen(lv_event_t *e)
     lv_obj_add_event_cb(newBtn, on_new_note_click, LV_EVENT_CLICKED, nullptr);
 
     lv_obj_t *nLbl = lv_label_create(newBtn);
-    lv_label_set_text(nLbl, "+ Open Scratchpad");
+    lv_label_set_text(nLbl, "+ New Note");
     lv_obj_set_style_text_color(nLbl, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(nLbl, &ui_font_montserrat_12, 0);
     lv_obj_set_style_align(nLbl, LV_ALIGN_CENTER, 0);
@@ -1146,6 +1854,7 @@ static void open_field_notes_screen(lv_event_t *e)
     lv_obj_set_size(g_notesList, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(g_notesList, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(g_notesList, 6, 0);
+    lv_obj_add_event_cb(g_notesList, [](lv_event_t *) { g_notesList = nullptr; }, LV_EVENT_DELETE, nullptr);
 
     refresh_notes_list();
 }

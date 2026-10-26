@@ -62,6 +62,7 @@ struct BubbleRef {
     uint32_t id;
     uint32_t nodeNum;
     lv_obj_t *panel; // panel holding the bubble label
+    lv_obj_t *label; // the bubble itself
     lv_obj_t *chipLabel; // the row of reaction chips under the bubble, nullptr until the first reaction
     char em[4][13];
     uint8_t cnt[4];
@@ -72,6 +73,8 @@ static uint32_t g_pendingNodeNum = 0;
 extern "C" bool emoji_node_distance_str(uint32_t nodeNum, char *out, size_t outSize) __attribute__((weak));
 extern "C" void emoji_trigger_traceroute(uint32_t toNode, uint8_t ch) __attribute__((weak));
 extern "C" void emoji_show_paste_pill(void) __attribute__((weak));
+extern "C" void emoji_joy_screen_open(lv_obj_t *root) __attribute__((weak));
+extern "C" void emoji_joy_screen_closed(lv_obj_t *root) __attribute__((weak));
 
 static BubbleRef g_bubbles[24];
 static uint32_t g_popupId = 0;
@@ -436,6 +439,8 @@ static void show_reply_strip(const char *quote)
 static void close_popup(void)
 {
     if (g_backdrop) {
+        if (emoji_joy_screen_closed)
+            emoji_joy_screen_closed(g_backdrop);
         lv_obj_delete_async(g_backdrop);
         g_backdrop = nullptr;
     }
@@ -696,6 +701,8 @@ static void bubble_click_cb(lv_event_t *e)
             lv_obj_set_user_data(b, (void *)s_multiCmds[i]);
         }
         popup_button(pbox, "Cancel", 0x5A6078, cancel_popup_cb);
+        if (emoji_joy_screen_open)
+            emoji_joy_screen_open(g_backdrop);
     }
 }
 
@@ -749,7 +756,9 @@ static void longpress_cb(lv_event_t *e)
     lv_obj_t *buttons = lv_obj_create(panel);
     lv_obj_remove_style_all(buttons);
     lv_obj_set_size(buttons, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW_WRAP); // five buttons do not fit one line of the 280 px menu
+    lv_obj_set_style_pad_row(buttons, 6, 0);
+    lv_obj_set_style_pad_column(buttons, 6, 0);
     lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *reply = popup_button(buttons, "Reply", 0x2F7D4F, reply_cb);
@@ -779,6 +788,60 @@ static void longpress_cb(lv_event_t *e)
         }
     }
     popup_button(buttons, "Cancel", 0x5A6078, cancel_popup_cb);
+    if (emoji_joy_screen_open)
+        emoji_joy_screen_open(g_backdrop);
+}
+
+// joystick: the message list is scrolled with up and down, the bubble nearest to the middle is outlined and OK opens its menu
+// (a bot message with commands runs them like a tap). chat == nullptr only clears the outline.
+extern "C" bool emoji_joy_chat_pick(lv_obj_t *chat, bool open)
+{
+    static lv_obj_t *s_hi = nullptr;
+    if (s_hi && lv_obj_is_valid(s_hi))
+        lv_obj_set_style_outline_width(s_hi, 0, 0);
+    s_hi = nullptr;
+    if (!chat)
+        return false;
+    lv_area_t ca;
+    lv_obj_get_coords(chat, &ca);
+    int mid = (ca.y1 + ca.y2) / 2;
+    BubbleRef *best = nullptr;
+    int bestD = 100000;
+    for (int i = 0; i < 24; i++) {
+        BubbleRef &b = g_bubbles[i];
+        if (!b.id || !b.panel || !b.label || !lv_obj_is_valid(b.panel) || !lv_obj_is_valid(b.label) ||
+            lv_obj_get_parent(b.panel) != chat)
+            continue;
+        lv_area_t a;
+        lv_obj_get_coords(b.panel, &a);
+        int d = (a.y1 + a.y2) / 2 - mid;
+        if (d < 0)
+            d = -d;
+        if (d < bestD) {
+            bestD = d;
+            best = &b;
+        }
+    }
+    if (!best)
+        return false;
+    if (!open) {
+        s_hi = best->panel;
+        lv_obj_set_style_outline_width(s_hi, 2, 0);
+        lv_obj_set_style_outline_color(s_hi, lv_color_hex(0xFFD54A), 0);
+        lv_obj_set_style_outline_pad(s_hi, 1, 0);
+        return true;
+    }
+    bool cmds = false;
+    if (emoji_bot_container(chat) && (!emoji_meshbot_cmd_enabled || emoji_meshbot_cmd_enabled())) {
+        const char *t = lv_label_get_text(best->label);
+        for (; t && *t; t++)
+            if (*t == '!' && isalnum((unsigned char)t[1])) {
+                cmds = true;
+                break;
+            }
+    }
+    lv_obj_send_event(best->label, cmds ? LV_EVENT_CLICKED : LV_EVENT_LONG_PRESSED, nullptr);
+    return true;
 }
 
 static void unflash_cb(lv_timer_t *t)
@@ -908,6 +971,7 @@ extern "C" void emoji_bubble_register(lv_obj_t *label, uint32_t id)
     b.nodeNum = g_pendingNodeNum;
     g_pendingNodeNum = 0;
     b.panel = panel;
+    b.label = label;
     b.chipLabel = nullptr;
     b.n = 0;
     b.sent = sent;

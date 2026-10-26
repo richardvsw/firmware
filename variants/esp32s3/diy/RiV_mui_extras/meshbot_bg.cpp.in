@@ -57,9 +57,32 @@ extern "C" void emoji_meshbot_cmd_set_enabled(bool enabled)
     p.end();
 }
 
+// the bot's chat as soon as one of its messages is built, also while the chat is not open (restored messages, replies that
+// arrive while another chat is open); g_bot alone is only set while the chat is on screen
+static lv_obj_t *g_botKnown = nullptr;
+
+static void bot_deleted_cb(lv_event_t *e)
+{
+    lv_obj_t *o = (lv_obj_t *)lv_event_get_target(e);
+    if (g_botKnown == o)
+        g_botKnown = nullptr;
+    if (g_bot == o)
+        g_bot = nullptr;
+}
+
+extern "C" void emoji_chat_hint(lv_obj_t *container, const char *shortName, const char *longName)
+{
+    if (!container || container == g_botKnown || !shortName || !longName)
+        return;
+    if (strcasecmp(shortName, BOT_SHORT) == 0 && strcasecmp(longName, BOT_LONG) == 0) {
+        g_botKnown = container;
+        lv_obj_add_event_cb(container, bot_deleted_cb, LV_EVENT_DELETE, nullptr);
+    }
+}
+
 extern "C" bool emoji_bot_container(lv_obj_t *container)
 {
-    return g_bot && container == g_bot;
+    return container && ((g_bot && container == g_bot) || container == g_botKnown);
 }
 
 static void make_bg(lv_obj_t *container)
