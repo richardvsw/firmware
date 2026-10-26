@@ -1,5 +1,5 @@
 import filecmp
-import os
+import os, re
 import shutil
 
 Import("env")
@@ -1224,7 +1224,10 @@ def main():
 
     # keyboard height and the gap it leaves above the message box
     if "keyboard" in feat and kb_pct:
-        for def_pct in ("45", "34"):
+        # an earlier build may have patched another percentage already, so every value found in the library is an anchor too
+        s_kb, _ = read(tft)
+        seen_pct = set(re.findall(r"lv_obj_set_size\(objects\.keyboard, LV_PCT\(100\), LV_PCT\((\d+)\)\);", s_kb))
+        for def_pct in sorted(seen_pct or {"45", "34"}):
             edit(tft, "lv_obj_set_size(objects.keyboard, LV_PCT(100), LV_PCT(%s));" % def_pct,
                  "lv_obj_set_size(objects.keyboard, LV_PCT(100), LV_PCT(%s));" % kb_pct, "replace")
         strip_extra = (" + emoji_strip_height()" if "compose" in feat else "")
@@ -2011,6 +2014,12 @@ if os.path.isdir(UI) and os.path.isdir(LV):
         old_tone = "    void tone(uint8_t pin, unsigned int frq, unsigned long duration) {\n      ledcWriteTone(pin, frq);\n      if (emoji_buzzer_volume && emoji_buzzer_volume() < 100)\n        ledcWrite(pin, (uint32_t)(((1u << LEDC_RESOLUTION) - 1) * emoji_buzzer_volume() / 200));\n    }"
         edit(rtttl_lib, [orig_tone, old_tone],
              "    void tone(uint8_t pin, unsigned int frq, unsigned long duration) {\n      ledcWriteTone(pin, frq);\n      if (emoji_buzzer_duty && emoji_buzzer_volume && emoji_buzzer_volume() < 100)\n        ledcWrite(pin, (uint32_t)(((1u << LEDC_RESOLUTION) - 1) * emoji_buzzer_duty((float)frq)));\n    }", "replace")
+
+    # a GPS wired receive-only cannot answer the probe commands, so the module was never detected and nothing was read
+    gps_src = env.subst("$PROJECT_DIR/src/gps/GPS.cpp")
+    if os.path.exists(gps_src):
+        edit(gps_src, "    new_gps->tx_gpio = _tx_gpio;\n",
+             "#if defined(GPS_RX_ONLY)\n    new_gps->gnssModel = GNSS_MODEL_GENERIC_NMEA; // only the module's TX is wired, nothing answers a probe\n#endif\n", "after")
 
     phone_src = env.subst("$PROJECT_DIR/src/mesh/PhoneAPI.cpp")
     if os.path.exists(phone_src):

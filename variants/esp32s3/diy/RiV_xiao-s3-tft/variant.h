@@ -73,6 +73,7 @@
 #ifdef XIAO_TFT_EN_RST
 #define GPS_RX_PIN      3    // XIAO D2  <- GPS module TX, receive only
 #define GPS_TX_PIN      10   // unconnected chip pin
+#define GPS_RX_ONLY     1    // no command line to the module: skip the probe and read plain NMEA
 #define GPS_BAUDRATE    9600
 #define GPS_THREAD_INTERVAL 50
 #define HAS_GPS         1
