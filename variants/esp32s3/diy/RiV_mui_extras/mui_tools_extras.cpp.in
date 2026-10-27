@@ -569,7 +569,9 @@ static int current_heading(float &deg)
 // ---- tiles: the stock map layout <prefix>/<style>/<zoom>/<x>/<y>.png ----
 #if LV_USE_FS_ARDUINO_SD
 #define GM_LETTER LV_FS_ARDUINO_SD_LETTER
-#elif defined(ARCH_PORTDUINO)
+#else
+// no lvgl file driver for the card (every build except the ones that define LV_USE_FS_ARDUINO_SD): the stock map reads and decodes the PNG
+// itself through SDCardService, so use that service on the boards as well as on portduino
 #define GM_PORTDUINO 1
 #include "graphics/map/SDCardService.h"
 #endif
@@ -580,7 +582,7 @@ static char g_gmStyle[24] = "";
 static bool g_gmFound = false;
 
 #ifdef GM_PORTDUINO
-// portduino has no file driver for tiles: the stock map decodes the PNG itself, so reuse its service and free the image with the tile
+// no file driver for tiles: the stock map decodes the PNG itself, so reuse its service and free the image with the tile
 static SDCardService *g_gmSvc = nullptr;
 static void gm_free_cb(lv_event_t *e)
 {
