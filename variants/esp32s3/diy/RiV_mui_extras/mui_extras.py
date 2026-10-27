@@ -1230,6 +1230,17 @@ def main():
         for def_pct in sorted(seen_pct or {"45", "34"}):
             edit(tft, "lv_obj_set_size(objects.keyboard, LV_PCT(100), LV_PCT(%s));" % def_pct,
                  "lv_obj_set_size(objects.keyboard, LV_PCT(100), LV_PCT(%s));" % kb_pct, "replace")
+        # the stock code only sizes the keyboard on screens 480 high or more, a 320 high screen keeps the 50 % of the generated
+        # layout, so the setting did nothing there: size it for every screen
+        s_k, crlf_k = read(tft)
+        kb_marker = "    // riv keyboard height\n"
+        kb_line = kb_marker + "    lv_obj_set_size(objects.keyboard, LV_PCT(100), LV_PCT(%s));\n" % kb_pct
+        kb_old = re.search(re.escape(kb_marker) + r"    lv_obj_set_size\(objects\.keyboard, LV_PCT\(100\), LV_PCT\(\d+\)\);\n", s_k)
+        if kb_old:
+            if kb_old.group(0) != kb_line:
+                write(tft, s_k.replace(kb_old.group(0), kb_line, 1), crlf_k)
+        else:
+            edit(tft, "    // fix size for 480 pixel height displays\n", kb_line, "before")
         strip_extra = (" + emoji_strip_height()" if "compose" in feat else "")
         s_tft, _ = read(tft)
         if "kbdPanelBaseY" in s_tft:
