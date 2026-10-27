@@ -6828,18 +6828,10 @@ static void names_cb(lv_event_t *e)
 
 
 #ifdef RIV_ROTATE
-// screen orientation: 0 portrait, 1 landscape, kept in NVS and read at start by the display driver and by ui_init
-static int g_rivLand = -1;
+// screen orientation: 0 portrait, 1 landscape. Not kept over a restart: the board always starts in portrait
+static int g_rivLand = 0;
 extern "C" int riv_landscape(void)
 {
-    if (g_rivLand < 0) {
-        g_rivLand = 0;
-        Preferences p;
-        if (p.begin("rivui", true)) {
-            g_rivLand = p.getInt("land", 0) ? 1 : 0;
-            p.end();
-        }
-    }
     return g_rivLand;
 }
 static void (*g_rotHost)(bool) = nullptr;
@@ -6856,11 +6848,6 @@ static void rot_text(void)
 static void rot_cb(lv_event_t *e)
 {
     int land = riv_landscape() ? 0 : 1;
-    Preferences p;
-    if (p.begin("rivui", false)) {
-        p.putInt("land", land);
-        p.end();
-    }
     g_rivLand = land;
     if (g_rotHost) {
         g_rotHost(land != 0); // turns the screen at once
