@@ -1588,6 +1588,7 @@ def main():
                      'extern "C" void emoji_settings_channels(void *(*)(int), void (*)(int), int (*)(void));\n'
                      'extern "C" void emoji_tools_extras_init(lv_obj_t *, lv_obj_t *, lv_obj_t *, void (*)(lv_obj_t *));\n'
                      'extern "C" void emoji_tools_record_pos(uint32_t, int32_t, int32_t, int32_t, bool);\n'
+                     'extern "C" void emoji_tools_record_sats(uint32_t);\n'
                      'extern "C" void emoji_tools_record_node(uint32_t, const char *, const char *, uint32_t);\n'
                      'extern "C" void emoji_tools_record_signal(uint32_t, int32_t, float);\n'
                      'extern "C" void emoji_tools_record_metrics(float, float);\n'
@@ -2025,6 +2026,10 @@ if os.path.isdir(UI) and os.path.isdir(LV):
         old_tone = "    void tone(uint8_t pin, unsigned int frq, unsigned long duration) {\n      ledcWriteTone(pin, frq);\n      if (emoji_buzzer_volume && emoji_buzzer_volume() < 100)\n        ledcWrite(pin, (uint32_t)(((1u << LEDC_RESOLUTION) - 1) * emoji_buzzer_volume() / 200));\n    }"
         edit(rtttl_lib, [orig_tone, old_tone],
              "    void tone(uint8_t pin, unsigned int frq, unsigned long duration) {\n      ledcWriteTone(pin, frq);\n      if (emoji_buzzer_duty && emoji_buzzer_volume && emoji_buzzer_volume() < 100)\n        ledcWrite(pin, (uint32_t)(((1u << LEDC_RESOLUTION) - 1) * emoji_buzzer_duty((float)frq)));\n    }", "replace")
+
+    # the satellite count of the own position for the compass screen
+    edit(os.path.join(UI, "source", "graphics", "TFT", "TFTView_320x240.cpp"), "    emoji_tools_record_pos(nodeNum, lat, lon, alt, nodeNum == ownNode);\n",
+         "    if (nodeNum == ownNode)\n        emoji_tools_record_sats(sats);\n", "after")
 
     # a GPS wired receive-only cannot answer the probe commands, so the module was never detected and nothing was read
     gps_src = env.subst("$PROJECT_DIR/src/gps/GPS.cpp")

@@ -134,6 +134,10 @@ static int g_sigSamples = 0;
 
 static float g_gpsHeading = 0.0f;
 static uint32_t g_gpsHeadingAt = 0;
+static uint32_t g_gpsPosAt = 0;
+static uint32_t g_gpsSats = 0;
+static float g_gpsSpeedKmh = 0.0f;
+static uint32_t g_gpsSpeedAt = 0;
 
 extern "C" void emoji_tools_record_pos(uint32_t nodeNum, int32_t lat, int32_t lon, int32_t alt, bool isOwn)
 {
@@ -143,6 +147,12 @@ extern "C" void emoji_tools_record_pos(uint32_t nodeNum, int32_t lat, int32_t lo
             float c = cosf((float)lat * 1e-7f * 0.0174533f);
             float dx = 111320.0f * c * 1e-7f * (float)(lon - g_myLon);
             float dy = 110570.0f * 1e-7f * (float)(lat - g_myLat);
+            uint32_t nowMs = millis();
+            if (g_gpsPosAt && nowMs - g_gpsPosAt > 0 && nowMs - g_gpsPosAt < 120000) {
+                g_gpsSpeedKmh = sqrtf(dx * dx + dy * dy) / ((float)(nowMs - g_gpsPosAt) * 0.001f) * 3.6f;
+                g_gpsSpeedAt = nowMs;
+            }
+            g_gpsPosAt = nowMs;
             if (dx * dx + dy * dy >= 16.0f) {
                 float h = atan2f(dx, dy) * 57.29578f;
                 g_gpsHeading = h < 0.0f ? h + 360.0f : h;
@@ -1865,6 +1875,404 @@ static void open_field_notes_screen(lv_event_t *e)
 // Native Tools Tab Hook (EXTRAS Section Divider + 4 Buttons)
 // -------------------------------------------------------------
 
+// -------------------------------------------------------------
+// Compass tool (not tied to a waypoint): dial, heading, calibration, position
+// -------------------------------------------------------------
+
+static bool g_cpDemo = false;         // sweeping demo heading, not a sensor
+static int g_cpOffset = 0;            // magnetic to true north in degrees, applied to the magnetometer only
+static bool g_cpLoaded = false;
+
+extern "C" void emoji_tools_record_sats(uint32_t sats)
+{
+    g_gpsSats = sats;
+}
+
+static void cp_load()
+{
+    if (g_cpLoaded) return;
+    g_cpLoaded = true;
+    Preferences p;
+    if (p.begin("compass", true)) {
+        g_cpOffset = p.getInt("off", 0);
+        if (g_cpOffset < -30 || g_cpOffset > 30) g_cpOffset = 0;
+        if (p.getInt("cal", 0) == 1) {
+            g_magMin[0] = p.getFloat("mn0", g_magMin[0]);
+            g_magMin[1] = p.getFloat("mn1", g_magMin[1]);
+            g_magMax[0] = p.getFloat("mx0", g_magMax[0]);
+            g_magMax[1] = p.getFloat("mx1", g_magMax[1]);
+        }
+        p.end();
+    }
+}
+
+static void cp_save_offset()
+{
+    Preferences p;
+    if (p.begin("compass", false)) {
+        p.putInt("off", g_cpOffset);
+        p.end();
+    }
+}
+
+static void cp_save_cal(bool valid)
+{
+    Preferences p;
+    if (p.begin("compass", false)) {
+        p.putInt("cal", valid ? 1 : 0);
+        if (valid) {
+            p.putFloat("mn0", g_magMin[0]);
+            p.putFloat("mn1", g_magMin[1]);
+            p.putFloat("mx0", g_magMax[0]);
+            p.putFloat("mx1", g_magMax[1]);
+        }
+        p.end();
+    }
+}
+
+static void cp_reset_cal()
+{
+    g_magMin[0] = g_magMin[1] = 32767.0f;
+    g_magMax[0] = g_magMax[1] = -32767.0f;
+}
+
+struct CompassUi {
+    lv_obj_t *dial = nullptr, *card[4] = {nullptr, nullptr, nullptr, nullptr}, *dot[4] = {nullptr, nullptr, nullptr, nullptr};
+    lv_obj_t *arrow = nullptr, *headLbl = nullptr, *subLbl = nullptr, *sensorLbl = nullptr, *posLbl = nullptr;
+    lv_obj_t *offRow = nullptr, *offLbl = nullptr, *calBox = nullptr, *calBar = nullptr, *calLbl = nullptr, *calRow = nullptr;
+    lv_obj_t *calBtnLbl = nullptr, *demoBtnLbl = nullptr;
+    lv_point_precise_t arrowPts[5];
+    bool calibrating = false;
+    bool calDone = false;
+    bool bins[36];
+    int covered = 0;
+    float shown = 0.0f;
+    bool haveShown = false;
+};
+static CompassUi *g_cu = nullptr;
+
+static float cp_wrap180(float d)
+{
+    while (d > 180.0f) d -= 360.0f;
+    while (d < -180.0f) d += 360.0f;
+    return d;
+}
+
+static void cp_refresh(CompassUi *u)
+{
+    float head = 0.0f;
+    int src;
+    if (g_cpDemo) {
+        head = fmodf((float)millis() * 0.012f, 360.0f);
+        src = 3;
+    } else {
+        src = current_heading(head);
+    }
+    bool sim = sim_compass_on();
+    bool realMag = src == 2 && !sim;
+
+    // learning the magnetometer: every ten degrees of a full turn that was seen counts
+    if (u->calibrating && realMag) {
+        int b = ((int)(head / 10.0f)) % 36;
+        if (!u->bins[b]) {
+            u->bins[b] = true;
+            u->covered++;
+        }
+        if (u->covered >= 32) {
+            u->calibrating = false;
+            u->calDone = true;
+            cp_save_cal(true);
+        }
+    }
+
+    // the sensor value is smoothed, a raw magnetometer jitters by a few degrees
+    float target = head;
+    if (src == 2) target = fmodf(head + (realMag ? (float)g_cpOffset : 0.0f) + 360.0f, 360.0f);
+    if (src == 0) {
+        u->haveShown = false;
+    } else if (!u->haveShown || src != 2) {
+        u->shown = target;
+        u->haveShown = true;
+    } else {
+        u->shown = fmodf(u->shown + cp_wrap180(target - u->shown) * 0.35f + 360.0f, 360.0f);
+    }
+    float h = src ? u->shown : 0.0f;
+
+    char buf[110];
+    const char *msg;
+    uint32_t col;
+    if (src == 3) {
+        msg = "Demo heading, not a sensor reading.";
+        col = 0xb28dff;
+    } else if (sim) {
+        msg = "SIMULATED compass (demo mode), not a real sensor reading.";
+        col = 0xb28dff;
+    } else if (g_magType > MAG_NONE) {
+        snprintf(buf, sizeof(buf), "Compass sensor: %s%s", mag_name(), src == 1 ? ". Using the GPS course while moving." : (u->calibrating ? ". Calibrating." : ". Heading is live."));
+        msg = buf;
+        col = 0x4dd68c;
+    } else if (src == 1) {
+        msg = "No compass sensor found. Heading comes from the GPS track, keep moving.";
+        col = 0xffd54a;
+    } else {
+        msg = "No compass sensor and no GPS movement. There is no heading.";
+        col = 0xe5484d;
+    }
+    lv_label_set_text(u->sensorLbl, msg);
+    lv_obj_set_style_text_color(u->sensorLbl, lv_color_hex(col), 0);
+
+    const int R = 66, cx = 75, cy = 75;
+    for (int i = 0; i < 4; i++) {
+        float a = ((float)i * 90.0f - h) * 0.0174533f;
+        lv_obj_set_pos(u->card[i], cx + (int)((R - 9) * sinf(a)) - 5, cy - (int)((R - 9) * cosf(a)) - 8);
+        float d = ((float)i * 90.0f + 45.0f - h) * 0.0174533f;
+        lv_obj_set_pos(u->dot[i], cx + (int)((R - 7) * sinf(d)) - 2, cy - (int)((R - 7) * cosf(d)) - 2);
+    }
+    if (src == 0) {
+        lv_label_set_text(u->headLbl, "---");
+        lv_label_set_text(u->subLbl, "no heading");
+    } else {
+        static const char *card8[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+        snprintf(buf, sizeof(buf), "%03d° %s", (int)(h + 0.5f) % 360, card8[((int)(h / 45.0f + 0.5f)) % 8]);
+        lv_label_set_text(u->headLbl, buf);
+        lv_label_set_text(u->subLbl, src == 1 ? "true north (GPS course)" : (src == 3 ? "demo heading" : (realMag && g_cpOffset == 0 ? "magnetic north" : (realMag ? "true north (offset)" : "simulated"))));
+    }
+
+    // position
+    bool fix = g_gpsSats > 0 && (g_myLat != 0 || g_myLon != 0);
+    if (fix) {
+        float spd = (g_gpsSpeedAt && millis() - g_gpsSpeedAt < 60000) ? g_gpsSpeedKmh : 0.0f;
+        snprintf(buf, sizeof(buf), "%.5f, %.5f\nAltitude %d m  |  %u satellites\nSpeed %.1f km/h", (double)g_myLat * 1e-7, (double)g_myLon * 1e-7,
+                 (int)g_myAlt, (unsigned)g_gpsSats, (double)spd);
+    } else if (g_myLat != 0 || g_myLon != 0) {
+        snprintf(buf, sizeof(buf), "No GPS fix yet\nLast position %.5f, %.5f", (double)g_myLat * 1e-7, (double)g_myLon * 1e-7);
+    } else {
+        snprintf(buf, sizeof(buf), "No GPS fix yet");
+    }
+    lv_label_set_text(u->posLbl, buf);
+
+    // north offset, calibration and demo controls follow the state
+    char ob[40];
+    snprintf(ob, sizeof(ob), "True north offset: %s%d°", g_cpOffset > 0 ? "+" : "", g_cpOffset);
+    lv_label_set_text(u->offLbl, ob);
+    bool magUsable = (g_magType > MAG_NONE) && !sim && !g_cpDemo;
+    if (magUsable) lv_obj_clear_flag(u->calRow, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(u->calRow, LV_OBJ_FLAG_HIDDEN);
+    if (u->calibrating || u->calDone) {
+        lv_obj_clear_flag(u->calBox, LV_OBJ_FLAG_HIDDEN);
+        lv_bar_set_value(u->calBar, u->covered * 100 / 36, LV_ANIM_OFF);
+        if (u->calDone) {
+            snprintf(buf, sizeof(buf), "Calibrated and saved.");
+        } else {
+            snprintf(buf, sizeof(buf), "Turn the device slowly through a full circle, flat. %d of 360 degrees covered.", u->covered * 10);
+        }
+        lv_label_set_text(u->calLbl, buf);
+    } else {
+        lv_obj_add_flag(u->calBox, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_label_set_text(u->calBtnLbl, u->calibrating ? "Stop" : "Calibrate");
+    lv_label_set_text(u->demoBtnLbl, g_cpDemo ? "Demo heading: on" : "Demo heading: off");
+}
+
+static void cp_timer_cb(lv_timer_t *t)
+{
+    CompassUi *u = (CompassUi *)lv_timer_get_user_data(t);
+    if (u == g_cu) cp_refresh(u);
+}
+
+static void on_cp_calibrate(lv_event_t *e)
+{
+    if (!g_cu) return;
+    if (g_cu->calibrating) {
+        g_cu->calibrating = false;
+    } else {
+        cp_reset_cal();
+        memset(g_cu->bins, 0, sizeof(g_cu->bins));
+        g_cu->covered = 0;
+        g_cu->calDone = false;
+        g_cu->calibrating = true;
+    }
+    cp_refresh(g_cu);
+}
+
+static void on_cp_reset(lv_event_t *e)
+{
+    if (!g_cu) return;
+    cp_reset_cal();
+    cp_save_cal(false);
+    g_cu->calibrating = false;
+    g_cu->calDone = false;
+    g_cu->covered = 0;
+    cp_refresh(g_cu);
+}
+
+static void on_cp_demo(lv_event_t *e)
+{
+    g_cpDemo = !g_cpDemo;
+    if (g_cu) {
+        g_cu->haveShown = false;
+        cp_refresh(g_cu);
+    }
+}
+
+static void on_cp_offset(lv_event_t *e)
+{
+    int d = (int)(intptr_t)lv_event_get_user_data(e);
+    g_cpOffset += d;
+    if (g_cpOffset < -30) g_cpOffset = -30;
+    if (g_cpOffset > 30) g_cpOffset = 30;
+    cp_save_offset();
+    if (g_cu) cp_refresh(g_cu);
+}
+
+static lv_obj_t *cp_button(lv_obj_t *parent, const char *text, int w, lv_event_cb_t cb, void *ud, lv_obj_t **lblOut)
+{
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_set_size(b, w, 30);
+    lv_obj_set_style_bg_color(b, lv_color_hex(g_tBtnBg), 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(b, 6, 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_font(l, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(l, lv_color_hex(0xffffff), 0);
+    lv_obj_center(l);
+    if (lblOut) *lblOut = l;
+    return b;
+}
+
+static lv_obj_t *cp_row(lv_obj_t *parent)
+{
+    lv_obj_t *r = lv_obj_create(parent);
+    lv_obj_remove_style_all(r);
+    lv_obj_set_size(r, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(r, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(r, 6, 0);
+    return r;
+}
+
+static void open_compass_screen(lv_event_t *e)
+{
+    cp_load();
+    mag_probe();
+
+    lv_obj_t *body = nullptr;
+    lv_obj_t *root = create_subscreen("Compass", &body);
+    if (!root || !body) return;
+
+    CompassUi *u = new CompassUi();
+    memset(u->bins, 0, sizeof(u->bins));
+    g_cu = u;
+    lv_obj_set_flex_align(body, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    u->dial = lv_obj_create(body);
+    lv_obj_remove_style_all(u->dial);
+    lv_obj_set_size(u->dial, 150, 150);
+    lv_obj_set_style_radius(u->dial, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(u->dial, lv_color_hex(0x0e1517), 0);
+    lv_obj_set_style_bg_opa(u->dial, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(u->dial, 2, 0);
+    lv_obj_set_style_border_color(u->dial, lv_color_hex(g_tBorder), 0);
+    lv_obj_clear_flag(u->dial, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(u->dial, LV_OBJ_FLAG_CLICKABLE);
+    const char *cards[4] = {"N", "E", "S", "W"};
+    for (int i = 0; i < 4; i++) {
+        u->card[i] = lv_label_create(u->dial);
+        lv_label_set_text(u->card[i], cards[i]);
+        lv_obj_set_style_text_font(u->card[i], &ui_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(u->card[i], lv_color_hex(i == 0 ? 0xe5484d : 0x9ca3af), 0);
+        u->dot[i] = guide_dot(u->dial, 75, 75, 2, 0x6c8b87);
+    }
+    // the arrow stays pointing up, the dial turns under it
+    u->arrow = lv_line_create(u->dial);
+    lv_obj_set_style_line_color(u->arrow, lv_color_hex(0x4dd68c), 0);
+    lv_obj_set_style_line_width(u->arrow, 4, 0);
+    lv_obj_set_style_line_rounded(u->arrow, true, 0);
+    u->arrowPts[0] = {75, 20};
+    u->arrowPts[1] = {87, 58};
+    u->arrowPts[2] = {75, 50};
+    u->arrowPts[3] = {63, 58};
+    u->arrowPts[4] = {75, 20};
+    lv_line_set_points(u->arrow, u->arrowPts, 5);
+
+    u->headLbl = lv_label_create(body);
+    lv_obj_set_style_text_font(u->headLbl, &ui_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(u->headLbl, lv_color_hex(0xffffff), 0);
+    lv_label_set_text(u->headLbl, "");
+    u->subLbl = lv_label_create(body);
+    lv_obj_set_style_text_font(u->subLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(u->subLbl, lv_color_hex(0x9ca3af), 0);
+    lv_label_set_text(u->subLbl, "");
+
+    u->sensorLbl = lv_label_create(body);
+    lv_obj_set_width(u->sensorLbl, lv_pct(100));
+    lv_label_set_long_mode(u->sensorLbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(u->sensorLbl, &ui_font_montserrat_12, 0);
+
+    // north offset
+    u->offRow = cp_row(body);
+    cp_button(u->offRow, "-", 36, on_cp_offset, (void *)(intptr_t)-1, nullptr);
+    lv_obj_t *offWrap = lv_obj_create(u->offRow);
+    lv_obj_remove_style_all(offWrap);
+    lv_obj_set_size(offWrap, 150, 30);
+    u->offLbl = lv_label_create(offWrap);
+    lv_obj_set_style_text_font(u->offLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(u->offLbl, lv_color_hex(0xe5e7eb), 0);
+    lv_obj_center(u->offLbl);
+    cp_button(u->offRow, "+", 36, on_cp_offset, (void *)(intptr_t)1, nullptr);
+
+    // calibration
+    u->calBox = lv_obj_create(body);
+    lv_obj_remove_style_all(u->calBox);
+    lv_obj_set_size(u->calBox, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(u->calBox, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(u->calBox, 3, 0);
+    u->calBar = lv_bar_create(u->calBox);
+    lv_obj_set_size(u->calBar, lv_pct(100), 8);
+    lv_bar_set_range(u->calBar, 0, 100);
+    lv_obj_set_style_bg_color(u->calBar, lv_color_hex(0x243236), 0);
+    lv_obj_set_style_bg_color(u->calBar, lv_color_hex(0x4dd68c), LV_PART_INDICATOR);
+    u->calLbl = lv_label_create(u->calBox);
+    lv_obj_set_width(u->calLbl, lv_pct(100));
+    lv_label_set_long_mode(u->calLbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(u->calLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(u->calLbl, lv_color_hex(0x9ca3af), 0);
+    lv_obj_add_flag(u->calBox, LV_OBJ_FLAG_HIDDEN);
+    u->calRow = cp_row(body);
+    cp_button(u->calRow, "Calibrate", 100, on_cp_calibrate, nullptr, &u->calBtnLbl);
+    cp_button(u->calRow, "Reset", 70, on_cp_reset, nullptr, nullptr);
+    lv_obj_add_flag(u->calRow, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *demoRow = cp_row(body);
+    cp_button(demoRow, "Demo heading: off", 176, on_cp_demo, nullptr, &u->demoBtnLbl);
+
+    u->posLbl = lv_label_create(body);
+    lv_obj_set_width(u->posLbl, lv_pct(100));
+    lv_label_set_long_mode(u->posLbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(u->posLbl, &ui_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(u->posLbl, lv_color_hex(0x9ca3af), 0);
+    lv_obj_set_style_bg_color(u->posLbl, lv_color_hex(0x0e1517), 0);
+    lv_obj_set_style_bg_opa(u->posLbl, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(u->posLbl, 6, 0);
+    lv_obj_set_style_radius(u->posLbl, 6, 0);
+
+    lv_timer_t *tmr = lv_timer_create(cp_timer_cb, 200, u);
+    cp_refresh(u);
+
+    lv_obj_add_event_cb(root, [](lv_event_t *ev) {
+        lv_timer_t *t = (lv_timer_t *)lv_event_get_user_data(ev);
+        if (t) {
+            CompassUi *cu = (CompassUi *)lv_timer_get_user_data(t);
+            lv_timer_delete(t);
+            if (cu == g_cu) g_cu = nullptr;
+            delete cu;
+        }
+    }, LV_EVENT_DELETE, tmr);
+}
+
 static lv_obj_t *create_extras_tool_button(lv_obj_t *parent, const char *text, lv_event_cb_t cb)
 {
     lv_obj_t *btn = lv_button_create(parent);
@@ -1922,6 +2330,7 @@ extern "C" void emoji_tools_extras_init(lv_obj_t *tab_page_tools, lv_obj_t *scre
 
     // 4 Field Tools Buttons
     create_extras_tool_button(tab_page_tools, "Waypoints & Compass", open_waypoints_screen);
+    create_extras_tool_button(tab_page_tools, "Compass", open_compass_screen);
     create_extras_tool_button(tab_page_tools, "Node Radar", open_node_radar_screen);
     create_extras_tool_button(tab_page_tools, "RF Channel Monitor", open_rf_monitor_screen);
     create_extras_tool_button(tab_page_tools, "Field Notes", open_field_notes_screen);
