@@ -224,6 +224,18 @@
 #define LGFX_TOUCH_INSTANCE LCONCAT_EXPAND(lgfx::Touch_, LGFX_TOUCH)
 #endif
 
+// RIV_ROTATE: the orientation (Advanced settings > Screen orientation) is applied by LGFXDriver after the display is up, at start
+// and whenever it is changed; landscape swaps width and height and uses the landscape rotation values of the panel and the touch
+#ifdef RIV_ROTATE
+extern "C" int riv_landscape(void);
+#endif
+#ifndef RIV_LAND_ROTATION
+#define RIV_LAND_ROTATION LGFX_ROTATION
+#endif
+#ifndef RIV_LAND_TOUCH_ROTATION
+#define RIV_LAND_TOUCH_ROTATION LGFX_TOUCH_ROTATION
+#endif
+
 class LGFX_GENERIC : public lgfx::LGFX_Device
 {
     LGFX_PANEL_INSTANCE _panel_instance;
@@ -236,8 +248,20 @@ class LGFX_GENERIC : public lgfx::LGFX_Device
 #endif
 
   public:
-    const uint32_t screenWidth = LGFX_SCREEN_WIDTH;
-    const uint32_t screenHeight = LGFX_SCREEN_HEIGHT;
+    uint32_t screenWidth = LGFX_SCREEN_WIDTH;
+    uint32_t screenHeight = LGFX_SCREEN_HEIGHT;
+#ifdef RIV_ROTATE
+    // turns the panel and the touch between portrait (the compiled values) and landscape, also while running
+    void rivApplyOrientation(bool land)
+    {
+        setRotation(land ? ((RIV_LAND_ROTATION - LGFX_ROTATION) & 7) : 0);
+        auto tc = _touch_instance.config();
+        tc.offset_rotation = land ? RIV_LAND_TOUCH_ROTATION : LGFX_TOUCH_ROTATION;
+        _touch_instance.config(tc);
+        screenWidth = width();
+        screenHeight = height();
+    }
+#endif
 
 #ifdef LGFX_HAS_BUTTON
     bool hasButton(void) { return true; }

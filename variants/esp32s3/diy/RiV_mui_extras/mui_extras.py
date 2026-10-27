@@ -1222,6 +1222,100 @@ def main():
         copy("ISpiLock.h.in", os.path.join(UI, "include", "util"), "ISpiLock.h")
         copy("ISpiLock.cpp.in", os.path.join(UI, "source", "util"), "ISpiLock.cpp")
 
+    # live screen orientation, portrait or landscape (feature "rotate", set in Advanced settings): the portrait layout is the build's
+    # layout and its create function registers every object; riv_layout_gen.py turns the geometry of both generated layouts into
+    # riv_apply_layout(), which moves the registered objects when the orientation changes. The display driver turns the panel and the
+    # touch, TFTView re-applies its size adjustments.
+    if "rotate" in feat:
+        gen_p = os.path.join(UI, "generated", "ui_240x320")
+        gen_l = os.path.join(UI, "generated", "ui_320x240")
+        scr_p = os.path.join(gen_p, "screens.c")
+        scr_l = os.path.join(gen_l, "screens.c")
+        ui_c = os.path.join(gen_p, "ui.c")
+        if os.path.isdir(gen_p) and os.path.exists(scr_l) and os.path.exists(scr_p) and os.path.exists(ui_c):
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("riv_layout_gen", os.path.join(HERE, "riv_layout_gen.py"))
+            gen = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(gen)
+            old_land = os.path.join(gen_p, "screens_land.c")
+            if os.path.exists(old_land):
+                os.remove(old_land)
+            sp, crlf_p = read(scr_p)
+            sl = read(scr_l)[0]
+            try:
+                c_txt, patched, stats = gen.generate(sp, sl)
+            except Exception as ex:
+                print("MUI-EXTRAS WARNING: rotate layout not generated:", ex)
+                MISSES.append("rotate: layout")
+            else:
+                write(scr_p, patched, crlf_p)
+                lay_c = os.path.join(gen_p, "riv_layout.c")
+                if not os.path.exists(lay_c) or read(lay_c)[0] != c_txt:
+                    write(lay_c, c_txt, False)
+                    print("Generated", lay_c, stats)
+                # ui_init: normalise what earlier builds put there, then add the orientation hooks once
+                ui_s, crlf_u = read(ui_c)
+                ui_n = re.sub(r"extern int riv_landscape\(void\);\n(extern void (create_screen_main_screen_land\(void\)|riv_apply_layout\(int land\));\n)?\n?", "", ui_s)
+                ui_n = ui_n.replace("    if (riv_landscape())\n        create_screen_main_screen_land();\n    else\n        create_screen_main_screen();\n",
+                                    "    create_screen_main_screen();\n")
+                ui_n = ui_n.replace("    if (riv_landscape())\n        riv_apply_layout(1);\n", "")
+                ui_n = ui_n.replace("void ui_init() {\n", "extern int riv_landscape(void);\nextern void riv_apply_layout(int land);\n\nvoid ui_init() {\n", 1)
+                ui_n = ui_n.replace("    create_screen_main_screen();\n    create_screen_lock_screen();\n",
+                                    "    create_screen_main_screen();\n    if (riv_landscape())\n        riv_apply_layout(1);\n    create_screen_lock_screen();\n", 1)
+                if ui_n != ui_s:
+                    write(ui_c, ui_n, crlf_u)
+                    print("Patched", ui_c)
+                # display driver and view
+                disp_h = os.path.join(UI, "include", "graphics", "driver", "DisplayDriver.h")
+                lgfxd = os.path.join(UI, "include", "graphics", "driver", "LGFXDriver.h")
+                tft_h2 = os.path.join(UI, "include", "graphics", "view", "TFT", "TFTView_320x240.h")
+                edit(disp_h, "    virtual void setScreenTimeout(uint16_t timeout) {}\n", "    virtual void rivSetOrientation(bool land) {}\n", "after")
+                # the declaration used to be put inside an unrelated #ifdef: take that copy out, then add it at file level
+                lg_s, crlf_g = read(lgfxd)
+                stray = '#ifdef RIV_ROTATE\nextern "C" int riv_landscape(void);\n#endif\n#ifndef LGFX_BUFFER_LINES\n'
+                if stray in lg_s:
+                    write(lgfxd, lg_s.replace(stray, "#ifndef LGFX_BUFFER_LINES\n", 1), crlf_g)
+                edit(lgfxd, "constexpr uint32_t defaultLongPressTime", '#ifdef RIV_ROTATE\nextern "C" int riv_landscape(void);\n#endif\n\n', "before")
+                # earlier runs may have added the method more than once or in an older form: remove every copy, the edit below adds one
+                lg_c, crlf_c = read(lgfxd)
+                lg_n = re.sub(r"#ifdef RIV_ROTATE\n    void rivSetOrientation\(bool land\) override\n    \{\n.*?\n    \}\n#endif\n", "", lg_c, flags=re.S)
+                if lg_n != lg_c:
+                    write(lgfxd, lg_n, crlf_c)
+                edit(lgfxd, "    void setScreenTimeout(uint16_t timeout) override { screenTimeout = timeout * 1000; };\n",
+                     "#ifdef RIV_ROTATE\n    void rivSetOrientation(bool land) override\n    {\n        lgfx->rivApplyOrientation(land);\n"
+                     "        ILOG_DEBUG(\"RIV orientation %s\", land ? \"landscape\" : \"portrait\");\n"
+                     "        lv_display_set_resolution(this->display, lgfx->screenWidth, lgfx->screenHeight);\n    }\n#endif\n", "after")
+                edit(lgfxd, "    init_lgfx();\n    TFTDriver<LGFX>::init(gui);\n",
+                     "#ifdef RIV_ROTATE\n    if (riv_landscape())\n        lgfx->rivApplyOrientation(true);\n#endif\n", "after")
+                # touch and canvas sizes in the log while the orientation work is being checked
+                edit(lgfxd, "        count = lgfx->getTouch(tp, maxPoints);\n    }\n",
+                     "#ifdef RIV_ROTATE\n    {\n        static uint32_t riv_lastLog = 0;\n        if (count && millis() - riv_lastLog > 250) {\n"
+                     "            riv_lastLog = millis();\n"
+                     "            ILOG_DEBUG(\"RIV touch %d/%d lgfx %dx%d lv %dx%d\", (int)tp[0].x, (int)tp[0].y, (int)lgfx->width(), (int)lgfx->height(),\n"
+                     "                       (int)lv_display_get_horizontal_resolution(lv_display_get_default()),\n"
+                     "                       (int)lv_display_get_vertical_resolution(lv_display_get_default()));\n"
+                     "        }\n    }\n#endif\n", "after")
+                # same touch log for the plain (non gesture) touch read, and one line when the orientation changes
+                edit(lgfxd, "        touched = lgfx->getTouch(&touchX, &touchY);\n    }\n",
+                     "#ifdef RIV_ROTATE\n    {\n        static uint32_t riv_lastLog2 = 0;\n        if (touched && millis() - riv_lastLog2 > 250) {\n"
+                     "            riv_lastLog2 = millis();\n"
+                     "            ILOG_DEBUG(\"RIV touch %d/%d lgfx %dx%d lv %dx%d\", (int)touchX, (int)touchY, (int)lgfx->width(), (int)lgfx->height(),\n"
+                     "                       (int)lv_display_get_horizontal_resolution(lv_display_get_default()),\n"
+                     "                       (int)lv_display_get_vertical_resolution(lv_display_get_default()));\n"
+                     "        }\n    }\n#endif\n", "after")
+                edit(tft_h2, "    virtual void apply_hotfix(void);\n", "public:\n    void rivSetOrientation(bool land);\nprotected:\n", "after")
+                edit(tft, "void TFTView_320x240::apply_hotfix(void)\n{\n",
+                     'extern "C" void riv_apply_layout(int land);\n\n'
+                     "// turn the screen between portrait and landscape without a restart\n"
+                     "void TFTView_320x240::rivSetOrientation(bool land)\n{\n"
+                     "    resetKeyboardSlide();\n"
+                     "    displaydriver->rivSetOrientation(land);\n"
+                     "    riv_apply_layout(land ? 1 : 0);\n"
+                     "    apply_hotfix();\n"
+                     "    lv_obj_update_layout(objects.main_screen);\n"
+                     "    lv_obj_invalidate(objects.main_screen);\n"
+                     "}\n\n", "before")
+
     # keyboard height and the gap it leaves above the message box
     if "keyboard" in feat and kb_pct:
         # an earlier build may have patched another percentage already, so every value found in the library is an anchor too
@@ -1594,6 +1688,10 @@ def main():
                      'extern "C" void emoji_tools_record_metrics(float, float);\n'
                      'extern "C" void emoji_tools_record_packet(bool, bool);\n'
                      'extern "C" void emoji_tools_theme(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);\n')
+        if "rotate" in feat:
+            tft_decl += 'extern "C" void emoji_rotate_host(void (*)(bool));\n'
+            edit(tft, "    lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);\n",
+                 "    emoji_rotate_host([](bool land) { THIS->rivSetOrientation(land); });\n", "before")
         vc_decl += 'extern "C" void emoji_gps_record(const void *);\n'
         # renaming the node shows "Rebooting ..." but nothing asks the node to reboot, so the screen would wait for ever
         edit(tft, '                THIS->controller->sendConfig(user, THIS->ownNode);\n                THIS->notifyReboot(true);\n',

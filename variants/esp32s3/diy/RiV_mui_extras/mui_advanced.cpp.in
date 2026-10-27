@@ -6827,6 +6827,52 @@ static void names_cb(lv_event_t *e)
 
 
 
+#ifdef RIV_ROTATE
+// screen orientation: 0 portrait, 1 landscape, kept in NVS and read at start by the display driver and by ui_init
+static int g_rivLand = -1;
+extern "C" int riv_landscape(void)
+{
+    if (g_rivLand < 0) {
+        g_rivLand = 0;
+        Preferences p;
+        if (p.begin("rivui", true)) {
+            g_rivLand = p.getInt("land", 0) ? 1 : 0;
+            p.end();
+        }
+    }
+    return g_rivLand;
+}
+static void (*g_rotHost)(bool) = nullptr;
+extern "C" void emoji_rotate_host(void (*f)(bool))
+{
+    g_rotHost = f;
+}
+static lv_obj_t *g_rotLabel = nullptr;
+static void rot_text(void)
+{
+    if (!g_rotLabel) return;
+    lv_label_set_text(lv_obj_get_child(g_rotLabel, 0), riv_landscape() ? "Screen orientation: Landscape (tap to turn)" : "Screen orientation: Portrait (tap to turn)");
+}
+static void rot_cb(lv_event_t *e)
+{
+    int land = riv_landscape() ? 0 : 1;
+    Preferences p;
+    if (p.begin("rivui", false)) {
+        p.putInt("land", land);
+        p.end();
+    }
+    g_rivLand = land;
+    if (g_rotHost) {
+        g_rotHost(land != 0); // turns the screen at once
+        rot_text();
+        return;
+    }
+    if (g_rotLabel) lv_label_set_text(lv_obj_get_child(g_rotLabel, 0), "Restarting...");
+    lv_refr_now(NULL);
+    delay(700);
+    ESP.restart();
+}
+#endif
 static lv_obj_t *g_proxyLabel = nullptr;
 
 static void proxy_text(void)
@@ -7825,6 +7871,10 @@ static void build_adv_panel(void)
 
     logger_text();
 
+#ifdef RIV_ROTATE
+    g_rotLabel = make_nav(content, "", rot_cb);
+    rot_text();
+#endif
     make_nav(content, "Canned Messages", canned_adv_open_cb);
 
     make_nav(content, "RiV-meshBot Integration", meshbot_adv_open_cb);
