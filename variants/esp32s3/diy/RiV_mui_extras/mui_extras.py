@@ -1304,7 +1304,7 @@ def main():
                      "                       (int)lv_display_get_vertical_resolution(lv_display_get_default()));\n"
                      "        }\n    }\n#endif\n", "after")
                 # landscape touch: with the panel turned, the driver's own touch rotation gave a mirrored, squeezed mapping. The four corners were
-                # measured and checked on the board, the read coordinates are turned here: x = (H - 1) - y_read, y = (W - 1) - x_read.
+                # measured and checked on the board, the read coordinates are turned here: x = (W - H) + y_read, y = (W - 1) - x_read.
                 # (an earlier form of this block is removed first, the edit below adds the current one)
                 lg_t, crlf_t = read(lgfxd)
                 lg_t2 = re.sub(r"#if defined\(RIV_ROTATE\) && defined\(RIV_LAND_TOUCH_FIX\)\n.*?\n#endif\n", "", lg_t, flags=re.S)
@@ -1313,7 +1313,7 @@ def main():
                 edit(lgfxd, "    static bool touchWakeArmed = false;\n    if (!touched) {\n",
                      "#if defined(RIV_ROTATE) && defined(RIV_LAND_TOUCH_FIX)\n    if (touched && riv_landscape()) {\n"
                      "        int rx = (int)(int16_t)touchX, ry = (int)(int16_t)touchY;\n"
-                     "        int nx = (int)lgfx->screenHeight - 1 - ry, ny = (int)lgfx->screenWidth - 1 - rx;\n"
+                     "        int nx = (int)lgfx->screenWidth - (int)lgfx->screenHeight + ry, ny = (int)lgfx->screenWidth - 1 - rx;\n"
                      "        if (nx < 0) nx = 0;\n        if (ny < 0) ny = 0;\n"
                      "        if (nx > (int)lgfx->screenWidth - 1) nx = (int)lgfx->screenWidth - 1;\n"
                      "        if (ny > (int)lgfx->screenHeight - 1) ny = (int)lgfx->screenHeight - 1;\n"
