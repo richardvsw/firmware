@@ -649,6 +649,10 @@ extern "C" uint32_t emoji_find_node_by_name(const char *shortName, const char *l
     )
     edit(tft, "    if (objects.blank_screen)\n        lv_obj_set_size(objects.blank_screen, h, v);\n",
          hotfix_extras, "after")
+    # a 240 wide screen already fits the stock dialogs: the scaling above moved their buttons and hid the QR and key buttons of the channel
+    # dialog, so screens of 240 pixels or less keep the stock dialogs
+    edit(tft, "        if (!d) continue;\n        lv_obj_set_width(d, dlg_w);\n",
+         "        if (!d) continue;\n        if (h <= 240) continue; // stock dialogs fit, keep their QR and key buttons\n        lv_obj_set_width(d, dlg_w);\n", "replace")
 
     # Own node detail label and max height
     own_add = (
